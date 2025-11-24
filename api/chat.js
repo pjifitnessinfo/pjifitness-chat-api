@@ -5,15 +5,15 @@ const MAKE_WEBHOOK_URL = "https://hook.us2.make.com/5sdruae9dmg8n5y31even3wa9cb2
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-
 export default async function handler(req, res) {
-  // ✅ Allow requests from your Shopify domain
-  res.setHeader("Access-Control-Allow-Origin", "https://yourstore.myshopify.com");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  // ✅ Allow CORS for Shopify and browsers
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
 
   if (req.method === "OPTIONS") {
-    return res.status(200).end();
+    return res.status(200).json({ success: true });
   }
 
   if (req.method !== "POST") {
@@ -51,7 +51,6 @@ export default async function handler(req, res) {
 
       const threadJson = await threadRes.json();
       if (!threadRes.ok) throw new Error("Failed to create thread");
-
       thread_id = threadJson.id;
     }
 
@@ -74,7 +73,6 @@ export default async function handler(req, res) {
 
     const runJson = await runRes.json();
     if (!runRes.ok) throw new Error("Failed to start run");
-
     const runId = runJson.id;
 
     // 4️⃣ Poll until complete
