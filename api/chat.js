@@ -27,13 +27,19 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body || {};
-    const { message, threadId, email } = body;
+    const { message, threadId, email, imageBase64, imageName } = body;
 
-    if (!message || typeof message !== "string") {
-      return res.status(400).json({ error: "Message is required" });
+    // ⛔ Now we allow EITHER a message, OR an image, OR both
+    if (
+      (!message || typeof message !== "string") &&
+      !imageBase64
+    ) {
+      return res
+        .status(400)
+        .json({ error: "Message or imageBase64 is required" });
     }
 
-    // Base headers for OpenAI
+    // Base headers for OpenAI JSON endpoints
     const baseHeaders = {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`
@@ -60,28 +66,92 @@ export default async function handler(req, res) {
       thread_id = threadJson.id;
     }
 
-    // 2️⃣ Add user message to the thread
+    // 2️⃣ If we got an imageBase64, upload it as a "vision" file to OpenAI
+    let imageFileId = null;
+
+    if (imageBase64) {
+      try {
+        // handle both "data:image/png;base64,XXXX" and raw base64
+        const base64Data = imageBase64.includes("base64,")
+          ? imageBase64.split("base64,")[1]
+          : imageBase64;
+
+        const buffer = Buffer.from(base64Data, "base64");
+
+        const formData = new FormData();
+        const fileName = imageName || "upload.jpg";
+
+        formData.append("file", new Blob([buffer]), fileName);
+        formData.append("purpose", "vision");
+
+        const fileRes = await fetch("https://api.openai.com/v1/files", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}` // ❗ do NOT set Content-Type manually here
+          },
+          body: formData
+        });
+
+        const fileJson = await fileRes.json();
+        if (!fileRes.ok) {
+          console.error("Image upload failed:", fileJson);
+          throw new Error("Failed to upload image to OpenAI");
+        }
+
+        imageFileId = fileJson.id;
+      } catch (e) {
+        console.error("Image upload error:", e);
+      }
+    }
+
+    // 3️⃣ Build the user message content: text + optional image
+    const userContent = [];
+
+    if (message && typeof message === "string") {
+      userContent.push({
+        type: "input_text",
+        text: message
+      });
+    }
+
+    if (imageFileId) {
+      userContent.push({
+        type: "input_image_file",
+        image_file: { file_id: imageFileId }
+      });
+    }
+
+    if (userContent.length === 0) {
+      return res.status(400).json({
+        error: "No valid message or image to send to the assistant."
+      });
+    }
+
+    // 4️⃣ Add user message (with optional image) to the thread
     await fetch(`https://api.openai.com/v1/threads/${thread_id}/messages`, {
       method: "POST",
       headers: assistantHeaders,
       body: JSON.stringify({
         role: "user",
-        content: message
+        content: userContent
       })
     });
 
-    // 3️⃣ Run assistant
-    const runRes = await fetch(`https://api.openai.com/v1/threads/${thread_id}/runs`, {
-      method: "POST",
-      headers: assistantHeaders,
-      body: JSON.stringify({ assistant_id: ASSISTANT_ID })
-    });
+    // 5️⃣ Run assistant
+    const runRes = await fetch(
+      `https://api.openai.com/v1/threads/${thread_id}/runs`,
+      {
+        method: "POST",
+        headers: assistantHeaders,
+        body: JSON.stringify({ assistant_id: ASSISTANT_ID })
+      }
+    );
 
     const runJson = await runRes.json();
     if (!runRes.ok) throw new Error("Failed to start run");
     const runId = runJson.id;
 
-    // 4️⃣ Poll until complete
+    // 6️⃣ Poll until complete
     for (let i = 0; i < 30; i++) {
       const statusRes = await fetch(
         `https://api.openai.com/v1/threads/${thread_id}/runs/${runId}`,
@@ -97,7 +167,7 @@ export default async function handler(req, res) {
       await sleep(1000);
     }
 
-    // 5️⃣ Fetch assistant reply
+    // 7️⃣ Fetch assistant reply
     const msgsRes = await fetch(
       `https://api.openai.com/v1/threads/${thread_id}/messages?limit=10`,
       { headers: assistantHeaders }
@@ -108,43 +178,45 @@ export default async function handler(req, res) {
       assistantMsg?.content?.[0]?.text?.value ||
       "Something went wrong. Please try again.";
 
-    // 6️⃣ Detect DAILY LOG + USER PROFILE + extract structured fields for Make
+    // 8️⃣ Detect DAILY LOG + USER PROFILE + extract structured fields for Make
     let extractedLog = null;
     let extractedProfile = null;
 
+    const msgText = message || "";
+
     // ✅ FIRST: detect USER PROFILE from onboarding labels
     const isUserProfile =
-      /start_weight:/i.test(message) ||
-      /goal_weight:/i.test(message) ||
-      /activity_level:/i.test(message) ||
-      /age:/i.test(message);
+      /start_weight:/i.test(msgText) ||
+      /goal_weight:/i.test(msgText) ||
+      /activity_level:/i.test(msgText) ||
+      /age:/i.test(msgText);
 
     // ✅ THEN: detect DAILY LOG, but ONLY if it's NOT a profile
     const isDailyLog =
       !isUserProfile &&
-      (
-        /\bweight:/i.test(message) ||
-        /calories:/i.test(message) ||
-        /steps:/i.test(message) ||
-        /mood:/i.test(message) ||
-        /feeling:/i.test(message) ||
-        /struggle:/i.test(message) ||
-        /focus:/i.test(message) ||
-        /flag:/i.test(message)
-      );
+      (/\bweight:/i.test(msgText) ||
+        /calories:/i.test(msgText) ||
+        /steps:/i.test(msgText) ||
+        /mood:/i.test(msgText) ||
+        /feeling:/i.test(msgText) ||
+        /struggle:/i.test(msgText) ||
+        /focus:/i.test(msgText) ||
+        /flag:/i.test(msgText));
 
     // ---- DAILY LOG JSON extraction ----
     if (isDailyLog) {
       try {
-        const jsonRes = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: baseHeaders,
-          body: JSON.stringify({
-            model: "gpt-4o-mini",
-            messages: [
-              {
-                role: "system",
-                content: `
+        const jsonRes = await fetch(
+          "https://api.openai.com/v1/chat/completions",
+          {
+            method: "POST",
+            headers: baseHeaders,
+            body: JSON.stringify({
+              model: "gpt-4o-mini",
+              messages: [
+                {
+                  role: "system",
+                  content: `
 You are a strict JSON formatter for a fitness coaching app.
 
 The user will send a "daily log" including:
@@ -168,13 +240,14 @@ JSON shape:
   "focus": string | null,
   "flag": boolean | null
 }
-                `.trim()
-              },
-              { role: "user", content: message }
-            ],
-            temperature: 0
-          })
-        });
+                  `.trim()
+                },
+                { role: "user", content: msgText }
+              ],
+              temperature: 0
+            })
+          }
+        );
 
         const jsonData = await jsonRes.json();
         const jsonText = jsonData?.choices?.[0]?.message?.content || null;
@@ -204,15 +277,17 @@ JSON shape:
     // ---- USER PROFILE JSON extraction (onboarding) ----
     if (isUserProfile) {
       try {
-        const jsonRes = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: baseHeaders,
-          body: JSON.stringify({
-            model: "gpt-4o-mini",
-            messages: [
-              {
-                role: "system",
-                content: `
+        const jsonRes = await fetch(
+          "https://api.openai.com/v1/chat/completions",
+          {
+            method: "POST",
+            headers: baseHeaders,
+            body: JSON.stringify({
+              model: "gpt-4o-mini",
+              messages: [
+                {
+                  role: "system",
+                  content: `
 You are a strict JSON formatter for onboarding a fitness coaching client.
 
 The user message may include:
@@ -245,13 +320,14 @@ Tasks:
   "week": number | null,
   "plan_json": null
 }
-                `.trim()
-              },
-              { role: "user", content: message }
-            ],
-            temperature: 0
-          })
-        });
+                  `.trim()
+                },
+                { role: "user", content: msgText }
+              ],
+              temperature: 0
+            })
+          }
+        );
 
         const jsonData = await jsonRes.json();
         const jsonText = jsonData?.choices?.[0]?.message?.content || null;
@@ -277,7 +353,7 @@ Tasks:
       }
     }
 
-    // 7️⃣ Send log/profile/chat to Make.com
+    // 9️⃣ Send log/profile/chat to Make.com
     if (MAKE_WEBHOOK_URL) {
       try {
         let payload;
@@ -300,9 +376,10 @@ Tasks:
           payload = {
             type: "chat",
             email: email || null,
-            message,
+            message: msgText || null,
             reply,
             threadId: thread_id,
+            hasImage: !!imageFileId,
             timestamp: new Date().toISOString()
           };
         }
@@ -317,10 +394,12 @@ Tasks:
       }
     }
 
-    // 8️⃣ Return response to frontend
+    // 🔟 Return response to frontend
     return res.status(200).json({ reply, threadId: thread_id });
   } catch (err) {
     console.error("Handler error:", err);
-    return res.status(500).json({ error: err.message || "Server error" });
+    return res
+      .status(500)
+      .json({ error: err.message || "Server error" });
   }
 }
