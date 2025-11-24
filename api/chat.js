@@ -1,6 +1,6 @@
 const ASSISTANT_ID = "asst_RnVnU6FuCnK6TsOpRxa0sdaG"; // your PJiFitness assistant
 
-// ✅ Clean Make.com Webhook URL (no spaces or line breaks)
+// ✅ Make.com Webhook URL
 const MAKE_WEBHOOK_URL = "https://hook.us2.make.com/5sdruae9dmg8n5y31even3wa9cb28dbq";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -33,9 +33,15 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Message is required" });
     }
 
-    const headers = {
+    // Base headers for OpenAI
+    const baseHeaders = {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${apiKey}`
+    };
+
+    // Headers for Assistants API
+    const assistantHeaders = {
+      ...baseHeaders,
       "OpenAI-Beta": "assistants=v2"
     };
 
@@ -45,7 +51,7 @@ export default async function handler(req, res) {
     if (!thread_id) {
       const threadRes = await fetch("https://api.openai.com/v1/threads", {
         method: "POST",
-        headers,
+        headers: assistantHeaders,
         body: JSON.stringify({})
       });
 
@@ -54,10 +60,10 @@ export default async function handler(req, res) {
       thread_id = threadJson.id;
     }
 
-    // 2️⃣ Add user message
+    // 2️⃣ Add user message to the thread
     await fetch(`https://api.openai.com/v1/threads/${thread_id}/messages`, {
       method: "POST",
-      headers,
+      headers: assistantHeaders,
       body: JSON.stringify({
         role: "user",
         content: message
@@ -67,7 +73,7 @@ export default async function handler(req, res) {
     // 3️⃣ Run assistant
     const runRes = await fetch(`https://api.openai.com/v1/threads/${thread_id}/runs`, {
       method: "POST",
-      headers,
+      headers: assistantHeaders,
       body: JSON.stringify({ assistant_id: ASSISTANT_ID })
     });
 
@@ -79,7 +85,7 @@ export default async function handler(req, res) {
     for (let i = 0; i < 30; i++) {
       const statusRes = await fetch(
         `https://api.openai.com/v1/threads/${thread_id}/runs/${runId}`,
-        { headers }
+        { headers: assistantHeaders }
       );
       const statusJson = await statusRes.json();
 
@@ -94,7 +100,7 @@ export default async function handler(req, res) {
     // 5️⃣ Fetch assistant reply
     const msgsRes = await fetch(
       `https://api.openai.com/v1/threads/${thread_id}/messages?limit=10`,
-      { headers }
+      { headers: assistantHeaders }
     );
     const msgsJson = await msgsRes.json();
     const assistantMsg = msgsJson.data.find((m) => m.role === "assistant");
@@ -102,16 +108,115 @@ export default async function handler(req, res) {
       assistantMsg?.content?.[0]?.text?.value ||
       "Something went wrong. Please try again.";
 
-    // 6️⃣ Send log to Make.com
+    // 6️⃣ Detect DAILY LOG + extract structured fields for Make
+    let extractedLog = null;
+
+    const isDailyLog =
+      /weight:/i.test(message) ||
+      /calories:/i.test(message) ||
+      /steps:/i.test(message) ||
+      /mood:/i.test(message) ||
+      /struggle:/i.test(message) ||
+      /focus:/i.test(message) ||
+      /flag:/i.test(message);
+
+    if (isDailyLog) {
+      try {
+        const jsonRes = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: baseHeaders, // standard chat completions headers
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [
+              {
+                role: "system",
+                content: `
+You are a strict JSON formatter for a fitness coaching app.
+
+The user will send a "daily log" message that may include:
+- email
+- weight
+- calories
+- steps
+- mood
+- struggle
+- focus
+- flag (yes/no, true/false)
+
+Your job:
+1. Extract these fields if present.
+2. If any field is missing, set it to null.
+3. "flag" must be a boolean (true or false).
+4. Return ONLY valid JSON with NO extra text.
+
+JSON shape:
+{
+  "email": string | null,
+  "weight": number | null,
+  "calories": number | null,
+  "steps": number | null,
+  "mood": string | null,
+  "struggle": string | null,
+  "focus": string | null,
+  "flag": boolean | null
+}
+                `.trim()
+              },
+              {
+                role: "user",
+                content: message
+              }
+            ],
+            temperature: 0
+          })
+        });
+
+        const jsonData = await jsonRes.json();
+        const jsonText = jsonData?.choices?.[0]?.message?.content || null;
+
+        if (jsonText) {
+          const parsed = JSON.parse(jsonText);
+
+          // Make sure email is filled from request if missing
+          if (!parsed.email) {
+            parsed.email = email || null;
+          }
+
+          extractedLog = {
+            email: parsed.email ?? null,
+            weight: parsed.weight ?? null,
+            calories: parsed.calories ?? null,
+            steps: parsed.steps ?? null,
+            mood: parsed.mood ?? null,
+            struggle: parsed.struggle ?? null,
+            focus: parsed.focus ?? null,
+            flag: typeof parsed.flag === "boolean" ? parsed.flag : null
+          };
+        }
+      } catch (e) {
+        console.error("JSON extraction error:", e);
+      }
+    }
+
+    // 7️⃣ Send log to Make.com
     if (MAKE_WEBHOOK_URL) {
       try {
-        const payload = {
-          email: email || null,
-          message,
-          reply,
-          threadId: thread_id,
-          timestamp: new Date().toISOString()
-        };
+        const payload = extractedLog
+          ? {
+              type: "daily_log",
+              ...extractedLog,
+              threadId: thread_id,
+              timestamp: new Date().toISOString()
+            }
+          : {
+              type: "chat",
+              email: email || null,
+              message,
+              reply,
+              threadId: thread_id,
+              timestamp: new Date().toISOString()
+            };
+
         await fetch(MAKE_WEBHOOK_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -122,7 +227,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // 7️⃣ Return response
+    // 8️⃣ Return response to frontend
     return res.status(200).json({ reply, threadId: thread_id });
   } catch (err) {
     console.error("Handler error:", err);
