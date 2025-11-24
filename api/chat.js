@@ -1,9 +1,10 @@
 const ASSISTANT_ID = "asst_RnVnU6FuCnK6TsOpRxa0sdaG"; // your PJiFitness assistant
 
-// ✅ Make.com Webhook URL — keep on ONE line
+// ✅ Clean Make.com Webhook URL (no spaces or line breaks)
 const MAKE_WEBHOOK_URL = "https://hook.us2.make.com/5sdruae9dmg8n5y31even3wa9cb28dbq";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 
 export default async function handler(req, res) {
   // ✅ Allow requests from your Shopify domain
