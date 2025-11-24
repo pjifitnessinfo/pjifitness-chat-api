@@ -1,5 +1,9 @@
 const ASSISTANT_ID = "asst_RnVnU6FuCnK6TsOpRxa0sdaG"; // your PJiFitness assistant
 
+// ⬇️ PASTE YOUR MAKE.COM WEBHOOK URL HERE
+const MAKE_WEBHOOK_URL = "https://hook.us2.make.com/5sdruae9dmg8n5y31even3wa9cb28dbq
+";
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export default async function handler(req, res) {
@@ -23,7 +27,7 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body || {};
-    const { message, threadId } = body;
+    const { message, threadId, email } = body; // email is optional for later
 
     if (!message || typeof message !== "string") {
       return res.status(400).json({ error: "Message is required" });
@@ -155,6 +159,32 @@ export default async function handler(req, res) {
         ? assistantMsg.content[0].text.value
         : "Something went wrong. Please try again.";
 
+    // 6) 🔗 Send a copy of this log to Make.com (for Google Sheets)
+    if (MAKE_WEBHOOK_URL && MAKE_WEBHOOK_URL.startsWith("http")) {
+      try {
+        const payload = {
+          // Basic info we know right now
+          email: email || null,         // later we can pass Shopify email into the request
+          message,
+          reply,
+          threadId: thread_id,
+          timestamp: new Date().toISOString()
+        };
+
+        await fetch(MAKE_WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+      } catch (webhookErr) {
+        console.error("Make.com webhook error:", webhookErr);
+        // Don't crash the chat if the logging fails
+      }
+    } else {
+      console.warn("MAKE_WEBHOOK_URL is not set or invalid.");
+    }
+
+    // 7) Return reply to the browser
     return res.status(200).json({ reply, threadId: thread_id });
   } catch (err) {
     console.error("Handler error:", err);
