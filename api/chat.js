@@ -4,6 +4,7 @@ const MAKE_WEBHOOK_URL = "https://hook.us2.make.com/5sdruae9dmg8n5y31even3wa9cb2
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export default async function handler(req, res) {
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -18,14 +19,19 @@ export default async function handler(req, res) {
   }
 
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+  if (!apiKey) {
+    return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+  }
 
   try {
     const body = req.body || {};
     const { message, threadId, email, imageBase64 } = body;
 
+    // Allow either a message, an image, or both
     if ((!message || typeof message !== "string") && !imageBase64) {
-      return res.status(400).json({ error: "Message or imageBase64 is required" });
+      return res.status(400).json({
+        error: "Message or imageBase64 is required"
+      });
     }
 
     const baseHeaders = {
@@ -40,7 +46,7 @@ export default async function handler(req, res) {
 
     let thread_id = threadId;
 
-    // 1️⃣ Create thread
+    // 1️⃣ Create new thread if none provided
     if (!thread_id) {
       const threadRes = await fetch("https://api.openai.com/v1/threads", {
         method: "POST",
@@ -49,12 +55,15 @@ export default async function handler(req, res) {
       });
 
       const threadJson = await threadRes.json();
-      if (!threadRes.ok) throw new Error("Failed to create thread");
+      if (!threadRes.ok) {
+        console.error("Thread create error:", threadJson);
+        throw new Error("Failed to create thread");
+      }
 
       thread_id = threadJson.id;
     }
 
-    // 2️⃣ Build message content (text + optional image)
+    // 2️⃣ Build user message content: text + optional image (data URL)
     const userContent = [];
 
     if (message && typeof message === "string") {
@@ -65,13 +74,20 @@ export default async function handler(req, res) {
     }
 
     if (imageBase64) {
+      // We send the base64 data URL directly as an image URL
       userContent.push({
         type: "input_image_url",
-        image_url: { url: imageBase64 }   // <-- Direct data URL (NO upload needed)
+        image_url: { url: imageBase64 }
       });
     }
 
-    // 3️⃣ Add message to thread
+    if (userContent.length === 0) {
+      return res.status(400).json({
+        error: "No valid message or image to send to the assistant."
+      });
+    }
+
+    // 3️⃣ Add the message to the thread
     await fetch(`https://api.openai.com/v1/threads/${thread_id}/messages`, {
       method: "POST",
       headers: assistantHeaders,
@@ -81,7 +97,7 @@ export default async function handler(req, res) {
       })
     });
 
-    // 4️⃣ Run assistant
+    // 4️⃣ Start a run
     const runRes = await fetch(
       `https://api.openai.com/v1/threads/${thread_id}/runs`,
       {
@@ -92,53 +108,61 @@ export default async function handler(req, res) {
     );
 
     const runJson = await runRes.json();
-    if (!runRes.ok) throw new Error("Failed to start run");
+    if (!runRes.ok) {
+      console.error("Run start error:", runJson);
+      throw new Error("Failed to start run");
+    }
 
     const runId = runJson.id;
 
-    // 5️⃣ Poll until complete
+    // 5️⃣ Poll run status until completed
     for (let i = 0; i < 30; i++) {
       const statusRes = await fetch(
         `https://api.openai.com/v1/threads/${thread_id}/runs/${runId}`,
-        { headers: assistantHeaders }
+        {
+          method: "GET",
+          headers: assistantHeaders
+        }
       );
-
       const statusJson = await statusRes.json();
+
       if (statusJson.status === "completed") break;
 
       if (["failed", "cancelled", "expired"].includes(statusJson.status)) {
+        console.error("Run failed status:", statusJson);
         throw new Error("Run failed");
       }
 
-      await sleep(1000);
+      await sleep(1000); // 1s between polls
     }
 
-    // 6️⃣ Fetch assistant reply
+    // 6️⃣ Fetch messages and get latest assistant reply
     const msgsRes = await fetch(
       `https://api.openai.com/v1/threads/${thread_id}/messages?limit=10`,
-      { headers: assistantHeaders }
+      { method: "GET", headers: assistantHeaders }
     );
-
     const msgsJson = await msgsRes.json();
 
+    // Messages are usually returned newest-first
     const assistantMsg = msgsJson.data.find((m) => m.role === "assistant");
-
     const reply =
       assistantMsg?.content?.[0]?.text?.value ||
       "Something went wrong. Please try again.";
 
-    // 7️⃣ Extract Daily Log / Profile
+    // 7️⃣ DAILY LOG + USER PROFILE extraction for Make.com
     let extractedLog = null;
     let extractedProfile = null;
 
     const msgText = message || "";
 
+    // PROFILE detection: only if explicit onboarding-style keys are used
     const isUserProfile =
       /start_weight:/i.test(msgText) ||
       /goal_weight:/i.test(msgText) ||
       /activity_level:/i.test(msgText) ||
       /age:/i.test(msgText);
 
+    // DAILY LOG detection: must look like a daily check-in, not just random text
     const isDailyLog =
       !isUserProfile &&
       (/\bweight:/i.test(msgText) ||
@@ -150,7 +174,7 @@ export default async function handler(req, res) {
         /focus:/i.test(msgText) ||
         /flag:/i.test(msgText));
 
-    // DAILY LOG block
+    // ---- DAILY LOG JSON extraction ----
     if (isDailyLog) {
       try {
         const jsonRes = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -158,14 +182,23 @@ export default async function handler(req, res) {
           headers: baseHeaders,
           body: JSON.stringify({
             model: "gpt-4o-mini",
+            temperature: 0,
             messages: [
               {
                 role: "system",
                 content: `
-You strictly output JSON for a daily fitness log.
-Missing fields = null. "flag" must be true/false.
+You are a strict JSON formatter for a fitness coaching app.
 
-JSON format:
+The user message contains a "daily log" with some of:
+email, weight, calories, steps, mood, feeling, struggle, focus, flag.
+
+Rules:
+1. Extract fields if present.
+2. Missing fields = null.
+3. "flag" must be boolean (true/false) or null if unclear.
+4. Return ONLY valid JSON, no extra text.
+
+JSON shape:
 {
   "email": string | null,
   "weight": number | null,
@@ -177,28 +210,42 @@ JSON format:
   "focus": string | null,
   "flag": boolean | null
 }
-                `
+                `.trim()
               },
               { role: "user", content: msgText }
-            ],
-            temperature: 0
+            ]
           })
         });
 
         const jsonData = await jsonRes.json();
-        const jsonText = jsonData?.choices?.[0]?.message?.content;
+        const jsonText = jsonData?.choices?.[0]?.message?.content || null;
 
         if (jsonText) {
           const parsed = JSON.parse(jsonText);
 
           if (!parsed.email) parsed.email = email || null;
 
-          extractedLog = parsed;
+          extractedLog = {
+            email: parsed.email ?? null,
+            weight: parsed.weight ?? null,
+            calories: parsed.calories ?? null,
+            steps: parsed.steps ?? null,
+            mood: parsed.mood ?? null,
+            feeling: parsed.feeling ?? null,
+            struggle: parsed.struggle ?? null,
+            focus: parsed.focus ?? null,
+            flag:
+              typeof parsed.flag === "boolean"
+                ? parsed.flag
+                : null
+          };
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error("JSON extraction error (daily_log):", e);
+      }
     }
 
-    // PROFILE block
+    // ---- USER PROFILE JSON extraction (onboarding) ----
     if (isUserProfile) {
       try {
         const jsonRes = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -206,15 +253,33 @@ JSON format:
           headers: baseHeaders,
           body: JSON.stringify({
             model: "gpt-4o-mini",
+            temperature: 0,
             messages: [
               {
                 role: "system",
                 content: `
-Extract onboarding info into JSON:
-Missing fields = null.
-Pick program_name based on goal & activity.
+You are a strict JSON formatter for onboarding a fitness coaching client.
 
-JSON:
+The user message may include:
+- email
+- start_weight
+- goal_weight
+- age
+- activity_level (sedentary, light, moderate, high, athlete)
+
+Tasks:
+1. Extract these fields.
+2. If something is missing, set it to null.
+3. Suggest a program_name based on their goal and activity level.
+   Use exactly one of:
+   - "Fat loss – 3 day dumbbell"
+   - "Fat loss – 4 day dumbbell"
+   - "Recomp – 3 day dumbbell"
+   - "Strength – 4 day dumbbell"
+4. Set "week" to 1.
+5. plan_json must be null.
+6. Return ONLY valid JSON, no extra text:
+
 {
   "email": string | null,
   "start_weight": number | null,
@@ -225,28 +290,38 @@ JSON:
   "week": number | null,
   "plan_json": null
 }
-                `
+                `.trim()
               },
               { role: "user", content: msgText }
-            ],
-            temperature: 0
+            ]
           })
         });
 
         const jsonData = await jsonRes.json();
-        const jsonText = jsonData?.choices?.[0]?.message?.content;
+        const jsonText = jsonData?.choices?.[0]?.message?.content || null;
 
         if (jsonText) {
           const parsed = JSON.parse(jsonText);
 
           if (!parsed.email) parsed.email = email || null;
 
-          extractedProfile = parsed;
+          extractedProfile = {
+            email: parsed.email ?? null,
+            start_weight: parsed.start_weight ?? null,
+            goal_weight: parsed.goal_weight ?? null,
+            age: parsed.age ?? null,
+            activity_level: parsed.activity_level ?? null,
+            program_name: parsed.program_name ?? null,
+            week: parsed.week ?? 1,
+            plan_json: null
+          };
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error("JSON extraction error (user_profile):", e);
+      }
     }
 
-    // 8️⃣ Make.com Webhook
+    // 8️⃣ Send to Make.com
     if (MAKE_WEBHOOK_URL) {
       try {
         let payload;
@@ -283,16 +358,15 @@ JSON:
           body: JSON.stringify(payload)
         });
       } catch (e) {
-        console.error("Webhook error:", e);
+        console.error("Make.com webhook error:", e);
       }
     }
 
-    // 9️⃣ Response back to frontend
+    // 9️⃣ Return to frontend
     return res.status(200).json({
       reply,
       threadId: thread_id
     });
-
   } catch (err) {
     console.error("Handler error:", err);
     return res.status(500).json({
