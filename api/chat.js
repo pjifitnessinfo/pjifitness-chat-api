@@ -108,19 +108,32 @@ export default async function handler(req, res) {
       assistantMsg?.content?.[0]?.text?.value ||
       "Something went wrong. Please try again.";
 
-    // 6️⃣ Detect DAILY LOG + extract structured fields for Make
+    // 6️⃣ Detect DAILY LOG + USER PROFILE + extract structured fields for Make
     let extractedLog = null;
+    let extractedProfile = null;
 
+    // ✅ FIRST: detect USER PROFILE from onboarding labels
+    const isUserProfile =
+      /start_weight:/i.test(message) ||
+      /goal_weight:/i.test(message) ||
+      /activity_level:/i.test(message) ||
+      /age:/i.test(message);
+
+    // ✅ THEN: detect DAILY LOG, but ONLY if it's NOT a profile
     const isDailyLog =
-      /weight:/i.test(message) ||
-      /calories:/i.test(message) ||
-      /steps:/i.test(message) ||
-      /mood:/i.test(message) ||
-      /feeling:/i.test(message) ||
-      /struggle:/i.test(message) ||
-      /focus:/i.test(message) ||
-      /flag:/i.test(message);
+      !isUserProfile &&
+      (
+        /\bweight:/i.test(message) ||
+        /calories:/i.test(message) ||
+        /steps:/i.test(message) ||
+        /mood:/i.test(message) ||
+        /feeling:/i.test(message) ||
+        /struggle:/i.test(message) ||
+        /focus:/i.test(message) ||
+        /flag:/i.test(message)
+      );
 
+    // ---- DAILY LOG JSON extraction ----
     if (isDailyLog) {
       try {
         const jsonRes = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -169,7 +182,6 @@ JSON shape:
         if (jsonText) {
           const parsed = JSON.parse(jsonText);
 
-          // Fill missing email using request body email if needed
           if (!parsed.email) parsed.email = email || null;
 
           extractedLog = {
@@ -185,28 +197,115 @@ JSON shape:
           };
         }
       } catch (e) {
-        console.error("JSON extraction error:", e);
+        console.error("JSON extraction error (daily_log):", e);
       }
     }
 
-    // 7️⃣ Send log to Make.com
+    // ---- USER PROFILE JSON extraction (onboarding) ----
+    if (isUserProfile) {
+      try {
+        const jsonRes = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: baseHeaders,
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [
+              {
+                role: "system",
+                content: `
+You are a strict JSON formatter for onboarding a fitness coaching client.
+
+The user message may include:
+- email
+- start_weight
+- goal_weight
+- age
+- activity_level (sedentary, light, moderate, high, athlete)
+
+Tasks:
+1. Extract these fields.
+2. If something is missing, set it to null.
+3. Suggest a strength program_name based on their goal and activity level.
+   Use one of these strings:
+   - "Fat loss – 3 day dumbbell"
+   - "Fat loss – 4 day dumbbell"
+   - "Recomp – 3 day dumbbell"
+   - "Strength – 4 day dumbbell"
+4. Set "week" to 1.
+5. plan_json should be null for now.
+6. Return ONLY valid JSON with this shape:
+
+{
+  "email": string | null,
+  "start_weight": number | null,
+  "goal_weight": number | null,
+  "age": number | null,
+  "activity_level": string | null,
+  "program_name": string | null,
+  "week": number | null,
+  "plan_json": null
+}
+                `.trim()
+              },
+              { role: "user", content: message }
+            ],
+            temperature: 0
+          })
+        });
+
+        const jsonData = await jsonRes.json();
+        const jsonText = jsonData?.choices?.[0]?.message?.content || null;
+
+        if (jsonText) {
+          const parsed = JSON.parse(jsonText);
+
+          if (!parsed.email) parsed.email = email || null;
+
+          extractedProfile = {
+            email: parsed.email ?? null,
+            start_weight: parsed.start_weight ?? null,
+            goal_weight: parsed.goal_weight ?? null,
+            age: parsed.age ?? null,
+            activity_level: parsed.activity_level ?? null,
+            program_name: parsed.program_name ?? null,
+            week: parsed.week ?? 1,
+            plan_json: parsed.plan_json ?? null
+          };
+        }
+      } catch (e) {
+        console.error("JSON extraction error (user_profile):", e);
+      }
+    }
+
+    // 7️⃣ Send log/profile/chat to Make.com
     if (MAKE_WEBHOOK_URL) {
       try {
-        const payload = extractedLog
-          ? {
-              type: "daily_log",
-              ...extractedLog,
-              threadId: thread_id,
-              timestamp: new Date().toISOString()
-            }
-          : {
-              type: "chat",
-              email: email || null,
-              message,
-              reply,
-              threadId: thread_id,
-              timestamp: new Date().toISOString()
-            };
+        let payload;
+
+        if (extractedLog) {
+          payload = {
+            type: "daily_log",
+            ...extractedLog,
+            threadId: thread_id,
+            timestamp: new Date().toISOString()
+          };
+        } else if (extractedProfile) {
+          payload = {
+            type: "user_profile",
+            ...extractedProfile,
+            threadId: thread_id,
+            timestamp: new Date().toISOString()
+          };
+        } else {
+          payload = {
+            type: "chat",
+            email: email || null,
+            message,
+            reply,
+            threadId: thread_id,
+            timestamp: new Date().toISOString()
+          };
+        }
 
         await fetch(MAKE_WEBHOOK_URL, {
           method: "POST",
