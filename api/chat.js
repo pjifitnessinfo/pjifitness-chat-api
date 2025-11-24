@@ -27,31 +27,31 @@ export default async function handler(req, res) {
     const body = req.body || {};
     const { message, threadId, email, imageBase64 } = body;
 
-    // Allow either a message, an image, or both
+    // Allow text OR image OR both
     if ((!message || typeof message !== "string") && !imageBase64) {
-      return res.status(400).json({
-        error: "Message or imageBase64 is required"
-      });
+      return res
+        .status(400)
+        .json({ error: "Message or imageBase64 is required" });
     }
 
     const baseHeaders = {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
+      Authorization: `Bearer ${apiKey}`,
     };
 
     const assistantHeaders = {
       ...baseHeaders,
-      "OpenAI-Beta": "assistants=v2"
+      "OpenAI-Beta": "assistants=v2",
     };
 
     let thread_id = threadId;
 
-    // 1️⃣ Create new thread if none provided
+    // 1️⃣ Create thread if needed
     if (!thread_id) {
       const threadRes = await fetch("https://api.openai.com/v1/threads", {
         method: "POST",
         headers: assistantHeaders,
-        body: JSON.stringify({})
+        body: JSON.stringify({}),
       });
 
       const threadJson = await threadRes.json();
@@ -63,47 +63,75 @@ export default async function handler(req, res) {
       thread_id = threadJson.id;
     }
 
-    // 2️⃣ Build user message content: text + optional image (data URL)
+    // 2️⃣ Build user message content (text + optional image)
     const userContent = [];
 
     if (message && typeof message === "string") {
       userContent.push({
         type: "input_text",
-        text: message
+        text: message,
       });
     }
 
     if (imageBase64) {
-      // We send the base64 data URL directly as an image URL
+      // Send the browser data URL directly
       userContent.push({
         type: "input_image_url",
-        image_url: { url: imageBase64 }
+        image_url: { url: imageBase64 },
       });
     }
 
     if (userContent.length === 0) {
       return res.status(400).json({
-        error: "No valid message or image to send to the assistant."
+        error: "No valid message or image to send to the assistant.",
       });
     }
 
-    // 3️⃣ Add the message to the thread
+    // 3️⃣ Add user message to thread
     await fetch(`https://api.openai.com/v1/threads/${thread_id}/messages`, {
       method: "POST",
       headers: assistantHeaders,
       body: JSON.stringify({
         role: "user",
-        content: userContent
-      })
+        content: userContent,
+      }),
     });
 
-    // 4️⃣ Start a run
+    // 4️⃣ Extra instructions to STOP onboarding loop + handle images
+    const extraInstructions = `
+You are the PJiFitness AI coach.
+
+IMPORTANT BEHAVIOR RULES:
+- Users sometimes upload IMAGES along with text.
+  - If an image is present, ALWAYS analyze it first.
+  - If it looks like a NUTRITION LABEL: read the label and extract serving size, calories per serving, protein, carbs, fats, and anything else important. Answer their question about it.
+  - If it looks like a MEAL / PLATE OF FOOD: estimate calories, macros, and portion sizes, and give simple coaching suggestions and lower-calorie swaps.
+  - Tell the user that calorie estimates from photos are approximate.
+
+- ONBOARDING (start_weight, goal_weight, age, activity level) should happen ONLY ONCE per thread:
+  - If the conversation history already includes their basic profile (start weight, goal weight, age, activity level), DO NOT ask for onboarding questions again unless the user explicitly says they want to restart or change their goals.
+  - Do NOT re-ask onboarding questions when they log daily stats or ask general questions.
+
+- DAILY LOGS are messages like:
+  - "weight: 190, calories: 2100, steps: 8500, mood: good, struggle: cravings"
+  - When you see a daily log, respond like a coach: reflect what they did, normalize normal weight fluctuations, and give 1–3 simple, specific suggestions for the next 24 hours.
+  - Do NOT treat daily logs as onboarding.
+
+- GENERAL QUESTIONS (e.g. "What's the weather", "Why am I bloated", "Can you read this label?"):
+  - Answer directly and naturally as a coach.
+  - Do NOT go back into onboarding mode unless they clearly ask to restart their plan or change goals.
+`.trim();
+
+    // 5️⃣ Start assistant run with extra instructions
     const runRes = await fetch(
       `https://api.openai.com/v1/threads/${thread_id}/runs`,
       {
         method: "POST",
         headers: assistantHeaders,
-        body: JSON.stringify({ assistant_id: ASSISTANT_ID })
+        body: JSON.stringify({
+          assistant_id: ASSISTANT_ID,
+          instructions: extraInstructions,
+        }),
       }
     );
 
@@ -115,13 +143,13 @@ export default async function handler(req, res) {
 
     const runId = runJson.id;
 
-    // 5️⃣ Poll run status until completed
+    // 6️⃣ Poll until run completes
     for (let i = 0; i < 30; i++) {
       const statusRes = await fetch(
         `https://api.openai.com/v1/threads/${thread_id}/runs/${runId}`,
         {
           method: "GET",
-          headers: assistantHeaders
+          headers: assistantHeaders,
         }
       );
       const statusJson = await statusRes.json();
@@ -133,36 +161,35 @@ export default async function handler(req, res) {
         throw new Error("Run failed");
       }
 
-      await sleep(1000); // 1s between polls
+      await sleep(1000);
     }
 
-    // 6️⃣ Fetch messages and get latest assistant reply
+    // 7️⃣ Get latest assistant reply
     const msgsRes = await fetch(
       `https://api.openai.com/v1/threads/${thread_id}/messages?limit=10`,
       { method: "GET", headers: assistantHeaders }
     );
     const msgsJson = await msgsRes.json();
 
-    // Messages are usually returned newest-first
     const assistantMsg = msgsJson.data.find((m) => m.role === "assistant");
     const reply =
       assistantMsg?.content?.[0]?.text?.value ||
       "Something went wrong. Please try again.";
 
-    // 7️⃣ DAILY LOG + USER PROFILE extraction for Make.com
+    // 8️⃣ DAILY LOG + USER PROFILE extraction for Make.com
     let extractedLog = null;
     let extractedProfile = null;
 
     const msgText = message || "";
 
-    // PROFILE detection: only if explicit onboarding-style keys are used
+    // Only treat as onboarding when explicit onboarding-style labels are present
     const isUserProfile =
       /start_weight:/i.test(msgText) ||
       /goal_weight:/i.test(msgText) ||
       /activity_level:/i.test(msgText) ||
       /age:/i.test(msgText);
 
-    // DAILY LOG detection: must look like a daily check-in, not just random text
+    // Daily log detection: user is logging a check-in
     const isDailyLog =
       !isUserProfile &&
       (/\bweight:/i.test(msgText) ||
@@ -177,16 +204,18 @@ export default async function handler(req, res) {
     // ---- DAILY LOG JSON extraction ----
     if (isDailyLog) {
       try {
-        const jsonRes = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: baseHeaders,
-          body: JSON.stringify({
-            model: "gpt-4o-mini",
-            temperature: 0,
-            messages: [
-              {
-                role: "system",
-                content: `
+        const jsonRes = await fetch(
+          "https://api.openai.com/v1/chat/completions",
+          {
+            method: "POST",
+            headers: baseHeaders,
+            body: JSON.stringify({
+              model: "gpt-4o-mini",
+              temperature: 0,
+              messages: [
+                {
+                  role: "system",
+                  content: `
 You are a strict JSON formatter for a fitness coaching app.
 
 The user message contains a "daily log" with some of:
@@ -210,12 +239,13 @@ JSON shape:
   "focus": string | null,
   "flag": boolean | null
 }
-                `.trim()
-              },
-              { role: "user", content: msgText }
-            ]
-          })
-        });
+                `.trim(),
+                },
+                { role: "user", content: msgText },
+              ],
+            }),
+          }
+        );
 
         const jsonData = await jsonRes.json();
         const jsonText = jsonData?.choices?.[0]?.message?.content || null;
@@ -237,7 +267,7 @@ JSON shape:
             flag:
               typeof parsed.flag === "boolean"
                 ? parsed.flag
-                : null
+                : null,
           };
         }
       } catch (e) {
@@ -248,16 +278,18 @@ JSON shape:
     // ---- USER PROFILE JSON extraction (onboarding) ----
     if (isUserProfile) {
       try {
-        const jsonRes = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: baseHeaders,
-          body: JSON.stringify({
-            model: "gpt-4o-mini",
-            temperature: 0,
-            messages: [
-              {
-                role: "system",
-                content: `
+        const jsonRes = await fetch(
+          "https://api.openai.com/v1/chat/completions",
+          {
+            method: "POST",
+            headers: baseHeaders,
+            body: JSON.stringify({
+              model: "gpt-4o-mini",
+              temperature: 0,
+              messages: [
+                {
+                  role: "system",
+                  content: `
 You are a strict JSON formatter for onboarding a fitness coaching client.
 
 The user message may include:
@@ -290,12 +322,13 @@ Tasks:
   "week": number | null,
   "plan_json": null
 }
-                `.trim()
-              },
-              { role: "user", content: msgText }
-            ]
-          })
-        });
+                `.trim(),
+                },
+                { role: "user", content: msgText },
+              ],
+            }),
+          }
+        );
 
         const jsonData = await jsonRes.json();
         const jsonText = jsonData?.choices?.[0]?.message?.content || null;
@@ -313,7 +346,7 @@ Tasks:
             activity_level: parsed.activity_level ?? null,
             program_name: parsed.program_name ?? null,
             week: parsed.week ?? 1,
-            plan_json: null
+            plan_json: null,
           };
         }
       } catch (e) {
@@ -321,7 +354,7 @@ Tasks:
       }
     }
 
-    // 8️⃣ Send to Make.com
+    // 9️⃣ Send to Make.com
     if (MAKE_WEBHOOK_URL) {
       try {
         let payload;
@@ -331,14 +364,14 @@ Tasks:
             type: "daily_log",
             ...extractedLog,
             threadId: thread_id,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
           };
         } else if (extractedProfile) {
           payload = {
             type: "user_profile",
             ...extractedProfile,
             threadId: thread_id,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
           };
         } else {
           payload = {
@@ -348,29 +381,29 @@ Tasks:
             reply,
             threadId: thread_id,
             hasImage: !!imageBase64,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
           };
         }
 
         await fetch(MAKE_WEBHOOK_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
         });
       } catch (e) {
         console.error("Make.com webhook error:", e);
       }
     }
 
-    // 9️⃣ Return to frontend
+    // 🔟 Return reply to frontend
     return res.status(200).json({
       reply,
-      threadId: thread_id
+      threadId: thread_id,
     });
   } catch (err) {
     console.error("Handler error:", err);
     return res.status(500).json({
-      error: err.message || "Server error"
+      error: err.message || "Server error",
     });
   }
 }
