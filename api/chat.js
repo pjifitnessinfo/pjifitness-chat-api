@@ -116,6 +116,7 @@ export default async function handler(req, res) {
       /calories:/i.test(message) ||
       /steps:/i.test(message) ||
       /mood:/i.test(message) ||
+      /feeling:/i.test(message) ||
       /struggle:/i.test(message) ||
       /focus:/i.test(message) ||
       /flag:/i.test(message);
@@ -124,7 +125,7 @@ export default async function handler(req, res) {
       try {
         const jsonRes = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
-          headers: baseHeaders, // standard chat completions headers
+          headers: baseHeaders,
           body: JSON.stringify({
             model: "gpt-4o-mini",
             messages: [
@@ -133,21 +134,14 @@ export default async function handler(req, res) {
                 content: `
 You are a strict JSON formatter for a fitness coaching app.
 
-The user will send a "daily log" message that may include:
-- email
-- weight
-- calories
-- steps
-- mood
-- struggle
-- focus
-- flag (yes/no, true/false)
+The user will send a "daily log" including:
+email, weight, calories, steps, mood, feeling, struggle, focus, flag.
 
-Your job:
-1. Extract these fields if present.
-2. If any field is missing, set it to null.
-3. "flag" must be a boolean (true or false).
-4. Return ONLY valid JSON with NO extra text.
+Rules:
+1. Extract fields if present.
+2. Missing fields = null.
+3. "flag" must be boolean (true/false).
+4. Return ONLY valid JSON.
 
 JSON shape:
 {
@@ -156,16 +150,14 @@ JSON shape:
   "calories": number | null,
   "steps": number | null,
   "mood": string | null,
+  "feeling": string | null,
   "struggle": string | null,
   "focus": string | null,
   "flag": boolean | null
 }
                 `.trim()
               },
-              {
-                role: "user",
-                content: message
-              }
+              { role: "user", content: message }
             ],
             temperature: 0
           })
@@ -177,10 +169,8 @@ JSON shape:
         if (jsonText) {
           const parsed = JSON.parse(jsonText);
 
-          // Make sure email is filled from request if missing
-          if (!parsed.email) {
-            parsed.email = email || null;
-          }
+          // Fill missing email using request body email if needed
+          if (!parsed.email) parsed.email = email || null;
 
           extractedLog = {
             email: parsed.email ?? null,
@@ -188,6 +178,7 @@ JSON shape:
             calories: parsed.calories ?? null,
             steps: parsed.steps ?? null,
             mood: parsed.mood ?? null,
+            feeling: parsed.feeling ?? null,
             struggle: parsed.struggle ?? null,
             focus: parsed.focus ?? null,
             flag: typeof parsed.flag === "boolean" ? parsed.flag : null
