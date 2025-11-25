@@ -5,7 +5,7 @@ const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
 
 /**
- * Helper to run Shopify Admin GraphQL with full error output
+ * Helper: call Shopify Admin GraphQL
  */
 async function shopifyAdminFetch(query, variables = {}) {
   const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`;
@@ -29,7 +29,7 @@ async function shopifyAdminFetch(query, variables = {}) {
   try {
     json = await res.json();
   } catch (err) {
-    console.error("JSON parsing error from Shopify:", err);
+    console.error("JSON parse error from Shopify:", err);
     throw new Error("Invalid JSON response from Shopify Admin API");
   }
 
@@ -42,37 +42,12 @@ async function shopifyAdminFetch(query, variables = {}) {
 }
 
 /**
- * Look up customer ID by email
- */
-async function getCustomerIdByEmail(email) {
-  const query = `
-    query getCustomerByEmail($query: String!) {
-      customers(first: 1, query: $query) {
-        edges {
-          node {
-            id
-            email
-          }
-        }
-      }
-    }
-  `;
-
-  const data = await shopifyAdminFetch(query, {
-    query: `email:${email}`,
-  });
-
-  const edges = data?.customers?.edges || [];
-  if (edges.length === 0) return null;
-
-  return edges[0].node.id;
-}
-
-/**
- * Main API Route
+ * API route: return all daily logs for a given email
+ * We avoid the Customer object completely (no PII gate) and
+ * instead query metaobjects(type: "daily_log") and filter in code.
  */
 export default async function handler(req, res) {
-  // Handle CORS preflight
+  // CORS preflight
   if (req.method === "OPTIONS") {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -95,30 +70,16 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing email" });
     }
 
-    // 1️⃣ Lookup Shopify Customer ID
-    const customerId = await getCustomerIdByEmail(email);
-    if (!customerId) {
-      return res.status(404).json({
-        error: "Customer not found",
-        email,
-      });
-    }
-
-    // 2️⃣ Fetch Daily Logs metafield references
+    // 1️⃣ Pull all Daily Log metaobjects
     const query = `
-      query getDailyLogs($id: ID!) {
-        customer(id: $id) {
-          id
-          metafield(namespace: "custom", key: "daily_logs") {
-            references(first: 100) {
-              nodes {
-                ... on Metaobject {
-                  id
-                  fields {
-                    key
-                    value
-                  }
-                }
+      query getAllDailyLogs {
+        metaobjects(type: "daily_log", first: 250) {
+          edges {
+            node {
+              id
+              fields {
+                key
+                value
               }
             }
           }
@@ -126,11 +87,11 @@ export default async function handler(req, res) {
       }
     `;
 
-    const data = await shopifyAdminFetch(query, { id: customerId });
-    const metafield = data.customer.metafield;
+    const data = await shopifyAdminFetch(query);
+    const edges = data?.metaobjects?.edges || [];
 
-    // 3️⃣ Parse referenced metaobjects
-    const logs = (metafield?.references?.nodes || []).map((node) => {
+    // 2️⃣ Turn into JS objects
+    const allLogs = edges.map(({ node }) => {
       const obj = {};
       for (const f of node.fields) {
         obj[f.key] = f.value;
@@ -141,12 +102,20 @@ export default async function handler(req, res) {
       };
     });
 
-    // 4️⃣ Sort newest first (if dates exist)
-    logs.sort((a, b) => (a.date < b.date ? 1 : -1));
+    // 3️⃣ Filter for this customer (by email stored in customer_id)
+    const logs = allLogs.filter(
+      (log) => (log.customer_id || "").toLowerCase() === email.toLowerCase()
+    );
+
+    // 4️⃣ Sort newest -> oldest by date
+    logs.sort((a, b) => {
+      if (!a.date || !b.date) return 0;
+      return a.date < b.date ? 1 : -1;
+    });
 
     return res.status(200).json({
       ok: true,
-      customerId,
+      email,
       logs,
     });
   } catch (err) {
@@ -158,4 +127,3 @@ export default async function handler(req, res) {
     });
   }
 }
-
