@@ -5,53 +5,41 @@ const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
 
 async function shopifyAdminFetch(query, variables = {}) {
-  const res = await fetch(
-    `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`,
-    {
+  const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`;
+
+  let res;
+  try {
+    res = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_TOKEN,
       },
       body: JSON.stringify({ query, variables }),
-    }
-  );
+    });
+  } catch (err) {
+    console.error("Network error when calling Shopify:", err);
+    throw new Error("Network error contacting Shopify");
+  }
 
-  const json = await res.json();
+  let json;
+  try {
+    json = await res.json();
+  } catch (err) {
+    console.error("JSON parse error from Shopify:", err);
+    throw new Error("Invalid JSON response from Shopify Admin API");
+  }
 
   if (!res.ok || json.errors) {
     console.error("Shopify GraphQL error:", JSON.stringify(json, null, 2));
-    throw new Error("Shopify GraphQL request failed");
+    throw new Error(JSON.stringify(json));
   }
 
   return json.data;
 }
 
-async function getCustomerIdByEmail(email) {
-  const query = `
-    query getCustomerByEmail($query: String!) {
-      customers(first: 1, query: $query) {
-        edges {
-          node {
-            id
-            email
-          }
-        }
-      }
-    }
-  `;
-
-  const data = await shopifyAdminFetch(query, {
-    query: `email:${email}`,
-  });
-
-  const edges = data.customers.edges;
-  if (!edges || edges.length === 0) return null;
-
-  return edges[0].node.id;
-}
-
 export default async function handler(req, res) {
+  // CORS preflight
   if (req.method === "OPTIONS") {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -63,8 +51,8 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
+  // CORS for POST
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   try {
@@ -85,13 +73,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing email or date" });
     }
 
-    const customerId = await getCustomerIdByEmail(email);
-    if (!customerId) {
-      return res.status(404).json({ error: "Customer not found for email" });
-    }
-
-    // 1) Create Daily Log metaobject
-    const createLogMutation = `
+    const mutation = `
       mutation createDailyLog($metaobject: MetaobjectCreateInput!) {
         metaobjectCreate(metaobject: $metaobject) {
           metaobject {
@@ -117,64 +99,32 @@ export default async function handler(req, res) {
         { key: "struggle", value: struggle || "" },
         { key: "coach_focus", value: coach_focus || "" },
         { key: "flag", value: flag ? "true" : "false" },
-        { key: "customer_id", value: email },
+        { key: "customer_id", value: email }, // used for filtering
       ],
     };
 
-    const createData = await shopifyAdminFetch(createLogMutation, {
+    const data = await shopifyAdminFetch(mutation, {
       metaobject: metaobjectInput,
     });
 
-    const newLogId = createData.metaobjectCreate.metaobject.id;
-
-    // 2) Fetch the existing Daily Logs collection for this customer
-    const getLogsQuery = `
-      query getCustomerLogs($id: ID!) {
-        customer(id: $id) {
-          metafield(namespace: "custom", key: "daily_logs") {
-            references(first: 100) {
-              nodes { id }
-            }
-          }
-        }
-      }
-    `;
-
-    const logsData = await shopifyAdminFetch(getLogsQuery, { id: customerId });
-    const metafield = logsData.customer.metafield;
-
-    let existingIds = [];
-    if (metafield && metafield.references) {
-      existingIds = metafield.references.nodes.map((node) => node.id);
+    const result = data.metaobjectCreate;
+    if (result.userErrors && result.userErrors.length > 0) {
+      console.error("metaobjectCreate errors:", result.userErrors);
+      return res.status(500).json({
+        error: "Failed to create daily log",
+        details: result.userErrors,
+      });
     }
 
-    const updatedIds = [...existingIds, newLogId];
-
-    // 3) Update metafield
-    const metafieldsSetMutation = `
-      mutation setDailyLogs($metafields: [MetafieldsSetInput!]!) {
-        metafieldsSet(metafields: $metafields) {
-          metafields { id }
-          userErrors { message }
-        }
-      }
-    `;
-
-    await shopifyAdminFetch(metafieldsSetMutation, {
-      metafields: [
-        {
-          ownerId: customerId,
-          namespace: "custom",
-          key: "daily_logs",
-          type: "list.metaobject_reference",
-          value: JSON.stringify(updatedIds),
-        },
-      ],
+    return res.status(200).json({
+      success: true,
+      logId: result.metaobject.id,
     });
-
-    return res.status(200).json({ success: true, logId: newLogId });
   } catch (err) {
     console.error("save-daily-log error:", err);
-    return res.status(500).json({ error: "Server error" });
+    return res.status(500).json({
+      error: "Internal server error",
+      details: err.message || String(err),
+    });
   }
 }
