@@ -45,26 +45,37 @@ async function shopifyAdminFetch(query, variables = {}) {
  * API route: return all daily logs for a given email
  * We avoid the Customer object completely (no PII gate) and
  * instead query metaobjects(type: "daily_log") and filter in code.
+ *
+ * NOW supports:
+ *   - GET  /api/get-daily-logs?email=...
+ *   - POST /api/get-daily-logs  { email }
+ * with CORS enabled for your Shopify storefront.
  */
 export default async function handler(req, res) {
-  // CORS preflight
+  // 🔥 CORS for browser requests (Shopify dashboard)
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  // Preflight
   if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     return res.status(200).end();
   }
 
-  if (req.method !== "POST") {
+  if (req.method !== "GET" && req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  // CORS for POST
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
   try {
-    const { email } = req.body;
+    // Support both GET (querystring) and POST (JSON body)
+    let email;
+
+    if (req.method === "GET") {
+      email = req.query.email;
+    } else {
+      const { email: bodyEmail } = req.body || {};
+      email = bodyEmail;
+    }
 
     if (!email) {
       return res.status(400).json({ error: "Missing email" });
