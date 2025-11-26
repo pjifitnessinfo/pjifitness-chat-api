@@ -1,6 +1,6 @@
 const ASSISTANT_ID = "asst_RnVnU6FuCnK6TsOpRxa0sdaG"; // your PJiFitness assistant
 
-// ✅ Make.com Webhook URL
+// ✅ Make.com Webhook URL (still safe to keep, even if not used anymore)
 const MAKE_WEBHOOK_URL = "https://hook.us2.make.com/5sdruae9dmg8n5y31even3wa9cb28dbq";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -27,7 +27,7 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body || {};
-    const { message, threadId, email, imageBase64 } = body;
+    const { message, threadId, email, imageBase64, customerId } = body;
 
     // 🔹 We require at least text or an image
     if ((!message || typeof message !== "string") && !imageBase64) {
@@ -37,13 +37,13 @@ export default async function handler(req, res) {
     // Base headers for OpenAI
     const baseHeaders = {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
+      Authorization: `Bearer ${apiKey}`,
     };
 
     // Headers for Assistants API
     const assistantHeaders = {
       ...baseHeaders,
-      "OpenAI-Beta": "assistants=v2"
+      "OpenAI-Beta": "assistants=v2",
     };
 
     let thread_id = threadId;
@@ -53,7 +53,7 @@ export default async function handler(req, res) {
       const threadRes = await fetch("https://api.openai.com/v1/threads", {
         method: "POST",
         headers: assistantHeaders,
-        body: JSON.stringify({})
+        body: JSON.stringify({}),
       });
 
       const threadJson = await threadRes.json();
@@ -70,18 +70,18 @@ export default async function handler(req, res) {
       if (message && typeof message === "string") {
         blocks.push({
           type: "input_text",
-          text: message
+          text: message,
         });
       }
 
       blocks.push({
         type: "input_image_url",
-        image_url: { url: imageBase64 } // frontend sends a data URL (base64)
+        image_url: { url: imageBase64 }, // frontend sends a data URL (base64)
       });
 
       userContent = blocks;
     } else {
-      // Legacy behavior (no images) — keep exactly as before
+      // Legacy behavior (no images)
       userContent = message;
     }
 
@@ -91,15 +91,15 @@ export default async function handler(req, res) {
       headers: assistantHeaders,
       body: JSON.stringify({
         role: "user",
-        content: userContent
-      })
+        content: userContent,
+      }),
     });
 
     // 4️⃣ Run assistant (no extra backend instructions – it uses the PJ instructions you set)
     const runRes = await fetch(`https://api.openai.com/v1/threads/${thread_id}/runs`, {
       method: "POST",
       headers: assistantHeaders,
-      body: JSON.stringify({ assistant_id: ASSISTANT_ID })
+      body: JSON.stringify({ assistant_id: ASSISTANT_ID }),
     });
 
     const runJson = await runRes.json();
@@ -133,80 +133,126 @@ export default async function handler(req, res) {
       assistantMsg?.content?.[0]?.text?.value ||
       "Something went wrong. Please try again.";
 
-    // 7️⃣ Detect DAILY LOG + USER PROFILE
+    // 7️⃣ Detect DAILY LOG + USER PROFILE + extract structured fields
     let extractedLog = null;
     let extractedProfile = null;
 
     const textForParsing = message || "";
 
-    // ✅ FIRST: detect USER PROFILE from onboarding labels
+    // ✅ Detect USER PROFILE from onboarding labels
     const isUserProfile =
       /start_weight:/i.test(textForParsing) ||
       /goal_weight:/i.test(textForParsing) ||
       /activity_level:/i.test(textForParsing) ||
       /age:/i.test(textForParsing);
 
-    // ✅ THEN: detect DAILY LOG, but ONLY if it's NOT a profile
+    // ✅ Detect DAILY LOG (but only if not profile)
     const isDailyLog =
       !isUserProfile &&
-      (
-        /\bweight:/i.test(textForParsing) ||
+      (/\bweight:/i.test(textForParsing) ||
         /calories:/i.test(textForParsing) ||
         /steps:/i.test(textForParsing) ||
         /mood:/i.test(textForParsing) ||
         /feeling:/i.test(textForParsing) ||
+        /meals:/i.test(textForParsing) ||
         /struggle:/i.test(textForParsing) ||
         /focus:/i.test(textForParsing) ||
-        /flag:/i.test(textForParsing)
-      );
+        /flag:/i.test(textForParsing));
 
-    // ---- DAILY LOG extraction (simple regex parser) ----
+    // ---- DAILY LOG JSON extraction ----
     if (isDailyLog) {
-      const getNumber = (label) => {
-        const re = new RegExp(label + "\\s*: ?([0-9]+(?:\\.[0-9]+)?)", "i");
-        const m = textForParsing.match(re);
-        return m ? parseFloat(m[1]) : null;
-      };
+      try {
+        const jsonRes = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: baseHeaders,
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [
+              {
+                role: "system",
+                content: `
+You are a strict JSON formatter for a fitness coaching app.
 
-      const getString = (label) => {
-        const re = new RegExp(label + "\\s*: ?(.+)", "i");
-        const m = textForParsing.match(re);
-        return m ? m[1].trim() : null;
-      };
+The user will send a "daily log" including:
+email, weight, calories, steps, meals, mood, feeling, struggle, focus, flag.
 
-      const weight = getNumber("weight");
-      const calories = getNumber("calories");
-      const steps = getNumber("steps");
-      const meals = getString("meals");
-      const mood = getString("mood");
-      const feeling = getString("feeling");
-      const struggle = getString("struggle");
-      const focus = getString("focus");
-      const flagRaw = getString("flag");
-      const date = getString("date");
-      const emailFromText = getString("email");
+Rules:
+1. Extract fields if present.
+2. Missing fields = null.
+3. "flag" must be boolean (true/false).
+4. Return ONLY valid JSON.
 
-      let flag = null;
-      if (flagRaw) {
-        if (/^(yes|y|true|1)$/i.test(flagRaw)) flag = true;
-        else if (/^(no|n|false|0)$/i.test(flagRaw)) flag = false;
+JSON shape:
+{
+  "email": string | null,
+  "weight": number | null,
+  "calories": number | null,
+  "steps": number | null,
+  "meals": string | null,
+  "mood": string | null,
+  "feeling": string | null,
+  "struggle": string | null,
+  "focus": string | null,
+  "flag": boolean | null
+}
+                `.trim(),
+              },
+              { role: "user", content: textForParsing },
+            ],
+            temperature: 0,
+          }),
+        });
+
+        const jsonData = await jsonRes.json();
+        const jsonText = jsonData?.choices?.[0]?.message?.content || null;
+
+        if (jsonText) {
+          const parsed = JSON.parse(jsonText);
+
+          if (!parsed.email) parsed.email = email || null;
+
+          extractedLog = {
+            email: parsed.email ?? null,
+            weight: parsed.weight ?? null,
+            calories: parsed.calories ?? null,
+            steps: parsed.steps ?? null,
+            meals: parsed.meals ?? null,
+            mood: parsed.mood ?? null,
+            feeling: parsed.feeling ?? null,
+            struggle: parsed.struggle ?? null,
+            focus: parsed.focus ?? null,
+            flag: typeof parsed.flag === "boolean" ? parsed.flag : null,
+          };
+        }
+      } catch (e) {
+        console.error("JSON extraction error (daily_log):", e);
       }
+    }
 
-      const finalEmail = email || emailFromText || null;
+    // ✅ NEW: directly save DAILY LOG to your save-daily-log endpoint
+    if (extractedLog && extractedLog.email) {
+      try {
+        const today = new Date().toISOString().slice(0, 10);
 
-      extractedLog = {
-        email: finalEmail,
-        date: date,
-        weight,
-        calories,
-        steps,
-        meals,
-        mood,
-        feeling,
-        struggle,
-        focus,
-        flag
-      };
+        await fetch("https://pjifitness-chat-api.vercel.app/api/save-daily-log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: extractedLog.email,
+            date: today,
+            weight: extractedLog.weight,
+            calories: extractedLog.calories,
+            steps: extractedLog.steps,
+            meals: extractedLog.meals,
+            mood: extractedLog.mood,
+            struggle: extractedLog.struggle,
+            coach_focus: extractedLog.focus,
+            flag: extractedLog.flag,
+          }),
+        });
+      } catch (e) {
+        console.error("save-daily-log error:", e);
+      }
     }
 
     // ---- USER PROFILE JSON extraction (onboarding) ----
@@ -253,23 +299,19 @@ Tasks:
   "week": number | null,
   "plan_json": null
 }
-                `.trim()
+                `.trim(),
               },
-              { role: "user", content: textForParsing }
+              { role: "user", content: textForParsing },
             ],
-            temperature: 0
-          })
+            temperature: 0,
+          }),
         });
 
         const jsonData = await jsonRes.json();
         const jsonText = jsonData?.choices?.[0]?.message?.content || null;
 
         if (jsonText) {
-          let cleaned = jsonText.trim();
-          if (cleaned.startsWith("```")) {
-            cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "").replace(/```$/, "").trim();
-          }
-          const parsed = JSON.parse(cleaned);
+          const parsed = JSON.parse(jsonText);
 
           if (!parsed.email) parsed.email = email || null;
 
@@ -281,7 +323,7 @@ Tasks:
             activity_level: parsed.activity_level ?? null,
             program_name: parsed.program_name ?? null,
             week: parsed.week ?? 1,
-            plan_json: parsed.plan_json ?? null
+            plan_json: parsed.plan_json ?? null,
           };
         }
       } catch (e) {
@@ -289,34 +331,7 @@ Tasks:
       }
     }
 
-    // 8️⃣ Save DAILY LOG to your own API for the dashboard
-    if (extractedLog && extractedLog.email) {
-      try {
-        const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-        const dateToUse = extractedLog.date || today;
-
-        await fetch("https://pjifitness-chat-api.vercel.app/api/save-daily-log", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            email: extractedLog.email,
-            date: dateToUse,
-            weight: extractedLog.weight,
-            calories: extractedLog.calories,
-            steps: extractedLog.steps,
-            meals: extractedLog.meals,
-            mood: extractedLog.mood,
-            struggle: extractedLog.struggle,
-            coach_focus: extractedLog.focus, // map "focus" -> "coach_focus"
-            flag: extractedLog.flag
-          })
-        });
-      } catch (e) {
-        console.error("save-daily-log error:", e);
-      }
-    }
-
-    // 9️⃣ Send log/profile/chat to Make.com
+    // 8️⃣ (Optional) Send log/profile/chat to Make.com
     if (MAKE_WEBHOOK_URL) {
       try {
         let payload;
@@ -326,14 +341,14 @@ Tasks:
             type: "daily_log",
             ...extractedLog,
             threadId: thread_id,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
           };
         } else if (extractedProfile) {
           payload = {
             type: "user_profile",
             ...extractedProfile,
             threadId: thread_id,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
           };
         } else {
           payload = {
@@ -343,21 +358,21 @@ Tasks:
             reply,
             threadId: thread_id,
             hasImage: !!imageBase64,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
           };
         }
 
         await fetch(MAKE_WEBHOOK_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
         });
       } catch (e) {
         console.error("Make.com webhook error:", e);
       }
     }
 
-    // 🔟 Return response to frontend
+    // 9️⃣ Return response to frontend
     return res.status(200).json({ reply, threadId: thread_id });
   } catch (err) {
     console.error("Handler error:", err);
