@@ -27,7 +27,22 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body || {};
-    const { message, threadId, email, imageBase64, customerId } = body;
+
+    // 🔹 Accept email from multiple possible fields
+    const {
+      message,
+      threadId,
+      email,
+      imageBase64,
+      customerId,
+      userEmail,
+      userId,
+      user_id,
+    } = body;
+
+    const resolvedEmail =
+      (email || userEmail || userId || user_id || customerId || "").toLowerCase() ||
+      null;
 
     // 🔹 We require at least text or an image
     if ((!message || typeof message !== "string") && !imageBase64) {
@@ -62,17 +77,22 @@ export default async function handler(req, res) {
     }
 
     // 2️⃣ Build message content for the thread
+    // 👉 prepend user_email so the assistant can use it instead of "unknown"
+    const originalText = message || "";
+    const assistantText = resolvedEmail
+      ? `user_email: ${resolvedEmail}\n${originalText}`
+      : originalText;
+
     let userContent;
 
     if (imageBase64) {
       const blocks = [];
 
-      if (message && typeof message === "string") {
-        blocks.push({
-          type: "input_text",
-          text: message,
-        });
-      }
+      // include our meta + user text
+      blocks.push({
+        type: "input_text",
+        text: assistantText || "Here is an image for you to analyze.",
+      });
 
       blocks.push({
         type: "input_image_url",
@@ -81,8 +101,8 @@ export default async function handler(req, res) {
 
       userContent = blocks;
     } else {
-      // Legacy behavior (no images)
-      userContent = message;
+      // Legacy behavior (no images) but with email meta
+      userContent = assistantText;
     }
 
     // 3️⃣ Add user message to the thread
@@ -137,7 +157,8 @@ export default async function handler(req, res) {
     let extractedLog = null;
     let extractedProfile = null;
 
-    const textForParsing = message || "";
+    // For parsing, we just use the original message text (no meta prefix)
+    const textForParsing = originalText;
 
     // ✅ Detect USER PROFILE from onboarding labels
     const isUserProfile =
@@ -209,7 +230,7 @@ JSON shape:
         if (jsonText) {
           const parsed = JSON.parse(jsonText);
 
-          if (!parsed.email) parsed.email = email || null;
+          if (!parsed.email) parsed.email = resolvedEmail;
 
           extractedLog = {
             email: parsed.email ?? null,
@@ -313,7 +334,7 @@ Tasks:
         if (jsonText) {
           const parsed = JSON.parse(jsonText);
 
-          if (!parsed.email) parsed.email = email || null;
+          if (!parsed.email) parsed.email = resolvedEmail;
 
           extractedProfile = {
             email: parsed.email ?? null,
@@ -353,7 +374,7 @@ Tasks:
         } else {
           payload = {
             type: "chat",
-            email: email || null,
+            email: resolvedEmail,
             message: textForParsing,
             reply,
             threadId: thread_id,
