@@ -62,11 +62,6 @@ export default async function handler(req, res) {
     }
 
     // 2️⃣ Build message content for the thread
-    //
-    // IMPORTANT:
-    // - If there is NO image, we send a plain string (exactly like original code).
-    // - If there IS an image, we send an array of content blocks: text + image.
-    //   This keeps old behavior intact and only changes behavior when an image is attached.
     let userContent;
 
     if (imageBase64) {
@@ -138,7 +133,7 @@ export default async function handler(req, res) {
       assistantMsg?.content?.[0]?.text?.value ||
       "Something went wrong. Please try again.";
 
-    // 7️⃣ Detect DAILY LOG + USER PROFILE + extract structured fields for Make / saving
+    // 7️⃣ Detect DAILY LOG + USER PROFILE
     let extractedLog = null;
     let extractedProfile = null;
 
@@ -165,76 +160,53 @@ export default async function handler(req, res) {
         /flag:/i.test(textForParsing)
       );
 
-    // ---- DAILY LOG JSON extraction ----
+    // ---- DAILY LOG extraction (simple regex parser) ----
     if (isDailyLog) {
-      try {
-        const jsonRes = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: baseHeaders,
-          body: JSON.stringify({
-            model: "gpt-4o-mini",
-            messages: [
-              {
-                role: "system",
-                content: `
-You are a strict JSON formatter for a fitness coaching app.
+      const getNumber = (label) => {
+        const re = new RegExp(label + "\\s*: ?([0-9]+(?:\\.[0-9]+)?)", "i");
+        const m = textForParsing.match(re);
+        return m ? parseFloat(m[1]) : null;
+      };
 
-The user will send a "daily log" including:
-email, date, weight, calories, steps, meals, mood, feeling, struggle, focus, flag.
+      const getString = (label) => {
+        const re = new RegExp(label + "\\s*: ?(.+)", "i");
+        const m = textForParsing.match(re);
+        return m ? m[1].trim() : null;
+      };
 
-Rules:
-1. Extract fields if present.
-2. Missing fields = null.
-3. "flag" must be boolean (true/false).
-4. Return ONLY valid JSON.
+      const weight = getNumber("weight");
+      const calories = getNumber("calories");
+      const steps = getNumber("steps");
+      const meals = getString("meals");
+      const mood = getString("mood");
+      const feeling = getString("feeling");
+      const struggle = getString("struggle");
+      const focus = getString("focus");
+      const flagRaw = getString("flag");
+      const date = getString("date");
+      const emailFromText = getString("email");
 
-JSON shape:
-{
-  "email": string | null,
-  "date": string | null,
-  "weight": number | null,
-  "calories": number | null,
-  "steps": number | null,
-  "meals": string | null,
-  "mood": string | null,
-  "feeling": string | null,
-  "struggle": string | null,
-  "focus": string | null,
-  "flag": boolean | null
-}
-                `.trim()
-              },
-              { role: "user", content: textForParsing }
-            ],
-            temperature: 0
-          })
-        });
-
-        const jsonData = await jsonRes.json();
-        const jsonText = jsonData?.choices?.[0]?.message?.content || null;
-
-        if (jsonText) {
-          const parsed = JSON.parse(jsonText);
-
-          if (!parsed.email) parsed.email = email || null;
-
-          extractedLog = {
-            email: parsed.email ?? null,
-            date: parsed.date ?? null,
-            weight: parsed.weight ?? null,
-            calories: parsed.calories ?? null,
-            steps: parsed.steps ?? null,
-            meals: parsed.meals ?? null,
-            mood: parsed.mood ?? null,
-            feeling: parsed.feeling ?? null,
-            struggle: parsed.struggle ?? null,
-            focus: parsed.focus ?? null,
-            flag: typeof parsed.flag === "boolean" ? parsed.flag : null
-          };
-        }
-      } catch (e) {
-        console.error("JSON extraction error (daily_log):", e);
+      let flag = null;
+      if (flagRaw) {
+        if (/^(yes|y|true|1)$/i.test(flagRaw)) flag = true;
+        else if (/^(no|n|false|0)$/i.test(flagRaw)) flag = false;
       }
+
+      const finalEmail = email || emailFromText || null;
+
+      extractedLog = {
+        email: finalEmail,
+        date: date,
+        weight,
+        calories,
+        steps,
+        meals,
+        mood,
+        feeling,
+        struggle,
+        focus,
+        flag
+      };
     }
 
     // ---- USER PROFILE JSON extraction (onboarding) ----
@@ -293,7 +265,11 @@ Tasks:
         const jsonText = jsonData?.choices?.[0]?.message?.content || null;
 
         if (jsonText) {
-          const parsed = JSON.parse(jsonText);
+          let cleaned = jsonText.trim();
+          if (cleaned.startsWith("```")) {
+            cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "").replace(/```$/, "").trim();
+          }
+          const parsed = JSON.parse(cleaned);
 
           if (!parsed.email) parsed.email = email || null;
 
