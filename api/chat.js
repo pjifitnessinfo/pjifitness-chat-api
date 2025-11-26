@@ -138,7 +138,7 @@ export default async function handler(req, res) {
       assistantMsg?.content?.[0]?.text?.value ||
       "Something went wrong. Please try again.";
 
-    // 7️⃣ Detect DAILY LOG + USER PROFILE + extract structured fields for Make
+    // 7️⃣ Detect DAILY LOG + USER PROFILE + extract structured fields for Make / saving
     let extractedLog = null;
     let extractedProfile = null;
 
@@ -180,7 +180,7 @@ export default async function handler(req, res) {
 You are a strict JSON formatter for a fitness coaching app.
 
 The user will send a "daily log" including:
-email, weight, calories, steps, mood, feeling, struggle, focus, flag.
+email, date, weight, calories, steps, meals, mood, feeling, struggle, focus, flag.
 
 Rules:
 1. Extract fields if present.
@@ -191,9 +191,11 @@ Rules:
 JSON shape:
 {
   "email": string | null,
+  "date": string | null,
   "weight": number | null,
   "calories": number | null,
   "steps": number | null,
+  "meals": string | null,
   "mood": string | null,
   "feeling": string | null,
   "struggle": string | null,
@@ -218,9 +220,11 @@ JSON shape:
 
           extractedLog = {
             email: parsed.email ?? null,
+            date: parsed.date ?? null,
             weight: parsed.weight ?? null,
             calories: parsed.calories ?? null,
             steps: parsed.steps ?? null,
+            meals: parsed.meals ?? null,
             mood: parsed.mood ?? null,
             feeling: parsed.feeling ?? null,
             struggle: parsed.struggle ?? null,
@@ -309,7 +313,34 @@ Tasks:
       }
     }
 
-    // 8️⃣ Send log/profile/chat to Make.com
+    // 8️⃣ Save DAILY LOG to your own API for the dashboard
+    if (extractedLog && extractedLog.email) {
+      try {
+        const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+        const dateToUse = extractedLog.date || today;
+
+        await fetch("https://pjifitness-chat-api.vercel.app/api/save-daily-log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: extractedLog.email,
+            date: dateToUse,
+            weight: extractedLog.weight,
+            calories: extractedLog.calories,
+            steps: extractedLog.steps,
+            meals: extractedLog.meals,
+            mood: extractedLog.mood,
+            struggle: extractedLog.struggle,
+            coach_focus: extractedLog.focus, // map "focus" -> "coach_focus"
+            flag: extractedLog.flag
+          })
+        });
+      } catch (e) {
+        console.error("save-daily-log error:", e);
+      }
+    }
+
+    // 9️⃣ Send log/profile/chat to Make.com
     if (MAKE_WEBHOOK_URL) {
       try {
         let payload;
@@ -350,7 +381,7 @@ Tasks:
       }
     }
 
-    // 9️⃣ Return response to frontend
+    // 🔟 Return response to frontend
     return res.status(200).json({ reply, threadId: thread_id });
   } catch (err) {
     console.error("Handler error:", err);
