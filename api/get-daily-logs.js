@@ -43,43 +43,50 @@ async function shopifyAdminFetch(query, variables = {}) {
 
 /**
  * API route: return all daily logs for a given email
- * We avoid the Customer object completely (no PII gate) and
- * instead query metaobjects(type: "daily_log") and filter in code.
- *
- * NOW supports:
- *   - GET  /api/get-daily-logs?email=...
- *   - POST /api/get-daily-logs  { email }
- * with CORS enabled for your Shopify storefront.
+ * - Supports BOTH:
+ *    • GET  /api/get-daily-logs?email=...
+ *    • POST { "email": "..." }
  */
 export default async function handler(req, res) {
-  // 🔥 CORS for browser requests (Shopify dashboard)
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  // Preflight
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
 
-  if (req.method !== "GET" && req.method !== "POST") {
+  let email = null;
+
+  if (req.method === "GET") {
+    const q = req.query || {};
+    email =
+      (q.email ||
+        q.userEmail ||
+        q.user_id ||
+        q.userId ||
+        q.customerId ||
+        "").toLowerCase();
+  } else if (req.method === "POST") {
+    const body = req.body || {};
+    email =
+      (body.email ||
+        body.userEmail ||
+        body.user_id ||
+        body.userId ||
+        body.customerId ||
+        "").toLowerCase();
+  } else {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
+  if (!email) {
+    return res.status(400).json({ error: "Missing email" });
+  }
+
   try {
-    // Support both GET (querystring) and POST (JSON body)
-    let email;
-
-    if (req.method === "GET") {
-      email = req.query.email;
-    } else {
-      const { email: bodyEmail } = req.body || {};
-      email = bodyEmail;
-    }
-
-    if (!email) {
-      return res.status(400).json({ error: "Missing email" });
-    }
+    console.log("get-daily-logs → email:", email);
 
     // 1️⃣ Pull all Daily Log metaobjects
     const query = `
@@ -115,7 +122,7 @@ export default async function handler(req, res) {
 
     // 3️⃣ Filter for this customer (by email stored in customer_id)
     const logs = allLogs.filter(
-      (log) => (log.customer_id || "").toLowerCase() === email.toLowerCase()
+      (log) => (log.customer_id || "").toLowerCase() === email
     );
 
     // 4️⃣ Sort newest -> oldest by date
@@ -123,6 +130,8 @@ export default async function handler(req, res) {
       if (!a.date || !b.date) return 0;
       return a.date < b.date ? 1 : -1;
     });
+
+    console.log(`get-daily-logs → found ${logs.length} logs for`, email);
 
     return res.status(200).json({
       ok: true,
