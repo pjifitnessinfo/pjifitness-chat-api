@@ -2,9 +2,6 @@
 
 const ASSISTANT_ID = "asst_RnVnU6FuCnK6TsOpRxa0sdaG"; // your PJiFitness assistant
 
-// Optional: still send data to Make.com if you want
-const MAKE_WEBHOOK_URL = "https://hook.us2.make.com/5sdruae9dmg8n5y31even3wa9cb28dbq";
-
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // 🔸 Run-level instructions (short, just for wiring + DAILY_LOG behavior)
@@ -177,41 +174,29 @@ export default async function handler(req, res) {
     if (!runRes.ok) throw new Error("Failed to start run");
     const runId = runJson.id;
 
-    // 5️⃣ Poll until run completes (tighter + faster)
-    let completed = false;
-    for (let i = 0; i < 20; i++) {
+    // 5️⃣ Poll until run completes
+    for (let i = 0; i < 30; i++) {
       const statusRes = await fetch(
         `https://api.openai.com/v1/threads/${thread_id}/runs/${runId}`,
         { headers: assistantHeaders }
       );
       const statusJson = await statusRes.json();
 
-      if (statusJson.status === "completed") {
-        completed = true;
-        break;
-      }
+      if (statusJson.status === "completed") break;
       if (["failed", "cancelled", "expired"].includes(statusJson.status)) {
         throw new Error("Run failed");
       }
 
-      // shorter delay between polls
-      await sleep(700);
+      await sleep(1000);
     }
 
-    if (!completed) {
-      throw new Error("Run did not complete in time");
-    }
-
-    // 6️⃣ Fetch assistant reply (just latest message)
+    // 6️⃣ Fetch assistant reply
     const msgsRes = await fetch(
-      `https://api.openai.com/v1/threads/${thread_id}/messages?limit=1`,
+      `https://api.openai.com/v1/threads/${thread_id}/messages?limit=10`,
       { headers: assistantHeaders }
     );
     const msgsJson = await msgsRes.json();
-    const latestMsg = msgsJson.data && msgsJson.data[0];
-    const assistantMsg =
-      latestMsg && latestMsg.role === "assistant" ? latestMsg : null;
-
+    const assistantMsg = msgsJson.data.find((m) => m.role === "assistant");
     const reply =
       assistantMsg?.content?.[0]?.text?.value ||
       "Something went wrong. Please try again.";
@@ -333,40 +318,6 @@ export default async function handler(req, res) {
         );
       } catch (e) {
         console.error("save-daily-log error:", e);
-      }
-    }
-
-    // 9️⃣ Optional: send info to Make.com
-    if (MAKE_WEBHOOK_URL) {
-      try {
-        let payload;
-
-        if (extractedLog) {
-          payload = {
-            type: "daily_log",
-            ...extractedLog,
-            threadId: thread_id,
-            timestamp: new Date().toISOString(),
-          };
-        } else {
-          payload = {
-            type: "chat",
-            email: resolvedEmail,
-            message: originalText,
-            reply,
-            threadId: thread_id,
-            hasImage: !!imageBase64,
-            timestamp: new Date().toISOString(),
-          };
-        }
-
-        await fetch(MAKE_WEBHOOK_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-      } catch (e) {
-        console.error("Make.com webhook error:", e);
       }
     }
 
