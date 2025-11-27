@@ -4,6 +4,9 @@ const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
 
+/**
+ * Helper: call Shopify Admin GraphQL
+ */
 async function shopifyAdminFetch(query, variables = {}) {
   const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`;
 
@@ -38,6 +41,25 @@ async function shopifyAdminFetch(query, variables = {}) {
   return json.data;
 }
 
+/**
+ * Create a daily_log metaobject in Shopify for this customer/email
+ *
+ * Expected POST body:
+ * {
+ *   "email": "user@example.com",
+ *   "log": {
+ *     "date": "2025-11-26",
+ *     "weight": "190.4",
+ *     "calories": "2150",
+ *     "steps": "8200",
+ *     "mood": "pretty good",
+ *     "feeling": "ok",
+ *     "main_struggle": "late night cravings",
+ *     "coach_focus": "plan last meal better",
+ *     "flag": "true"
+ *   }
+ * }
+ */
 export default async function handler(req, res) {
   // CORS preflight
   if (req.method === "OPTIONS") {
@@ -56,28 +78,71 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   try {
-    const {
-      email,
-      date,
-      weight,
-      calories,
-      steps,
-      meals,
-      mood,
-      struggle,
-      coach_focus,
-      flag,
-    } = req.body;
+    const { email, log } = req.body || {};
 
-    if (!email || !date) {
-      return res.status(400).json({ error: "Missing email or date" });
+    if (!email) {
+      return res.status(400).json({ error: "Missing email" });
+    }
+    if (!log || !log.date) {
+      return res.status(400).json({ error: "Missing log or log.date" });
+    }
+
+    // Normalize values as strings (Shopify metaobject fields are strings)
+    const safe = (val) =>
+      val === undefined || val === null ? null : String(val);
+
+    const fields = [];
+
+    // required link to customer (we use email, same as get-daily-logs)
+    fields.push({ key: "customer_id", value: String(email).toLowerCase() });
+
+    // date (required)
+    fields.push({ key: "date", value: safe(log.date) || "" });
+
+    if (safe(log.weight) !== null) {
+      fields.push({ key: "weight", value: safe(log.weight) });
+    }
+    if (safe(log.calories) !== null) {
+      fields.push({ key: "calories", value: safe(log.calories) });
+    }
+    if (safe(log.steps) !== null) {
+      fields.push({ key: "steps", value: safe(log.steps) });
+    }
+
+    // mood / feeling / struggle / focus
+    if (safe(log.mood) !== null) {
+      fields.push({ key: "mood", value: safe(log.mood) });
+    }
+    if (safe(log.feeling) !== null) {
+      fields.push({ key: "feeling", value: safe(log.feeling) });
+    }
+    if (safe(log.main_struggle) !== null) {
+      // store under "struggle" which your dashboard already knows how to read
+      fields.push({ key: "struggle", value: safe(log.main_struggle) });
+    }
+    if (safe(log.coach_focus) !== null) {
+      fields.push({ key: "coach_focus", value: safe(log.coach_focus) });
+    }
+
+    // optional meals, if you add that later
+    if (Array.isArray(log.meals) && log.meals.length > 0) {
+      fields.push({ key: "meals", value: log.meals.join("\n") });
+    }
+
+    // flag: treat any truthy value as "true"
+    if (log.flag !== undefined) {
+      const val = String(log.flag).toLowerCase();
+      const flagValue =
+        val === "true" || val === "1" || val === "yes" ? "true" : "false";
+      fields.push({ key: "flag", value: flagValue });
     }
 
     const mutation = `
-      mutation createDailyLog($metaobject: MetaobjectCreateInput!) {
-        metaobjectCreate(metaobject: $metaobject) {
+      mutation CreateDailyLog($type: String!, $fields: [MetaobjectFieldInput!]!) {
+        metaobjectCreate(metaobject: { type: $type, fields: $fields }) {
           metaobject {
             id
+            type
           }
           userErrors {
             field
@@ -87,38 +152,30 @@ export default async function handler(req, res) {
       }
     `;
 
-    const metaobjectInput = {
-      type: "daily_log",
-      fields: [
-        { key: "date", value: date },
-        { key: "weight", value: weight != null ? String(weight) : "" },
-        { key: "calories", value: calories != null ? String(calories) : "" },
-        { key: "steps", value: steps != null ? String(steps) : "" },
-        { key: "meals", value: meals || "" },
-        { key: "mood", value: mood || "" },
-        { key: "struggle", value: struggle || "" },
-        { key: "coach_focus", value: coach_focus || "" },
-        { key: "flag", value: flag ? "true" : "false" },
-        { key: "customer_id", value: email }, // used for filtering
-      ],
-    };
-
     const data = await shopifyAdminFetch(mutation, {
-      metaobject: metaobjectInput,
+      type: "daily_log",
+      fields,
     });
 
-    const result = data.metaobjectCreate;
-    if (result.userErrors && result.userErrors.length > 0) {
-      console.error("metaobjectCreate errors:", result.userErrors);
+    const createResult = data?.metaobjectCreate;
+    if (createResult?.userErrors && createResult.userErrors.length > 0) {
+      console.error(
+        "metaobjectCreate userErrors:",
+        JSON.stringify(createResult.userErrors, null, 2)
+      );
       return res.status(500).json({
-        error: "Failed to create daily log",
-        details: result.userErrors,
+        error: "Shopify metaobjectCreate error",
+        userErrors: createResult.userErrors,
       });
     }
 
+    const createdId = createResult?.metaobject?.id || null;
+
     return res.status(200).json({
-      success: true,
-      logId: result.metaobject.id,
+      ok: true,
+      metaobjectId: createdId,
+      email,
+      log,
     });
   } catch (err) {
     console.error("save-daily-log error:", err);
