@@ -52,8 +52,8 @@ async function shopifyAdminFetch(query, variables = {}) {
  *     "weight": "190.4",
  *     "calories": "2150",
  *     "steps": "8200",
- *     "mood": "pretty good",
- *     "feeling": "ok",
+ *     "mood": "good",
+ *     "feeling": "pretty calm",   // optional – we merge into mood
  *     "main_struggle": "late night cravings",
  *     "coach_focus": "plan last meal better",
  *     "flag": "true"
@@ -110,12 +110,20 @@ export default async function handler(req, res) {
     }
 
     // mood / feeling / struggle / focus
-    if (safe(log.mood) !== null) {
-      fields.push({ key: "mood", value: safe(log.mood) });
+    // 👉 Your Daily Log definition has "mood" but not "feeling",
+    // so we MERGE feeling into mood text and do NOT send a field named "feeling".
+    const moodVal = safe(log.mood);
+    const feelingVal = safe(log.feeling);
+
+    if (moodVal !== null || feelingVal !== null) {
+      let combined = "";
+      if (moodVal) combined += moodVal;
+      if (feelingVal) {
+        combined += combined ? ` | feeling: ${feelingVal}` : feelingVal;
+      }
+      fields.push({ key: "mood", value: combined });
     }
-    if (safe(log.feeling) !== null) {
-      fields.push({ key: "feeling", value: safe(log.feeling) });
-    }
+
     if (safe(log.main_struggle) !== null) {
       // store under "struggle" which your dashboard already knows how to read
       fields.push({ key: "struggle", value: safe(log.main_struggle) });
