@@ -41,57 +41,38 @@ async function shopifyAdminFetch(query, variables = {}) {
   return json.data;
 }
 
-/**
- * API route: return all daily logs for a given email
- * - Supports BOTH:
- *    • GET  /api/get-daily-logs?email=...
- *    • POST { "email": "..." }
- */
 export default async function handler(req, res) {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
 
+  // ✅ Support BOTH GET ?email=... and POST { email }
   let email = null;
 
   if (req.method === "GET") {
+    // Next.js / Vercel exposes query params on req.query
     const q = req.query || {};
-    email =
-      (q.email ||
-        q.userEmail ||
-        q.user_id ||
-        q.userId ||
-        q.customerId ||
-        "").toLowerCase();
+    email = (q.email || "").toLowerCase();
   } else if (req.method === "POST") {
     const body = req.body || {};
-    email =
-      (body.email ||
-        body.userEmail ||
-        body.user_id ||
-        body.userId ||
-        body.customerId ||
-        "").toLowerCase();
+    email = (body.email || "").toLowerCase();
   } else {
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
   if (!email) {
-    return res.status(400).json({ error: "Missing email" });
+    return res.status(400).json({ ok: false, error: "Missing email" });
   }
 
   try {
-    console.log("get-daily-logs → email:", email);
-
-    // 1️⃣ Pull all Daily Log metaobjects
-    const query = `
-      query getAllDailyLogs {
-        metaobjects(type: "daily_log", first: 250) {
+    const gql = `
+      query DailyLogs($query: String) {
+        metaobjects(type: "daily_log", first: 60, query: $query) {
           edges {
             node {
               id
@@ -105,33 +86,23 @@ export default async function handler(req, res) {
       }
     `;
 
-    const data = await shopifyAdminFetch(query);
+    const data = await shopifyAdminFetch(gql, {
+      query: `customer_id:${email}`,
+    });
+
     const edges = data?.metaobjects?.edges || [];
 
-    // 2️⃣ Turn into JS objects
-    const allLogs = edges.map(({ node }) => {
-      const obj = {};
-      for (const f of node.fields) {
-        obj[f.key] = f.value;
+    // Flatten to a simple array of log objects
+    const logs = edges.map((edge) => {
+      const node = edge.node;
+      const obj = { id: node.id };
+
+      for (const field of node.fields || []) {
+        obj[field.key] = field.value;
       }
-      return {
-        id: node.id,
-        ...obj,
-      };
+
+      return obj;
     });
-
-    // 3️⃣ Filter for this customer (by email stored in customer_id)
-    const logs = allLogs.filter(
-      (log) => (log.customer_id || "").toLowerCase() === email
-    );
-
-    // 4️⃣ Sort newest -> oldest by date
-    logs.sort((a, b) => {
-      if (!a.date || !b.date) return 0;
-      return a.date < b.date ? 1 : -1;
-    });
-
-    console.log(`get-daily-logs → found ${logs.length} logs for`, email);
 
     return res.status(200).json({
       ok: true,
@@ -140,8 +111,8 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error("get-daily-logs error:", err);
-
     return res.status(500).json({
+      ok: false,
       error: "Internal server error",
       details: err.message || String(err),
     });
