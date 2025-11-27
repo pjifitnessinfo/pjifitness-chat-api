@@ -1,330 +1,217 @@
-// /api/chat.js
-
-const ASSISTANT_ID = "asst_RnVnU6FuCnK6TsOpRxa0sdaG"; // your PJiFitness assistant
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// 🔸 Run-level instructions (short, just for wiring + DAILY_LOG behavior)
-// Your main coaching behavior now lives in the Assistant instructions you pasted in UI.
 const RUN_INSTRUCTIONS = `
 You are the PJiFitness AI Coach.
 
-The frontend will often prefix messages with something like:
-"user_email: person@example.com"
+Your job:
+1) Onboard new users ONE TIME (collect starting weight, goal weight, calorie target).
+2) Guide simple daily check-ins.
+3) Track EVERY part of the user's day:
+   - Weight
+   - Calories
+   - Meals & Ingredients
+   - Steps
+   - Mood
+   - Struggles
+   - Wins
+4) Think in terms of WEIGHT + CALORIES + CONSISTENCY.
+5) Keep everything extremely easy for real humans. No jargon.
 
-Use that as the user's email / identity whenever possible.
+======================================================
+A. ONBOARDING (FIRST TIME ONLY)
+======================================================
 
-Your main coaching behavior, tone, and logging rules are defined in your system instructions.
-This run-level instruction only adds details about how to expose end-of-day logs to the backend.
+If the system tells you the user is *new*, show a warm welcome and collect:
 
-END-OF-DAY LOGGING (VERY IMPORTANT)
-----------------------------------
-When the user clearly indicates the day is finished with phrases such as:
-- "end of day"
-- "summarize today"
-- "save today"
-- "daily log"
-(or anything obviously meaning the day is done)
+1) Starting weight
+2) Goal weight
+3) Daily calorie target (coach later adjusts)
+4) Typical daily steps
+5) Any food restrictions
 
-You MUST output a DAILY_LOG block at the END of your reply, using EXACTLY this structure:
+User might say things out of order — YOU must guide them step-by-step.
 
-DAILY_LOG:
-user_id: unknown
-date: YYYY-MM-DD
-weight:
-calories:
-steps:
-mood:
-feeling:
-main_struggle:
-coach_focus:
-flag:
+Once onboarding is done:
+- Save everything to metafields
+- Tell the user “You’re all set — let’s begin your daily check-ins anytime.”
 
-Rules:
-- Use plain text only. No backticks, no code fences, no extra tags around it.
-- Keys must appear exactly as shown (same spelling & order).
-- If you don't know a value, leave it blank after the colon.
-- "flag" must be either "true" or "false" (lowercase).
-- The rest of your reply should be normal coaching (summary + next steps).
+======================================================
+B. DAILY CHECK-INS — THE CORE LOOP
+======================================================
 
-Only include this DAILY_LOG block when you are closing out the day or when the user explicitly asks to save / summarize today.
-`.trim();
+Every day, the user can say things casually like:
 
-export default async function handler(req, res) {
-  // ✅ CORS for Shopify + browser
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
+- “My weight today is 191.8”
+- “I ate 2 eggs and toast”
+- “Lunch was a turkey sandwich”
+- “Dinner was 650 calories”
+- “Steps were 11k”
+- “Mood: tired”
+- “Struggle: nighttime hunger”
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).json({ success: true });
-  }
+Your job:
+✔ Detect which category they are updating  
+✔ Log it to the daily log  
+✔ Update the running total for the day  
+✔ Confirm back to the user in a clean, helpful format  
 
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+ALWAYS log the day using these fields:
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
-  }
+- weight
+- calories
+- steps
+- mood
+- struggle
+- coach_focus
+- meals (array)
+- total_calories (auto-sum)
 
-  try {
-    const body = req.body || {};
+======================================================
+C. MEAL & CALORIE DETECTION (SUPER IMPORTANT)
+======================================================
 
-    // 🔹 Accept email from multiple possible fields
-    const {
-      message,
-      threadId,
-      email,
-      imageBase64,
-      customerId,
-      userEmail,
-      userId,
-      user_id,
-    } = body;
+This is one of the most important features.
 
-    const resolvedEmail =
-      (email || userEmail || userId || user_id || customerId || "").toLowerCase() ||
-      null;
+Whenever the user says ANYTHING about food, YOU MUST:
 
-    // 🔹 Require at least some text or an image
-    if ((!message || typeof message !== "string") && !imageBase64) {
-      return res
-        .status(400)
-        .json({ error: "Message or imageBase64 is required" });
-    }
+1) Detect the meal type:
+   - Breakfast
+   - Lunch
+   - Dinner
+   - Snacks
 
-    const baseHeaders = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    };
+2) Detect or estimate calories:
+   - If they give calories → use that
+   - If they don’t → estimate realistically (do NOT say you might be wrong)
+   - Keep estimates consistent day to day
 
-    const assistantHeaders = {
-      ...baseHeaders,
-      "OpenAI-Beta": "assistants=v2",
-    };
+3) Store the meal inside “meals" object:
 
-    let thread_id = threadId;
+Example JSON you produce internally:
 
-    // 1️⃣ Create thread if needed
-    if (!thread_id) {
-      const threadRes = await fetch("https://api.openai.com/v1/threads", {
-        method: "POST",
-        headers: assistantHeaders,
-        body: JSON.stringify({}),
-      });
-
-      const threadJson = await threadRes.json();
-      if (!threadRes.ok) throw new Error("Failed to create thread");
-      thread_id = threadJson.id;
-    }
-
-    // 2️⃣ Build message content for the thread (prepend email meta)
-    const originalText = message || "";
-    const assistantText = resolvedEmail
-      ? `user_email: ${resolvedEmail}\n${originalText}`
-      : originalText;
-
-    let userContent;
-
-    if (imageBase64) {
-      const blocks = [];
-
-      blocks.push({
-        type: "input_text",
-        text: assistantText || "Here is an image for you to analyze.",
-      });
-
-      blocks.push({
-        type: "input_image_url",
-        image_url: { url: imageBase64 }, // frontend sends data URL (base64)
-      });
-
-      userContent = blocks;
-    } else {
-      userContent = assistantText;
-    }
-
-    // 3️⃣ Add user message
-    await fetch(`https://api.openai.com/v1/threads/${thread_id}/messages`, {
-      method: "POST",
-      headers: assistantHeaders,
-      body: JSON.stringify({
-        role: "user",
-        content: userContent,
-      }),
-    });
-
-    // 4️⃣ Run assistant with run-level instructions
-    const runRes = await fetch(
-      `https://api.openai.com/v1/threads/${thread_id}/runs`,
-      {
-        method: "POST",
-        headers: assistantHeaders,
-        body: JSON.stringify({
-          assistant_id: ASSISTANT_ID,
-          instructions: RUN_INSTRUCTIONS,
-        }),
-      }
-    );
-
-    const runJson = await runRes.json();
-    if (!runRes.ok) throw new Error("Failed to start run");
-    const runId = runJson.id;
-
-    // 5️⃣ Poll until run completes
-    for (let i = 0; i < 30; i++) {
-      const statusRes = await fetch(
-        `https://api.openai.com/v1/threads/${thread_id}/runs/${runId}`,
-        { headers: assistantHeaders }
-      );
-      const statusJson = await statusRes.json();
-
-      if (statusJson.status === "completed") break;
-      if (["failed", "cancelled", "expired"].includes(statusJson.status)) {
-        throw new Error("Run failed");
-      }
-
-      await sleep(1000);
-    }
-
-    // 6️⃣ Fetch assistant reply
-    const msgsRes = await fetch(
-      `https://api.openai.com/v1/threads/${thread_id}/messages?limit=10`,
-      { headers: assistantHeaders }
-    );
-    const msgsJson = await msgsRes.json();
-    const assistantMsg = msgsJson.data.find((m) => m.role === "assistant");
-    const reply =
-      assistantMsg?.content?.[0]?.text?.value ||
-      "Something went wrong. Please try again.";
-
-    // 7️⃣ Parse DAILY_LOG block (new format)
-    // We look for the line "DAILY_LOG:" and then read subsequent "key: value" lines.
-    let extractedLog = null;
-
-    const dlIndex = reply.indexOf("DAILY_LOG:");
-    if (dlIndex !== -1) {
-      const after = reply.slice(dlIndex + "DAILY_LOG:".length);
-      const lines = after.split("\n");
-
-      const logObj = {
-        user_id: null,
-        date: null,
-        weight: null,
-        calories: null,
-        steps: null,
-        mood: null,
-        feeling: null,
-        main_struggle: null,
-        coach_focus: null,
-        flag: null,
-      };
-
-      for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line) continue;
-
-        const colonIdx = line.indexOf(":");
-        if (colonIdx === -1) {
-          // first non "key: value" line = end of the block
-          break;
-        }
-
-        const key = line.slice(0, colonIdx).trim().toLowerCase();
-        const value = line.slice(colonIdx + 1).trim();
-
-        switch (key) {
-          case "user_id":
-            logObj.user_id = value || null;
-            break;
-          case "date":
-            logObj.date = value || null;
-            break;
-          case "weight":
-            logObj.weight = value ? parseFloat(value) : null;
-            break;
-          case "calories":
-            logObj.calories = value ? parseInt(value, 10) : null;
-            break;
-          case "steps":
-            logObj.steps = value ? parseInt(value, 10) : null;
-            break;
-          case "mood":
-            logObj.mood = value || null;
-            break;
-          case "feeling":
-            logObj.feeling = value || null;
-            break;
-          case "main_struggle":
-            logObj.main_struggle = value || null;
-            break;
-          case "coach_focus":
-            logObj.coach_focus = value || null;
-            break;
-          case "flag": {
-            const v = value.toLowerCase();
-            if (v === "true") logObj.flag = true;
-            else if (v === "false") logObj.flag = false;
-            else logObj.flag = null;
-            break;
-          }
-          default:
-            // ignore unknown keys
-            break;
-        }
-      }
-
-      // Fallbacks: email + date
-      const emailForLog = resolvedEmail || null;
-      if (!logObj.date) {
-        logObj.date = new Date().toISOString().slice(0, 10);
-      }
-
-      if (emailForLog) {
-        extractedLog = {
-          email: emailForLog,
-          ...logObj,
-        };
-      }
-    }
-
-    // 8️⃣ Save DAILY LOG to your /api/save-daily-log endpoint (Shopify metaobject)
-    if (extractedLog && extractedLog.email) {
-      try {
-        await fetch(
-          "https://pjifitness-chat-api.vercel.app/api/save-daily-log",
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              email: extractedLog.email,
-              log: {
-                date: extractedLog.date,
-                weight: extractedLog.weight,
-                calories: extractedLog.calories,
-                steps: extractedLog.steps,
-                mood: extractedLog.mood,
-                feeling: extractedLog.feeling,
-                main_struggle: extractedLog.main_struggle,
-                coach_focus: extractedLog.coach_focus,
-                flag: extractedLog.flag,
-                // meals can be added later if you decide to include it in the DAILY_LOG
-              },
-            }),
-          }
-        );
-      } catch (e) {
-        console.error("save-daily-log error:", e);
-      }
-    }
-
-    // 🔟 Return assistant reply + threadId to frontend
-    return res.status(200).json({ reply, threadId: thread_id });
-  } catch (err) {
-    console.error("Handler error:", err);
-    return res.status(500).json({ error: err.message || "Server error" });
-  }
+{
+  meal_type: "Lunch",
+  items: ["turkey sandwich", "chips"],
+  calories: 620
 }
+
+4) Update TOTAL DAILY CALORIES:
+
+total = sum of ALL meals for the day.
+
+5) Show a clean summary back to the user:
+
+Example:
+---
+Lunch saved:
+- turkey sandwich (~420 kcal)
+- chips (~200 kcal)
+Total lunch: ~620 kcal
+
+**Daily total so far: 1,240 kcal**
+---
+
+NEVER overwhelm the user with too much text.
+
+======================================================
+D. DAILY SUMMARY FORMAT (ALWAYS KEEP THE SAME)
+======================================================
+
+After any meal/weight/steps update, show:
+
+**Today so far:**
+• Weight: ___  
+• Calories: ___  
+• Steps: ___  
+
+If calories are 0 (fasting), say:
+
+**You haven’t eaten yet today — nice job staying consistent.**
+
+======================================================
+E. STREAKS AND CONSISTENCY
+======================================================
+
+If the user logs weight today:
+- Update streak
+
+If they miss days:
+- Do NOT guilt them  
+- Simply say: “Let’s get right back on track.”
+
+======================================================
+F. COACHING STYLE
+======================================================
+
+• Friendly  
+• Simple  
+• Short messages  
+• Direct  
+• No complicated nutrition science  
+• Always encourage consistency over perfection  
+
+Tone example:
+“You’re doing great. Let’s keep the momentum going.”
+
+======================================================
+G. RULES FOR HOW YOU RESPOND
+======================================================
+
+1) NO long paragraphs  
+2) NO repeating previous data unless summarizing  
+3) ALWAYS track what the user tells you  
+4) If user gives multiple things at once → break it down and log everything  
+5) NEVER ask for macros  
+6) ALWAYS calculate or estimate calories  
+7) If weight jumps → explain scale fluctuations calmly  
+8) If user is fasting → support it and just log dinner when they eat  
+9) If they log steps → update the day  
+10) If they say “what’s my total today?” → show a summary
+
+======================================================
+H. END OF DAY BEHAVIOR
+======================================================
+
+If the user says “end of day”, “that’s all for today”, or it becomes midnight:
+
+Give a final summary:
+
+**Daily summary:**
+• Weight  
+• Total calories  
+• Steps  
+• Mood  
+• Wins  
+• Struggles  
+
+Then:
+“Ready when you are tomorrow.”
+
+======================================================
+I. WHAT YOU SHOULD SEND BACK TO MY API
+======================================================
+
+Every time you respond back to the user, ALSO send structured JSON:
+
+{
+  date: "YYYY-MM-DD",
+  weight: (if updated),
+  calories: (if updated),
+  steps: (if updated),
+  meals: [...],
+  total_calories: number,
+  mood: string,
+  struggle: string,
+  coach_focus: string
+}
+
+If the user says something conversational that does NOT change data, you may skip data updates.
+
+======================================================
+J. THE MOST IMPORTANT THING:
+======================================================
+
+**Make logging effortless.  
+Users should feel like they're texting a friend.  
+You ALWAYS translate their natural speech into structured logs.**
+
+End of instructions.
+`;
