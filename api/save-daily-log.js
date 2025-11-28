@@ -79,7 +79,7 @@ export default async function handler(req, res) {
 
     const email = (body.email || "").toLowerCase(); // debug only
     const log = body.log;
-    const customerId = body.customerId;          // <- REQUIRED
+    const customerId = body.customerId;          // numeric or gid
     const existingLogs = Array.isArray(body.existingLogs)
       ? body.existingLogs
       : [];
@@ -96,6 +96,11 @@ export default async function handler(req, res) {
     console.log("save-daily-log incoming log:", JSON.stringify(log));
 
     const updatedLogs = appendLog(existingLogs, log);
+
+    // ✅ Ensure ownerId is a valid Shopify global ID (gid)
+    const ownerGid = String(customerId).startsWith("gid://")
+      ? String(customerId)
+      : `gid://shopify/Customer/${customerId}`;
 
     const mutation = `
       mutation SaveDailyLogs($metafields: [MetafieldsSetInput!]!) {
@@ -118,7 +123,7 @@ export default async function handler(req, res) {
 
     const metafields = [
       {
-        ownerId: customerId,
+        ownerId: ownerGid,
         namespace: "custom",
         key: "daily_logs",
         type: "json",
