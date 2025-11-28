@@ -63,8 +63,6 @@ const DAILY_LOG_QUERY = `
 
 /**
  * NEW: customer + metafields query
- * - daily_logs stored as JSON on the customer metafield
- * - also fetch start_weight, goal_weight, calorie_goal if needed later
  */
 const CUSTOMER_DAILY_LOGS_QUERY = `
   query CustomerDailyLogs($query: String!) {
@@ -92,9 +90,6 @@ const CUSTOMER_DAILY_LOGS_QUERY = `
   }
 `;
 
-/**
- * Helper to normalize numbers
- */
 function toNum(v) {
   if (v === null || v === undefined || v === "") return null;
   const n = typeof v === "number" ? v : parseFloat(v);
@@ -114,25 +109,18 @@ function metaobjectToLog(node) {
     id: node.id,
     gid: node.id,
     display_name: node.displayName || null,
-
     date: fieldMap.date || null,
-
     weight: toNum(fieldMap.weight),
     calories: toNum(fieldMap.calories),
     steps: toNum(fieldMap.steps),
-
     mood: fieldMap.mood || null,
     feeling: fieldMap.feeling || null,
     struggle: fieldMap.struggle || null,
     coach_focus: fieldMap.coach_focus || null,
-
-    // NOTE: this was a string before; leaving it for backward compatibility
-    meals: fieldMap.meals || null,
-
+    meals: fieldMap.meals || null, // old string-style meals
     daily_protein: toNum(fieldMap.daily_protein),
     daily_carbs: toNum(fieldMap.daily_carbs),
     daily_fats: toNum(fieldMap.daily_fats),
-
     customer_id: fieldMap.customer_id || null,
     flag:
       typeof fieldMap.flag === "string"
@@ -143,18 +131,6 @@ function metaobjectToLog(node) {
 
 /**
  * NEW: Normalize metafield JSON entry -> plain log object
- * Your metafield JSON looks like:
- * {
- *   "date":"2024-06-10",
- *   "weight":null,
- *   "calories":400,
- *   "steps":null,
- *   "meals":[{"meal_type":"Breakfast","items":["2 eggs","toast"],"calories":400}],
- *   "total_calories":400,
- *   "mood":null,
- *   "struggle":null,
- *   "coach_focus":"Prioritize protein at meals."
- * }
  */
 function metafieldEntryToLog(entry, idx) {
   const e = entry || {};
@@ -162,26 +138,19 @@ function metafieldEntryToLog(entry, idx) {
     id: e.id || `metafield-log-${idx}`,
     gid: e.id || null,
     display_name: e.display_name || null,
-
     date: e.date || null,
-
     weight: toNum(e.weight),
     calories: toNum(e.calories),
     total_calories: toNum(e.total_calories),
     steps: toNum(e.steps),
-
     mood: e.mood || null,
     feeling: e.feeling || null,
     struggle: e.struggle || null,
     coach_focus: e.coach_focus || null,
-
-    // IMPORTANT: keep the meals array exactly as saved (Breakfast/Lunch/Dinner/Snacks)
     meals: Array.isArray(e.meals) ? e.meals : [],
-
     daily_protein: toNum(e.daily_protein),
     daily_carbs: toNum(e.daily_carbs),
     daily_fats: toNum(e.daily_fats),
-
     customer_id: e.customer_id || null,
     flag:
       typeof e.flag === "string"
@@ -242,14 +211,15 @@ export default async function handler(req, res) {
     let calorieGoal = null;
 
     try {
-      const customerQuery = `email:${email}`;
+      // IMPORTANT CHANGE: wrap email in quotes for Shopify search
+      const customerQuery = `email:${JSON.stringify(email)}`; // e.g. email:"pjantoniato@gmail.com"
+
       const customerData = await shopifyAdminFetch(
         CUSTOMER_DAILY_LOGS_QUERY,
         { query: customerQuery }
       );
 
-      const customerEdges =
-        customerData?.customers?.edges || [];
+      const customerEdges = customerData?.customers?.edges || [];
 
       if (customerEdges.length > 0) {
         const customerNode = customerEdges[0].node;
@@ -257,9 +227,7 @@ export default async function handler(req, res) {
         const mfDailyLogs = customerNode.metafield;
         if (mfDailyLogs && typeof mfDailyLogs.value === "string") {
           try {
-            const parsed = JSON.parse(
-              mfDailyLogs.value || "[]"
-            );
+            const parsed = JSON.parse(mfDailyLogs.value || "[]");
             if (Array.isArray(parsed)) {
               logs = parsed.map(metafieldEntryToLog);
             }
@@ -271,44 +239,23 @@ export default async function handler(req, res) {
           }
         }
 
-        // optional: pull targets for later if you want
-        if (
-          customerNode.metafield_start &&
-          customerNode.metafield_start.value != null
-        ) {
-          startWeight = toNum(
-            customerNode.metafield_start.value
-          );
+        if (customerNode.metafield_start && customerNode.metafield_start.value != null) {
+          startWeight = toNum(customerNode.metafield_start.value);
         }
-        if (
-          customerNode.metafield_goal &&
-          customerNode.metafield_goal.value != null
-        ) {
-          goalWeight = toNum(
-            customerNode.metafield_goal.value
-          );
+        if (customerNode.metafield_goal && customerNode.metafield_goal.value != null) {
+          goalWeight = toNum(customerNode.metafield_goal.value);
         }
-        if (
-          customerNode.metafield_cal_goal &&
-          customerNode.metafield_cal_goal.value != null
-        ) {
-          calorieGoal = toNum(
-            customerNode.metafield_cal_goal.value
-          );
+        if (customerNode.metafield_cal_goal && customerNode.metafield_cal_goal.value != null) {
+          calorieGoal = toNum(customerNode.metafield_cal_goal.value);
         }
       }
     } catch (e) {
-      console.error(
-        "Error fetching customer/metafield daily logs:",
-        e
-      );
-      // We’ll fall back to metaobjects below
+      console.error("Error fetching customer/metafield daily logs:", e);
+      // fall through to metaobject fallback
     }
 
-    // If metafield logs exist, use them as the source of truth
     if (logs.length > 0) {
       logs.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-
       return res.status(200).json({
         ok: true,
         email,
