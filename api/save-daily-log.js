@@ -29,231 +29,315 @@ async function shopifyAdminFetch(query, variables = {}) {
   try {
     json = await res.json();
   } catch (err) {
-    console.error("JSON parse error from Shopify:", err);
-    throw new Error("Invalid JSON response from Shopify Admin API");
+    console.error("Failed to parse Shopify response JSON:", err);
+    throw new Error("Bad JSON from Shopify");
   }
 
   if (!res.ok || json.errors) {
-    console.error("Shopify GraphQL error:", JSON.stringify(json, null, 2));
-    throw new Error(JSON.stringify(json));
+    console.error("Shopify GraphQL error:", json.errors || json);
+    throw new Error("Shopify GraphQL error");
   }
 
   return json.data;
 }
 
 /**
- * Create a daily_log metaobject in Shopify for this customer/email
- *
- * NEW expected POST body from /api/chat:
- * {
- *   "email": "user@example.com",
- *   "log": {
- *     "date": "2025-11-26",
- *     "weight": 190.4,
- *     "calories": 2100,          // optional, we prefer total_calories
- *     "total_calories": 2100,    // preferred
- *     "steps": 8200,
- *     "mood": "tired",
- *     "struggle": "late night cravings",
- *     "coach_focus": "evening snacks",
- *     "meals": [
- *       {
- *         "meal_type": "Dinner",
- *         "items": ["chicken bowl", "rice"],
- *         "calories": 650
- *       }
- *     ],
- *     "flag": true
- *   }
- * }
- *
- * NOTE: we also still support the older fields:
- *   main_struggle, feeling, flag, etc.
+ * Find customer by email
+ */
+async function findCustomerByEmail(email) {
+  const query = `
+    query GetCustomerByEmail($query: String!) {
+      customers(first: 1, query: $query) {
+        nodes {
+          id
+          email
+          metafields(first: 20, namespace: "custom") {
+            edges {
+              node {
+                id
+                namespace
+                key
+                type
+                value
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyAdminFetch(query, {
+    query: `email:${email}`,
+  });
+
+  const nodes = data?.customers?.nodes || [];
+  return nodes[0] || null;
+}
+
+/**
+ * Upsert customer metafield "daily_logs" (JSON)
+ */
+async function saveDailyLogsMetafield(customerId, logsArray) {
+  const mutation = `
+    mutation SaveDailyLogs($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        metafields {
+          id
+          key
+          namespace
+          value
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+  `;
+
+  const metafields = [
+    {
+      ownerId: customerId,
+      namespace: "custom",
+      key: "daily_logs",
+      type: "json",
+      value: JSON.stringify(logsArray),
+    },
+  ];
+
+  const data = await shopifyAdminFetch(mutation, { metafields });
+
+  const errors = data?.metafieldsSet?.userErrors || [];
+  if (errors.length > 0) {
+    console.error("Error saving daily_logs metafield:", errors);
+    throw new Error("Failed to save daily_logs metafield");
+  }
+
+  return data.metafieldsSet.metafields[0];
+}
+
+/**
+ * Merge incoming log into existing logs for SAME date
+ * - Keep other days intact
+ * - Merge fields for today's date
+ * - Append meals and recalc total_calories
+ */
+function mergeDailyLog(existingLogs, incomingLogRaw) {
+  const todayISO = new Date().toISOString().slice(0, 10);
+
+  const incoming = {
+    date: incomingLogRaw.date || todayISO,
+    weight:
+      typeof incomingLogRaw.weight === "number"
+        ? incomingLogRaw.weight
+        : null,
+    calories:
+      typeof incomingLogRaw.calories === "number"
+        ? incomingLogRaw.calories
+        : null,
+    steps:
+      typeof incomingLogRaw.steps === "number"
+        ? incomingLogRaw.steps
+        : null,
+    meals: Array.isArray(incomingLogRaw.meals)
+      ? incomingLogRaw.meals
+      : [],
+    total_calories:
+      typeof incomingLogRaw.total_calories === "number"
+        ? incomingLogRaw.total_calories
+        : null,
+    mood:
+      typeof incomingLogRaw.mood === "string"
+        ? incomingLogRaw.mood
+        : null,
+    struggle:
+      typeof incomingLogRaw.struggle === "string"
+        ? incomingLogRaw.struggle
+        : null,
+    coach_focus:
+      typeof incomingLogRaw.coach_focus === "string" &&
+      incomingLogRaw.coach_focus.trim().length > 0
+        ? incomingLogRaw.coach_focus.trim()
+        : "",
+  };
+
+  const logs = Array.isArray(existingLogs) ? [...existingLogs] : [];
+
+  const idx = logs.findIndex((d) => d && d.date === incoming.date);
+
+  if (idx === -1) {
+    // === No entry for this date yet: create one ===
+    const totalCalories =
+      incoming.total_calories ||
+      incoming.calories ||
+      (incoming.meals || []).reduce(
+        (sum, m) =>
+          sum + (typeof m.calories === "number" ? m.calories : 0),
+        0
+      );
+
+    const newEntry = {
+      date: incoming.date,
+      weight: incoming.weight,
+      calories: totalCalories || null,
+      steps: incoming.steps,
+      meals: incoming.meals || [],
+      total_calories: totalCalories || null,
+      mood: incoming.mood,
+      struggle: incoming.struggle,
+      coach_focus:
+        incoming.coach_focus ||
+        "Stay consistent with your plan today.",
+    };
+
+    logs.push(newEntry);
+    return logs;
+  }
+
+  // === Merge into existing entry for this date ===
+  const existing = logs[idx];
+
+  // nums: overwrite if new value present
+  if (incoming.weight !== null) {
+    existing.weight = incoming.weight;
+  }
+
+  // steps
+  if (incoming.steps !== null) {
+    existing.steps = incoming.steps;
+  }
+
+  // mood & struggle
+  if (incoming.mood !== null) {
+    existing.mood = incoming.mood;
+  }
+  if (incoming.struggle !== null) {
+    existing.struggle = incoming.struggle;
+  }
+
+  // coach_focus: always keep the latest non-empty
+  if (incoming.coach_focus) {
+    existing.coach_focus = incoming.coach_focus;
+  } else if (!existing.coach_focus) {
+    existing.coach_focus = "Stay consistent with your plan today.";
+  }
+
+  // Meals + calories
+  const incomingMeals = incoming.meals || [];
+  if (incomingMeals.length > 0) {
+    const existingMeals = Array.isArray(existing.meals)
+      ? existing.meals
+      : [];
+    const mergedMeals = existingMeals.concat(incomingMeals);
+
+    const mergedTotal = mergedMeals.reduce(
+      (sum, m) =>
+        sum + (typeof m.calories === "number" ? m.calories : 0),
+      0
+    );
+
+    existing.meals = mergedMeals;
+    existing.total_calories = mergedTotal || null;
+    existing.calories = mergedTotal || null;
+  } else {
+    // No meals in this log, but maybe a direct calorie number
+    const calFromLog =
+      incoming.total_calories || incoming.calories || null;
+    if (calFromLog !== null) {
+      existing.total_calories = calFromLog;
+      existing.calories = calFromLog;
+    }
+  }
+
+  logs[idx] = existing;
+  return logs;
+}
+
+/**
+ * Vercel handler
  */
 export default async function handler(req, res) {
-  // CORS preflight
   if (req.method === "OPTIONS") {
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    return res.status(200).end();
+    res.status(200).end();
+    return;
   }
 
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    res.status(405).json({ error: "Method not allowed" });
+    return;
   }
 
-  // CORS for POST
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
   try {
-    // Body can be object or string depending on environment
-    let body = req.body || {};
-    if (typeof body === "string") {
-      try {
-        body = JSON.parse(body || "{}");
-      } catch (err) {
-        console.error("Failed to parse JSON body:", err);
-        return res.status(400).json({ error: "Invalid JSON body" });
-      }
-    }
+    const body =
+      typeof req.body === "string"
+        ? JSON.parse(req.body || "{}")
+        : req.body || {};
 
-    const { email, log } = body;
+    const email = (body.email || "").toLowerCase();
+    const log   = body.log;
 
-    if (!email) {
-      return res.status(400).json({ error: "Missing email" });
-    }
-    if (!log || !log.date) {
-      return res.status(400).json({ error: "Missing log or log.date" });
-    }
-
-    // Normalize values as strings (Shopify metaobject fields are strings)
-    const safe = (val) =>
-      val === undefined || val === null ? null : String(val);
-
-    const fields = [];
-
-    // required link to customer (we use email, same as get-daily-logs)
-    fields.push({ key: "customer_id", value: String(email).toLowerCase() });
-
-    // date (required)
-    fields.push({ key: "date", value: safe(log.date) || "" });
-
-    // Prefer total_calories, fallback to calories
-    const weightVal = safe(log.weight);
-    const caloriesVal = safe(
-      log.total_calories !== undefined ? log.total_calories : log.calories
-    );
-    const stepsVal = safe(log.steps);
-
-    if (weightVal !== null) {
-      fields.push({ key: "weight", value: weightVal });
-    }
-    if (caloriesVal !== null) {
-      fields.push({ key: "calories", value: caloriesVal });
-    }
-    if (stepsVal !== null) {
-      fields.push({ key: "steps", value: stepsVal });
-    }
-
-    // mood / feeling / struggle / focus
-    const moodVal = safe(log.mood);
-    const feelingVal = safe(log.feeling);
-    if (moodVal !== null || feelingVal !== null) {
-      let combined = "";
-      if (moodVal) combined += moodVal;
-      if (feelingVal) {
-        combined += combined ? ` | feeling: ${feelingVal}` : feelingVal;
-      }
-      fields.push({ key: "mood", value: combined });
-    }
-
-    // struggle: support both new "struggle" and old "main_struggle"
-    const struggleVal = safe(
-      log.struggle !== undefined ? log.struggle : log.main_struggle
-    );
-    if (struggleVal !== null) {
-      fields.push({ key: "struggle", value: struggleVal });
-    }
-
-    if (safe(log.coach_focus) !== null) {
-      fields.push({ key: "coach_focus", value: safe(log.coach_focus) });
-    }
-
-    // meals:
-    // - If array of strings, join with newlines
-    // - If array of objects { meal_type, items, calories }, make readable lines
-    if (Array.isArray(log.meals) && log.meals.length > 0) {
-      let mealsField = null;
-
-      if (typeof log.meals[0] === "string") {
-        mealsField = log.meals.join("\n");
-      } else {
-        const lines = log.meals
-          .map((m) => {
-            if (!m) return "";
-            const type = m.meal_type || m.type || "Meal";
-            const items = Array.isArray(m.items)
-              ? m.items.join(", ")
-              : m.items || "";
-            const cals =
-              m.calories !== undefined
-                ? m.calories
-                : m.kcal !== undefined
-                ? m.kcal
-                : null;
-
-            let line = type;
-            if (items) line += `: ${items}`;
-            if (cals !== null) line += ` (~${cals} kcal)`;
-            return line;
-          })
-          .filter(Boolean);
-
-        if (lines.length > 0) {
-          mealsField = lines.join("\n");
-        }
-      }
-
-      if (mealsField !== null) {
-        fields.push({ key: "meals", value: mealsField });
-      }
-    }
-
-    // flag: treat any truthy value as "true" (optional; might not be present)
-    if (log.flag !== undefined) {
-      const val = String(log.flag).toLowerCase();
-      const flagValue =
-        val === "true" || val === "1" || val === "yes" ? "true" : "false";
-      fields.push({ key: "flag", value: flagValue });
-    }
-
-    const mutation = `
-      mutation CreateDailyLog($type: String!, $fields: [MetaobjectFieldInput!]!) {
-        metaobjectCreate(metaobject: { type: $type, fields: $fields }) {
-          metaobject {
-            id
-            type
-          }
-          userErrors {
-            field
-            message
-          }
-        }
-      }
-    `;
-
-    const data = await shopifyAdminFetch(mutation, {
-      type: "daily_log",
-      fields,
-    });
-
-    const createResult = data?.metaobjectCreate;
-    if (createResult?.userErrors && createResult.userErrors.length > 0) {
-      console.error(
-        "metaobjectCreate userErrors:",
-        JSON.stringify(createResult.userErrors, null, 2)
-      );
-      return res.status(500).json({
-        error: "Shopify metaobjectCreate error",
-        userErrors: createResult.userErrors,
+    if (!email || !log) {
+      res.status(400).json({
+        error: "Missing required fields 'email' or 'log'",
       });
+      return;
     }
 
-    const createdId = createResult?.metaobject?.id || null;
+    console.log("save-daily-log incoming email:", email);
+    console.log("save-daily-log incoming log:", JSON.stringify(log));
 
-    return res.status(200).json({
+    const customer = await findCustomerByEmail(email);
+    if (!customer) {
+      console.error("No customer found for email:", email);
+      res.status(404).json({ error: "Customer not found" });
+      return;
+    }
+
+    const customerId = customer.id;
+
+    // Find existing daily_logs metafield in namespace "custom"
+    let existingLogs = [];
+    const metafieldEdges =
+      customer.metafields?.edges || [];
+
+    const dailyLogsMeta = metafieldEdges.find(
+      (edge) => edge.node.key === "daily_logs"
+    );
+
+    if (dailyLogsMeta && dailyLogsMeta.node.value) {
+      try {
+        const parsed = JSON.parse(dailyLogsMeta.node.value);
+        if (Array.isArray(parsed)) {
+          existingLogs = parsed;
+        }
+      } catch (err) {
+        console.error(
+          "Failed to parse existing daily_logs JSON:",
+          err
+        );
+      }
+    }
+
+    // Merge incoming log into existing logs
+    const updatedLogs = mergeDailyLog(existingLogs, log);
+
+    // Save back to Shopify
+    await saveDailyLogsMetafield(customerId, updatedLogs);
+
+    res.status(200).json({
       ok: true,
-      metaobjectId: createdId,
-      email,
-      log,
+      message: "Daily log saved",
+      count: updatedLogs.length,
     });
   } catch (err) {
-    console.error("save-daily-log error:", err);
-    return res.status(500).json({
+    console.error("Error in /api/save-daily-log:", err);
+    res.status(500).json({
       error: "Internal server error",
-      details: err.message || String(err),
+      details: err?.message || String(err),
     });
   }
 }
