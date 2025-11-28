@@ -1,4 +1,4 @@
-// api/chat.js
+// /api/chat.js
 
 import OpenAI from "openai";
 
@@ -355,6 +355,62 @@ function splitCoachAndLog(fullText) {
 }
 
 // ======================================================
+// Sanitize log before saving (guardrails)
+// ======================================================
+function sanitizeLog(rawLog) {
+  if (!rawLog || typeof rawLog !== "object") return null;
+
+  const log = { ...rawLog };
+
+  // date
+  if (typeof log.date !== "string" || !log.date.trim()) {
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, "0");
+    const d = String(today.getDate()).padStart(2, "0");
+    log.date = `${y}-${m}-${d}`;
+  }
+
+  const toNumOrNull = (v) => {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return isNaN(n) ? null : n;
+  };
+
+  log.weight = toNumOrNull(log.weight);
+  log.calories = toNumOrNull(log.calories);
+  log.steps = toNumOrNull(log.steps);
+  log.total_calories = toNumOrNull(log.total_calories);
+
+  if (!Array.isArray(log.meals)) {
+    log.meals = [];
+  } else {
+    log.meals = log.meals
+      .filter((m) => m && typeof m === "object")
+      .map((m) => ({
+        meal_type: typeof m.meal_type === "string" && m.meal_type.trim()
+          ? m.meal_type.trim()
+          : "Day Summary",
+        items: Array.isArray(m.items)
+          ? m.items.map((x) => String(x))
+          : (typeof m.items === "string" && m.items.trim()
+              ? [m.items.trim()]
+              : []),
+        calories: toNumOrNull(m.calories) ?? 0,
+      }));
+  }
+
+  if (typeof log.mood !== "string") log.mood = log.mood ?? null;
+  if (typeof log.struggle !== "string") log.struggle = log.struggle ?? null;
+
+  if (typeof log.coach_focus !== "string" || !log.coach_focus.trim()) {
+    log.coach_focus = "Stay consistent with your calorie target and steps today.";
+  }
+
+  return log;
+}
+
+// ======================================================
 // MAIN HANDLER
 // ======================================================
 export default async function handler(req, res) {
@@ -408,12 +464,13 @@ export default async function handler(req, res) {
     });
 
     const fullText = extractTextFromResponse(aiResponse);
-    const { reply, log } = splitCoachAndLog(fullText);
+    const { reply, log: rawLog } = splitCoachAndLog(fullText);
+    const log = sanitizeLog(rawLog);
 
     console.log("AI fullText:", fullText);
-    console.log("Parsed LOG_JSON:", JSON.stringify(log, null, 2));
+    console.log("Parsed LOG_JSON (sanitized):", JSON.stringify(log, null, 2));
 
-        // ===================================
+    // ===================================
     // SAVE DAILY LOG TO SHOPIFY IF EXISTS
     // ===================================
     let saveResult = null;
@@ -454,7 +511,6 @@ export default async function handler(req, res) {
       log,
       saveResult,
     });
-
   } catch (err) {
     console.error("Error in /api/chat:", err);
     res.status(500).json({
