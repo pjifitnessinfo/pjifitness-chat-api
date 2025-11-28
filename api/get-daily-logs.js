@@ -131,6 +131,7 @@ function metaobjectToLog(node) {
 
 /**
  * NEW: Normalize metafield JSON entry -> plain log object
+ * Matches the JSON you pasted from custom.daily_logs.
  */
 function metafieldEntryToLog(entry, idx) {
   const e = entry || {};
@@ -159,6 +160,35 @@ function metafieldEntryToLog(entry, idx) {
         ? true
         : null,
   };
+}
+
+/**
+ * Try multiple different customer search query formats until one returns a match.
+ */
+async function findCustomerWithQueries(email) {
+  const searchPatterns = [
+    JSON.stringify(email),                  // "pjantoniato@gmail.com"
+    `email:${JSON.stringify(email)}`,       // email:"pjantoniato@gmail.com"
+    `email:${email}`,                       // email:pjantoniato@gmail.com
+  ];
+
+  for (const q of searchPatterns) {
+    try {
+      console.log("PJ GET-LOGS: trying customer search query:", q);
+      const data = await shopifyAdminFetch(CUSTOMER_DAILY_LOGS_QUERY, {
+        query: q,
+      });
+
+      const edges = data?.customers?.edges || [];
+      if (edges.length > 0) {
+        return edges[0].node;
+      }
+    } catch (e) {
+      console.error("Error during customer search with query", q, e);
+    }
+  }
+
+  return null;
 }
 
 export default async function handler(req, res) {
@@ -211,19 +241,9 @@ export default async function handler(req, res) {
     let calorieGoal = null;
 
     try {
-      // IMPORTANT CHANGE: wrap email in quotes for Shopify search
-      const customerQuery = `email:${JSON.stringify(email)}`; // e.g. email:"pjantoniato@gmail.com"
+      const customerNode = await findCustomerWithQueries(email);
 
-      const customerData = await shopifyAdminFetch(
-        CUSTOMER_DAILY_LOGS_QUERY,
-        { query: customerQuery }
-      );
-
-      const customerEdges = customerData?.customers?.edges || [];
-
-      if (customerEdges.length > 0) {
-        const customerNode = customerEdges[0].node;
-
+      if (customerNode) {
         const mfDailyLogs = customerNode.metafield;
         if (mfDailyLogs && typeof mfDailyLogs.value === "string") {
           try {
@@ -239,15 +259,29 @@ export default async function handler(req, res) {
           }
         }
 
-        if (customerNode.metafield_start && customerNode.metafield_start.value != null) {
+        if (
+          customerNode.metafield_start &&
+          customerNode.metafield_start.value != null
+        ) {
           startWeight = toNum(customerNode.metafield_start.value);
         }
-        if (customerNode.metafield_goal && customerNode.metafield_goal.value != null) {
+        if (
+          customerNode.metafield_goal &&
+          customerNode.metafield_goal.value != null
+        ) {
           goalWeight = toNum(customerNode.metafield_goal.value);
         }
-        if (customerNode.metafield_cal_goal && customerNode.metafield_cal_goal.value != null) {
+        if (
+          customerNode.metafield_cal_goal &&
+          customerNode.metafield_cal_goal.value != null
+        ) {
           calorieGoal = toNum(customerNode.metafield_cal_goal.value);
         }
+      } else {
+        console.log(
+          "PJ GET-LOGS: no customer found via any search pattern for email",
+          email
+        );
       }
     } catch (e) {
       console.error("Error fetching customer/metafield daily logs:", e);
