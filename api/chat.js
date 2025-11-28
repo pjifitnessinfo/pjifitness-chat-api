@@ -413,19 +413,26 @@ export default async function handler(req, res) {
     console.log("AI fullText:", fullText);
     console.log("Parsed LOG_JSON:", JSON.stringify(log, null, 2));
 
-    // ===================================
+        // ===================================
     // SAVE DAILY LOG TO SHOPIFY IF EXISTS
     // ===================================
     let saveResult = null;
 
     if (log && email) {
       try {
+        const { customerId, existingLogs } = body; // <- coming from frontend
+
         const saveRes = await fetch(
           "https://pjifitness-chat-api.vercel.app/api/save-daily-log",
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email, log }),
+            body: JSON.stringify({
+              email,
+              log,
+              customerId: customerId || null,
+              existingLogs: existingLogs || [],
+            }),
           }
         );
 
@@ -436,7 +443,9 @@ export default async function handler(req, res) {
         }
       } catch (err) {
         console.error("Error saving log:", err);
-        saveResult = { error: "Network or server error calling save-daily-log" };
+        saveResult = {
+          error: "Network or server error calling save-daily-log",
+        };
       }
     }
 
@@ -445,6 +454,7 @@ export default async function handler(req, res) {
       log,
       saveResult,
     });
+
   } catch (err) {
     console.error("Error in /api/chat:", err);
     res.status(500).json({
