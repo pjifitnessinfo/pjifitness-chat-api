@@ -62,7 +62,8 @@ async function shopifyAdminFetch(query, variables = {}) {
  *         "items": ["chicken bowl", "rice"],
  *         "calories": 650
  *       }
- *     ]
+ *     ],
+ *     "flag": true
  *   }
  * }
  *
