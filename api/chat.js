@@ -235,19 +235,37 @@ function setCors(res) {
 // Extract plain text from Responses API output
 function extractTextFromResponse(resp) {
   try {
-    if (!resp || !resp.output) return "";
+    if (!resp) return "";
+
+    // ✅ Preferred: SDK convenience field
+    if (typeof resp.output_text === "string" && resp.output_text.length > 0) {
+      return resp.output_text.trim();
+    }
+
+    // ✅ Fallback: manually walk output array if present
+    if (!resp.output) return "";
+
     let text = "";
-    for (const block of resp.output) {
-      if (!block.content) continue;
-      for (const piece of block.content) {
-        if (piece.type === "output_text" && piece.text?.value) {
-          text += piece.text.value;
+
+    for (const item of resp.output) {
+      if (!item || !item.content) continue;
+
+      for (const part of item.content) {
+        // Newer format: { type: "text", text: "..." }
+        if (part.type === "text" && typeof part.text === "string") {
+          text += part.text;
+        }
+
+        // Older format: { type: "output_text", text: { value: "..." } }
+        if (part.type === "output_text" && part.text && typeof part.text.value === "string") {
+          text += part.text.value;
         }
       }
     }
+
     return text.trim();
-  } catch (e) {
-    console.error("Error extracting text:", e);
+  } catch (err) {
+    console.error("Error extracting text:", err);
     return "";
   }
 }
@@ -281,9 +299,10 @@ export default async function handler(req, res) {
 
     const emailTag = email ? `email: ${email}` : "email: unknown";
 
-    // Call OpenAI Responses API (no assistant_id, just model + instructions)
+    // Call OpenAI Responses API (model + instructions, no assistant_id)
     const aiResponse = await client.responses.create({
-      model: "gpt-4.1-mini", // or "gpt-4.1" / "gpt-4o"
+      model: "gpt-4.1-mini", // you can switch to "gpt-4.1" or "gpt-4o" if you want
+      instructions: RUN_INSTRUCTIONS,
       input: [
         {
           role: "user",
@@ -295,7 +314,6 @@ export default async function handler(req, res) {
           ],
         },
       ],
-      instructions: RUN_INSTRUCTIONS,
       metadata: {
         source: "pjifitness-chat-api",
         email: email || "unknown",
@@ -308,6 +326,7 @@ export default async function handler(req, res) {
 
     res.status(200).json({
       reply: replyText,
+      // you can remove raw later if you don’t need it in the frontend
       raw: aiResponse,
     });
   } catch (err) {
