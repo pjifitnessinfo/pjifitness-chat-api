@@ -44,21 +44,30 @@ async function shopifyAdminFetch(query, variables = {}) {
 /**
  * Create a daily_log metaobject in Shopify for this customer/email
  *
- * Expected POST body:
+ * NEW expected POST body from /api/chat:
  * {
  *   "email": "user@example.com",
  *   "log": {
  *     "date": "2025-11-26",
- *     "weight": "190.4",
- *     "calories": "2150",
- *     "steps": "8200",
- *     "mood": "good",
- *     "feeling": "pretty calm",   // optional – we merge into mood
- *     "main_struggle": "late night cravings",
- *     "coach_focus": "plan last meal better",
- *     "flag": "true"
+ *     "weight": 190.4,
+ *     "calories": 2100,          // optional, we prefer total_calories
+ *     "total_calories": 2100,    // preferred
+ *     "steps": 8200,
+ *     "mood": "tired",
+ *     "struggle": "late night cravings",
+ *     "coach_focus": "evening snacks",
+ *     "meals": [
+ *       {
+ *         "meal_type": "Dinner",
+ *         "items": ["chicken bowl", "rice"],
+ *         "calories": 650
+ *       }
+ *     ]
  *   }
  * }
+ *
+ * NOTE: we also still support the older fields:
+ *   main_struggle, feeling, flag, etc.
  */
 export default async function handler(req, res) {
   // CORS preflight
@@ -78,7 +87,18 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   try {
-    const { email, log } = req.body || {};
+    // Body can be object or string depending on environment
+    let body = req.body || {};
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body || "{}");
+      } catch (err) {
+        console.error("Failed to parse JSON body:", err);
+        return res.status(400).json({ error: "Invalid JSON body" });
+      }
+    }
+
+    const { email, log } = body;
 
     if (!email) {
       return res.status(400).json({ error: "Missing email" });
@@ -99,22 +119,26 @@ export default async function handler(req, res) {
     // date (required)
     fields.push({ key: "date", value: safe(log.date) || "" });
 
-    if (safe(log.weight) !== null) {
-      fields.push({ key: "weight", value: safe(log.weight) });
+    // Prefer total_calories, fallback to calories
+    const weightVal = safe(log.weight);
+    const caloriesVal = safe(
+      log.total_calories !== undefined ? log.total_calories : log.calories
+    );
+    const stepsVal = safe(log.steps);
+
+    if (weightVal !== null) {
+      fields.push({ key: "weight", value: weightVal });
     }
-    if (safe(log.calories) !== null) {
-      fields.push({ key: "calories", value: safe(log.calories) });
+    if (caloriesVal !== null) {
+      fields.push({ key: "calories", value: caloriesVal });
     }
-    if (safe(log.steps) !== null) {
-      fields.push({ key: "steps", value: safe(log.steps) });
+    if (stepsVal !== null) {
+      fields.push({ key: "steps", value: stepsVal });
     }
 
     // mood / feeling / struggle / focus
-    // 👉 Your Daily Log definition has "mood" but not "feeling",
-    // so we MERGE feeling into mood text and do NOT send a field named "feeling".
     const moodVal = safe(log.mood);
     const feelingVal = safe(log.feeling);
-
     if (moodVal !== null || feelingVal !== null) {
       let combined = "";
       if (moodVal) combined += moodVal;
@@ -124,20 +148,59 @@ export default async function handler(req, res) {
       fields.push({ key: "mood", value: combined });
     }
 
-    if (safe(log.main_struggle) !== null) {
-      // store under "struggle" which your dashboard already knows how to read
-      fields.push({ key: "struggle", value: safe(log.main_struggle) });
+    // struggle: support both new "struggle" and old "main_struggle"
+    const struggleVal = safe(
+      log.struggle !== undefined ? log.struggle : log.main_struggle
+    );
+    if (struggleVal !== null) {
+      fields.push({ key: "struggle", value: struggleVal });
     }
+
     if (safe(log.coach_focus) !== null) {
       fields.push({ key: "coach_focus", value: safe(log.coach_focus) });
     }
 
-    // optional meals, if you add that later
+    // meals:
+    // - If array of strings, join with newlines
+    // - If array of objects { meal_type, items, calories }, make readable lines
     if (Array.isArray(log.meals) && log.meals.length > 0) {
-      fields.push({ key: "meals", value: log.meals.join("\n") });
+      let mealsField = null;
+
+      if (typeof log.meals[0] === "string") {
+        mealsField = log.meals.join("\n");
+      } else {
+        const lines = log.meals
+          .map((m) => {
+            if (!m) return "";
+            const type = m.meal_type || m.type || "Meal";
+            const items = Array.isArray(m.items)
+              ? m.items.join(", ")
+              : m.items || "";
+            const cals =
+              m.calories !== undefined
+                ? m.calories
+                : m.kcal !== undefined
+                ? m.kcal
+                : null;
+
+            let line = type;
+            if (items) line += `: ${items}`;
+            if (cals !== null) line += ` (~${cals} kcal)`;
+            return line;
+          })
+          .filter(Boolean);
+
+        if (lines.length > 0) {
+          mealsField = lines.join("\n");
+        }
+      }
+
+      if (mealsField !== null) {
+        fields.push({ key: "meals", value: mealsField });
+      }
     }
 
-    // flag: treat any truthy value as "true"
+    // flag: treat any truthy value as "true" (optional; might not be present)
     if (log.flag !== undefined) {
       const val = String(log.flag).toLowerCase();
       const flagValue =
