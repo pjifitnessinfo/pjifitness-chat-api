@@ -253,12 +253,10 @@ function extractTextFromResponse(resp) {
   try {
     if (!resp) return "";
 
-    // Preferred: SDK convenience field, if present
     if (typeof resp.output_text === "string" && resp.output_text.length > 0) {
       return resp.output_text.trim();
     }
 
-    // Fallback: manually walk .output[]
     if (!resp.output) return "";
 
     let text = "";
@@ -267,12 +265,9 @@ function extractTextFromResponse(resp) {
       if (!item || !item.content) continue;
 
       for (const part of item.content) {
-        // Newer format: { type: "text", text: "..." }
         if (part.type === "text" && typeof part.text === "string") {
           text += part.text;
         }
-
-        // Older format: { type: "output_text", text: { value: "..." } }
         if (
           part.type === "output_text" &&
           part.text &&
@@ -346,7 +341,7 @@ export default async function handler(req, res) {
 
     // Call OpenAI Responses API (model + instructions, no assistant_id)
     const aiResponse = await client.responses.create({
-      model: "gpt-4.1-mini", // you can switch to "gpt-4.1" or "gpt-4o" if you want
+      model: "gpt-4.1-mini",
       instructions: RUN_INSTRUCTIONS,
       input: [
         {
@@ -368,10 +363,22 @@ export default async function handler(req, res) {
     const fullText = extractTextFromResponse(aiResponse);
     const { reply, log } = splitCoachAndLog(fullText);
 
+    // 🔗 NEW: if we have a log + email, save it to Shopify via /api/save-daily-log
+    if (log && email) {
+      try {
+        await fetch("https://pjifitness-chat-api.vercel.app/api/save-daily-log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, log }),
+        });
+      } catch (err) {
+        console.error("Error calling /api/save-daily-log:", err);
+      }
+    }
+
     res.status(200).json({
       reply: reply || "Sorry, I couldn't generate a response right now.",
-      log, // <-- structured log object (or null if parsing failed)
-      // raw: aiResponse, // you can comment this out later if not needed
+      log, // still returned if you ever want it client-side
     });
   } catch (err) {
     console.error("Error in /api/chat:", err);
