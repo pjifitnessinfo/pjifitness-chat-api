@@ -239,7 +239,6 @@ function setCors(res) {
 function extractTextFromResponse(resp) {
   try {
     if (!resp || !resp.output) return "";
-    // New Responses format: output is an array of "message" objects
     let text = "";
     for (const block of resp.output) {
       if (!block.content) continue;
@@ -272,7 +271,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    // GitHub/Vercel sometimes gives body as string
     const body =
       typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body || {};
 
@@ -286,8 +284,9 @@ export default async function handler(req, res) {
 
     const emailTag = email ? `email: ${email}` : "email: unknown";
 
-    // Call OpenAI Responses API with your assistant + extra instructions
+    // ✅ IMPORTANT: include model here
     const aiResponse = await client.responses.create({
+      model: "gpt-4.1-mini", // or "gpt-4.1" / "gpt-4o"
       assistant_id: ASSISTANT_ID,
       input: [
         {
@@ -307,12 +306,10 @@ export default async function handler(req, res) {
       },
     });
 
-    const replyText = extractTextFromResponse(aiResponse) ||
+    const replyText =
+      extractTextFromResponse(aiResponse) ||
       "Sorry, I couldn't generate a response right now.";
 
-    // NOTE: For now we are ONLY returning the AI reply.
-    // Later we can read aiResponse.output for structured JSON
-    // and write logs to Shopify again.
     res.status(200).json({
       reply: replyText,
       raw: aiResponse,
