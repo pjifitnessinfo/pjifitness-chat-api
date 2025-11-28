@@ -6,9 +6,6 @@ const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Your PJiFitness assistant
-const ASSISTANT_ID = "asst_RnVnU6FuCnK6TsOpRxa0sdaG";
-
 // === RUN INSTRUCTIONS (your long coaching spec) ===
 const RUN_INSTRUCTIONS = `
 You are the PJiFitness AI Coach.
@@ -284,10 +281,9 @@ export default async function handler(req, res) {
 
     const emailTag = email ? `email: ${email}` : "email: unknown";
 
-    // ✅ IMPORTANT: include model here
+    // Call OpenAI Responses API (no assistant_id, just model + instructions)
     const aiResponse = await client.responses.create({
       model: "gpt-4.1-mini", // or "gpt-4.1" / "gpt-4o"
-      assistant_id: ASSISTANT_ID,
       input: [
         {
           role: "user",
@@ -299,7 +295,7 @@ export default async function handler(req, res) {
           ],
         },
       ],
-      additional_instructions: RUN_INSTRUCTIONS,
+      instructions: RUN_INSTRUCTIONS,
       metadata: {
         source: "pjifitness-chat-api",
         email: email || "unknown",
