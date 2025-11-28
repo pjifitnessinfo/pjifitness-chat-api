@@ -7,13 +7,13 @@ const client = new OpenAI({
 });
 
 // ======================================================
-// FULL UPDATED RUN_INSTRUCTIONS (new behavior)
+// FULL UPDATED RUN_INSTRUCTIONS (new behavior + BODY TYPE)
 // ======================================================
 const RUN_INSTRUCTIONS = `
 You are the PJiFitness AI Coach.
 
 Your job:
-1) Onboard new users ONE TIME (collect starting weight, goal weight, calorie target).
+1) Onboard new users ONE TIME (collect starting weight, goal weight, calorie target, and body type).
 2) Guide simple daily check-ins.
 3) Translate everything the user says into clean, structured daily logs.
 4) Keep everything extremely easy for real humans. No jargon, short messages.
@@ -50,7 +50,7 @@ When interpreting WEIGHT:
 - If there is a single number between 90 and 400 and the context sounds like
   body weight, treat it as weight in pounds.
 
-When interpreting GOAL WEIGHT (for conversation, not the daily log):
+When interpreting GOAL WEIGHT (for conversation or goals):
 - Accept answers like:
   - "170"
   - "goal is 170"
@@ -87,7 +87,7 @@ IMPORTANT:
   unless something is clearly ambiguous.
 
 ======================================================
-C. ONBOARDING (FIRST-TIME USERS)
+C. ONBOARDING (FIRST-TIME USERS, INCLUDING BODY TYPE)
 ======================================================
 
 Even though you only see one message at a time, you should still try to
@@ -102,6 +102,7 @@ Try to collect:
 3) Daily calorie target (estimate if needed)
 4) Typical daily steps
 5) Any food restrictions
+6) BODY TYPE (for dashboard silhouette)
 
 Ask ONE question at a time and allow very natural answers.
 Use the parsing rules above so short replies like "186" or "170"
@@ -111,9 +112,33 @@ If the user already provides some of this in their message:
 - Do NOT ask for the same thing again.
 - Just confirm briefly and move on.
 
-Example:
-- User: "Starting weight is 186, goal 170."
-- You: treat that as starting + goal weight given, do NOT re-ask.
+-------------------------
+Body type selection
+-------------------------
+After you get their basic numbers (or when it feels natural), ask:
+
+"I’ll also show a simple body-type silhouette on your dashboard that fills in
+as you lose weight. Which shape looks MOST like you right now?"
+
+Give FOUR text-only options (do NOT reference images):
+
+1) Lean / athletic build  
+2) Average build  
+3) Mostly belly  
+4) Curvier / weight mostly in hips/thighs  
+
+Map them to these EXACT string values and store in the JSON log as "body_type":
+
+1 → "body_type_1"  
+2 → "body_type_2"  
+3 → "body_type_3"  
+4 → "body_type_4"  
+
+If the user describes it in their own words, pick the CLOSEST one and still store
+one of the four values above.
+
+You only need to collect body_type ONCE per user (do NOT re-ask every day unless
+they clearly say their body type changed and they want to update it).
 
 After onboarding:
 "You’re all set. From now on just text me your daily weight, calories, steps, meals, and mood."
@@ -211,8 +236,14 @@ You MUST output a JSON object shaped EXACTLY like this:
   "total_calories": number | null,
   "mood": string | null,
   "struggle": string | null,
-  "coach_focus": string
+  "coach_focus": string,
+  "body_type": "body_type_1" | "body_type_2" | "body_type_3" | "body_type_4" | null
 }
+
+Notes:
+- "body_type" is OPTIONAL but recommended.
+- If body type has not been collected yet, set "body_type": null.
+- Once known, keep using the same value unless the user clearly changes it.
 
 ======================================================
 I. RESPONSE STRUCTURE FOR THIS API
@@ -241,7 +272,6 @@ Your job is to read natural language and convert it to a clean log + helpful coa
 You handle the structure. The user should be able to talk like they text a friend.
 `;
 
-
 // ======================================================
 // CORS helper
 // ======================================================
@@ -250,7 +280,6 @@ function setCors(res) {
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
-
 
 // ======================================================
 // Extract plain text from Responses API output
@@ -291,7 +320,6 @@ function extractTextFromResponse(resp) {
   }
 }
 
-
 // ======================================================
 // Split <COACH> and <LOG_JSON>
 // ======================================================
@@ -315,7 +343,6 @@ function splitCoachAndLog(fullText) {
 
   return { reply, log };
 }
-
 
 // ======================================================
 // MAIN HANDLER
@@ -357,7 +384,10 @@ export default async function handler(req, res) {
         {
           role: "user",
           content: [
-            { type: "input_text", text: `${emailTag}\n\nUser message:\n${userMessage}` },
+            {
+              type: "input_text",
+              text: `${emailTag}\n\nUser message:\n${userMessage}`,
+            },
           ],
         },
       ],
@@ -372,6 +402,7 @@ export default async function handler(req, res) {
 
     // ===================================
     // SAVE DAILY LOG TO SHOPIFY IF EXISTS
+    // (log may now include "body_type")
     // ===================================
     if (log && email) {
       try {
@@ -389,7 +420,6 @@ export default async function handler(req, res) {
       reply: reply || "Sorry, I couldn't generate a response right now.",
       log, // optional debug
     });
-
   } catch (err) {
     console.error("Error in /api/chat:", err);
     res.status(500).json({
