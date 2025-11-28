@@ -7,6 +7,7 @@ const client = new OpenAI({
 });
 
 // === RUN INSTRUCTIONS (your long coaching spec) ===
+// NOTE: At the very bottom we now define a strict response format
 const RUN_INSTRUCTIONS = `
 You are the PJiFitness AI Coach.
 
@@ -64,6 +65,7 @@ Your job:
 
 ALWAYS log the day using these fields:
 
+- date (YYYY-MM-DD)
 - weight
 - calories
 - steps
@@ -92,19 +94,17 @@ Whenever the user says ANYTHING about food, YOU MUST:
    - If they don’t → estimate realistically (do NOT say you might be wrong)
    - Keep estimates consistent day to day
 
-3) Store the meal inside “meals" object:
-
-Example JSON you produce internally:
+3) Store the meal inside "meals" array, each item shaped like:
 
 {
-  meal_type: "Lunch",
-  items: ["turkey sandwich", "chips"],
-  calories: 620
+  "meal_type": "Lunch",
+  "items": ["turkey sandwich", "chips"],
+  "calories": 620
 }
 
 4) Update TOTAL DAILY CALORIES:
 
-total = sum of ALL meals for the day.
+total_calories = sum of ALL meals for the day.
 
 5) Show a clean summary back to the user:
 
@@ -198,29 +198,45 @@ Then:
 I. WHAT YOU SHOULD SEND BACK TO MY API
 ======================================================
 
-Every time you respond back to the user, ALSO send structured JSON:
+Every time you respond back to the user, ALSO send structured JSON that represents the latest state for TODAY. Shape it exactly like this:
 
 {
-  date: "YYYY-MM-DD",
-  weight: (if updated),
-  calories: (if updated),
-  steps: (if updated),
-  meals: [...],
-  total_calories: number,
-  mood: string,
-  struggle: string,
-  coach_focus: string
+  "date": "YYYY-MM-DD",
+  "weight": number | null,
+  "calories": number | null,
+  "steps": number | null,
+  "meals": [
+    {
+      "meal_type": "Breakfast" | "Lunch" | "Dinner" | "Snack",
+      "items": ["string", "string"],
+      "calories": number
+    }
+  ],
+  "total_calories": number | null,
+  "mood": "string or null",
+  "struggle": "string or null",
+  "coach_focus": "string or null"
 }
 
-If the user says something conversational that does NOT change data, you may skip data updates.
+If the user says something conversational that does NOT change data, you may keep fields as null but still send a valid JSON object for today.
 
 ======================================================
-J. THE MOST IMPORTANT THING:
+J. RESPONSE FORMAT (VERY IMPORTANT)
 ======================================================
 
-**Make logging effortless.  
-Users should feel like they're texting a friend.  
-You ALWAYS translate their natural speech into structured logs.**
+You MUST respond in this format ONLY:
+
+<COACH>
+[Your short, friendly coaching reply for the human. No JSON here.]
+</COACH>
+
+<LOG_JSON>
+[One valid JSON object ONLY, matching the shape described above. No extra text.]
+</LOG_JSON>
+
+- Do NOT put JSON outside <LOG_JSON> tags.
+- Do NOT include explanation around the JSON.
+- Do NOT add any other sections or tags.
 
 End of instructions.
 `;
@@ -237,12 +253,12 @@ function extractTextFromResponse(resp) {
   try {
     if (!resp) return "";
 
-    // ✅ Preferred: SDK convenience field
+    // Preferred: SDK convenience field, if present
     if (typeof resp.output_text === "string" && resp.output_text.length > 0) {
       return resp.output_text.trim();
     }
 
-    // ✅ Fallback: manually walk output array if present
+    // Fallback: manually walk .output[]
     if (!resp.output) return "";
 
     let text = "";
@@ -257,7 +273,11 @@ function extractTextFromResponse(resp) {
         }
 
         // Older format: { type: "output_text", text: { value: "..." } }
-        if (part.type === "output_text" && part.text && typeof part.text.value === "string") {
+        if (
+          part.type === "output_text" &&
+          part.text &&
+          typeof part.text.value === "string"
+        ) {
           text += part.text.value;
         }
       }
@@ -268,6 +288,31 @@ function extractTextFromResponse(resp) {
     console.error("Error extracting text:", err);
     return "";
   }
+}
+
+// Split the full text into human reply + JSON log
+function splitCoachAndLog(fullText) {
+  if (!fullText) {
+    return { reply: "", log: null };
+  }
+
+  const coachMatch = fullText.match(/<COACH>([\s\S]*?)<\/COACH>/i);
+  const logMatch = fullText.match(/<LOG_JSON>([\s\S]*?)<\/LOG_JSON>/i);
+
+  const reply = coachMatch ? coachMatch[1].trim() : fullText.trim();
+
+  let log = null;
+  if (logMatch) {
+    const jsonRaw = logMatch[1].trim();
+    try {
+      log = JSON.parse(jsonRaw);
+    } catch (err) {
+      console.error("Failed to parse LOG_JSON:", err, "raw:", jsonRaw);
+      log = null;
+    }
+  }
+
+  return { reply, log };
 }
 
 // === MAIN HANDLER ===
@@ -320,14 +365,13 @@ export default async function handler(req, res) {
       },
     });
 
-    const replyText =
-      extractTextFromResponse(aiResponse) ||
-      "Sorry, I couldn't generate a response right now.";
+    const fullText = extractTextFromResponse(aiResponse);
+    const { reply, log } = splitCoachAndLog(fullText);
 
     res.status(200).json({
-      reply: replyText,
-      // you can remove raw later if you don’t need it in the frontend
-      raw: aiResponse,
+      reply: reply || "Sorry, I couldn't generate a response right now.",
+      log, // <-- structured log object (or null if parsing failed)
+      // raw: aiResponse, // you can comment this out later if not needed
     });
   } catch (err) {
     console.error("Error in /api/chat:", err);
