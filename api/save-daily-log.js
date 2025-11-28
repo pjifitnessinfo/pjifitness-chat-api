@@ -5,9 +5,22 @@ const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
 
 /**
+ * Basic safety checks
+ */
+function assertEnv() {
+  if (!SHOPIFY_STORE_DOMAIN || !SHOPIFY_ADMIN_API_TOKEN) {
+    throw new Error(
+      "Missing SHOPIFY_STORE_DOMAIN or SHOPIFY_ADMIN_API_ACCESS_TOKEN env vars"
+    );
+  }
+}
+
+/**
  * Helper: call Shopify Admin GraphQL
  */
 async function shopifyAdminFetch(query, variables = {}) {
+  assertEnv();
+
   const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`;
 
   let res;
@@ -51,7 +64,7 @@ async function findCustomerByEmail(email) {
         nodes {
           id
           email
-          metafields(first: 20, namespace: "custom") {
+          metafields(first: 50, namespace: "custom") {
             edges {
               node {
                 id
@@ -86,6 +99,7 @@ async function saveDailyLogsMetafield(customerId, logsArray) {
           id
           key
           namespace
+          type
           value
         }
         userErrors {
@@ -111,10 +125,10 @@ async function saveDailyLogsMetafield(customerId, logsArray) {
   const errors = data?.metafieldsSet?.userErrors || [];
   if (errors.length > 0) {
     console.error("Error saving daily_logs metafield:", errors);
-    throw new Error("Failed to save daily_logs metafield");
+    return { ok: false, userErrors: errors };
   }
 
-  return data.metafieldsSet.metafields[0];
+  return { ok: true, metafield: data.metafieldsSet.metafields[0] };
 }
 
 /**
@@ -198,32 +212,17 @@ function mergeDailyLog(existingLogs, incomingLogRaw) {
   // === Merge into existing entry for this date ===
   const existing = logs[idx];
 
-  // nums: overwrite if new value present
-  if (incoming.weight !== null) {
-    existing.weight = incoming.weight;
-  }
+  if (incoming.weight !== null) existing.weight = incoming.weight;
+  if (incoming.steps !== null) existing.steps = incoming.steps;
+  if (incoming.mood !== null) existing.mood = incoming.mood;
+  if (incoming.struggle !== null) existing.struggle = incoming.struggle;
 
-  // steps
-  if (incoming.steps !== null) {
-    existing.steps = incoming.steps;
-  }
-
-  // mood & struggle
-  if (incoming.mood !== null) {
-    existing.mood = incoming.mood;
-  }
-  if (incoming.struggle !== null) {
-    existing.struggle = incoming.struggle;
-  }
-
-  // coach_focus: always keep the latest non-empty
   if (incoming.coach_focus) {
     existing.coach_focus = incoming.coach_focus;
   } else if (!existing.coach_focus) {
     existing.coach_focus = "Stay consistent with your plan today.";
   }
 
-  // Meals + calories
   const incomingMeals = incoming.meals || [];
   if (incomingMeals.length > 0) {
     const existingMeals = Array.isArray(existing.meals)
@@ -241,7 +240,6 @@ function mergeDailyLog(existingLogs, incomingLogRaw) {
     existing.total_calories = mergedTotal || null;
     existing.calories = mergedTotal || null;
   } else {
-    // No meals in this log, but maybe a direct calorie number
     const calFromLog =
       incoming.total_calories || incoming.calories || null;
     if (calFromLog !== null) {
@@ -258,10 +256,12 @@ function mergeDailyLog(existingLogs, incomingLogRaw) {
  * Vercel handler
  */
 export default async function handler(req, res) {
+  // Basic CORS
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
   if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     res.status(200).end();
     return;
   }
@@ -299,10 +299,9 @@ export default async function handler(req, res) {
 
     const customerId = customer.id;
 
-    // Find existing daily_logs metafield in namespace "custom"
+    // Existing daily_logs metafield in namespace "custom"
     let existingLogs = [];
-    const metafieldEdges =
-      customer.metafields?.edges || [];
+    const metafieldEdges = customer.metafields?.edges || [];
 
     const dailyLogsMeta = metafieldEdges.find(
       (edge) => edge.node.key === "daily_logs"
@@ -322,15 +321,16 @@ export default async function handler(req, res) {
       }
     }
 
-    // Merge incoming log into existing logs
     const updatedLogs = mergeDailyLog(existingLogs, log);
 
-    // Save back to Shopify
-    await saveDailyLogsMetafield(customerId, updatedLogs);
+    const saveResult = await saveDailyLogsMetafield(
+      customerId,
+      updatedLogs
+    );
 
     res.status(200).json({
-      ok: true,
-      message: "Daily log saved",
+      ok: saveResult.ok,
+      saveResult,
       count: updatedLogs.length,
     });
   } catch (err) {
