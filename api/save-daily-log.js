@@ -17,6 +17,8 @@ function assertEnv() {
 
 /**
  * Helper: call Shopify Admin GraphQL
+ * - Returns json.data on success
+ * - Throws with FULL error details on failure
  */
 async function shopifyAdminFetch(query, variables = {}) {
   assertEnv();
@@ -47,8 +49,10 @@ async function shopifyAdminFetch(query, variables = {}) {
   }
 
   if (!res.ok || json.errors) {
-    console.error("Shopify GraphQL error:", json.errors || json);
-    throw new Error("Shopify GraphQL error");
+    console.error("Shopify GraphQL error raw:", JSON.stringify(json, null, 2));
+    // Attach the raw errors so we can see them in the browser
+    const msg = json.errors ? JSON.stringify(json.errors) : JSON.stringify(json);
+    throw new Error(msg);
   }
 
   return json.data;
@@ -90,8 +94,10 @@ async function findCustomerByEmail(email) {
 
 /**
  * Upsert customer metafield "daily_logs" (JSON)
+ * - If metafield already exists, update by ID
+ * - If not, create via ownerId + namespace + key + type
  */
-async function saveDailyLogsMetafield(customerId, logsArray) {
+async function saveDailyLogsMetafield(customerId, existingMetaNode, logsArray) {
   const mutation = `
     mutation SaveDailyLogs($metafields: [MetafieldsSetInput!]!) {
       metafieldsSet(metafields: $metafields) {
@@ -110,17 +116,28 @@ async function saveDailyLogsMetafield(customerId, logsArray) {
     }
   `;
 
-  const metafields = [
-    {
+  let metafieldInput;
+
+  if (existingMetaNode && existingMetaNode.id) {
+    // Update existing metafield by ID
+    metafieldInput = {
+      id: existingMetaNode.id,
+      value: JSON.stringify(logsArray),
+    };
+  } else {
+    // Create new metafield
+    metafieldInput = {
       ownerId: customerId,
       namespace: "custom",
       key: "daily_logs",
       type: "json",
       value: JSON.stringify(logsArray),
-    },
-  ];
+    };
+  }
 
-  const data = await shopifyAdminFetch(mutation, { metafields });
+  const data = await shopifyAdminFetch(mutation, {
+    metafields: [metafieldInput],
+  });
 
   const errors = data?.metafieldsSet?.userErrors || [];
   if (errors.length > 0) {
@@ -303,13 +320,14 @@ export default async function handler(req, res) {
     let existingLogs = [];
     const metafieldEdges = customer.metafields?.edges || [];
 
-    const dailyLogsMeta = metafieldEdges.find(
+    const dailyLogsMetaEdge = metafieldEdges.find(
       (edge) => edge.node.key === "daily_logs"
     );
+    const dailyLogsMetaNode = dailyLogsMetaEdge ? dailyLogsMetaEdge.node : null;
 
-    if (dailyLogsMeta && dailyLogsMeta.node.value) {
+    if (dailyLogsMetaNode && dailyLogsMetaNode.value) {
       try {
-        const parsed = JSON.parse(dailyLogsMeta.node.value);
+        const parsed = JSON.parse(dailyLogsMetaNode.value);
         if (Array.isArray(parsed)) {
           existingLogs = parsed;
         }
@@ -325,6 +343,7 @@ export default async function handler(req, res) {
 
     const saveResult = await saveDailyLogsMetafield(
       customerId,
+      dailyLogsMetaNode,
       updatedLogs
     );
 
