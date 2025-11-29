@@ -29,311 +29,173 @@ async function shopifyAdminFetch(query, variables = {}) {
   try {
     json = await res.json();
   } catch (err) {
-    console.error("JSON parse error from Shopify:", err);
-    throw new Error("Invalid JSON response from Shopify Admin API");
+    console.error("Failed to parse Shopify JSON:", err);
+    throw new Error("Failed to parse Shopify JSON");
   }
 
   if (!res.ok || json.errors) {
     console.error("Shopify GraphQL error:", JSON.stringify(json, null, 2));
-    throw new Error(JSON.stringify(json));
+    throw new Error("Shopify GraphQL error");
   }
 
-  return json.data;
+  return json;
 }
 
 /**
- * OLD: metaobject query (kept as fallback)
+ * Basic CORS helper
  */
-const DAILY_LOG_QUERY = `
-  query DailyLogs($type: String!, $first: Int!, $query: String!) {
-    metaobjects(type: $type, first: $first, query: $query) {
-      edges {
-        node {
-          id
-          displayName
-          fields {
-            key
-            value
-          }
-        }
-      }
-    }
-  }
-`;
-
-/**
- * NEW: customer + metafields query
- */
-const CUSTOMER_DAILY_LOGS_QUERY = `
-  query CustomerDailyLogs($query: String!) {
-    customers(first: 1, query: $query) {
-      edges {
-        node {
-          id
-          email
-          metafield(namespace: "custom", key: "daily_logs") {
-            id
-            value
-          }
-          metafield_start: metafield(namespace: "custom", key: "start_weight") {
-            value
-          }
-          metafield_goal: metafield(namespace: "custom", key: "goal_weight") {
-            value
-          }
-          metafield_cal_goal: metafield(namespace: "custom", key: "calorie_goal") {
-            value
-          }
-        }
-      }
-    }
-  }
-`;
-
-function toNum(v) {
-  if (v === null || v === undefined || v === "") return null;
-  const n = typeof v === "number" ? v : parseFloat(v);
-  return isNaN(n) ? null : n;
-}
-
-/**
- * Normalize OLD metaobject -> plain log object
- */
-function metaobjectToLog(node) {
-  const fieldMap = {};
-  (node.fields || []).forEach((f) => {
-    fieldMap[f.key] = f.value;
-  });
-
-  return {
-    id: node.id,
-    gid: node.id,
-    display_name: node.displayName || null,
-    date: fieldMap.date || null,
-    weight: toNum(fieldMap.weight),
-    calories: toNum(fieldMap.calories),
-    steps: toNum(fieldMap.steps),
-    mood: fieldMap.mood || null,
-    feeling: fieldMap.feeling || null,
-    struggle: fieldMap.struggle || null,
-    coach_focus: fieldMap.coach_focus || null,
-    meals: fieldMap.meals || null, // old string-style meals
-    daily_protein: toNum(fieldMap.daily_protein),
-    daily_carbs: toNum(fieldMap.daily_carbs),
-    daily_fats: toNum(fieldMap.daily_fats),
-    customer_id: fieldMap.customer_id || null,
-    flag:
-      typeof fieldMap.flag === "string"
-        ? fieldMap.flag.toLowerCase() === "true"
-        : null,
-  };
-}
-
-/**
- * NEW: Normalize metafield JSON entry -> plain log object
- * Matches the JSON you pasted from custom.daily_logs.
- */
-function metafieldEntryToLog(entry, idx) {
-  const e = entry || {};
-  return {
-    id: e.id || `metafield-log-${idx}`,
-    gid: e.id || null,
-    display_name: e.display_name || null,
-    date: e.date || null,
-    weight: toNum(e.weight),
-    calories: toNum(e.calories),
-    total_calories: toNum(e.total_calories),
-    steps: toNum(e.steps),
-    mood: e.mood || null,
-    feeling: e.feeling || null,
-    struggle: e.struggle || null,
-    coach_focus: e.coach_focus || null,
-    meals: Array.isArray(e.meals) ? e.meals : [],
-    daily_protein: toNum(e.daily_protein),
-    daily_carbs: toNum(e.daily_carbs),
-    daily_fats: toNum(e.daily_fats),
-    customer_id: e.customer_id || null,
-    flag:
-      typeof e.flag === "string"
-        ? e.flag.toLowerCase() === "true"
-        : e.flag === true
-        ? true
-        : null,
-  };
-}
-
-/**
- * Try multiple different customer search query formats until one returns a match.
- */
-async function findCustomerWithQueries(email) {
-  const searchPatterns = [
-    JSON.stringify(email),                  // "pjantoniato@gmail.com"
-    `email:${JSON.stringify(email)}`,       // email:"pjantoniato@gmail.com"
-    `email:${email}`,                       // email:pjantoniato@gmail.com
-  ];
-
-  for (const q of searchPatterns) {
-    try {
-      console.log("PJ GET-LOGS: trying customer search query:", q);
-      const data = await shopifyAdminFetch(CUSTOMER_DAILY_LOGS_QUERY, {
-        query: q,
-      });
-
-      const edges = data?.customers?.edges || [];
-      if (edges.length > 0) {
-        return edges[0].node;
-      }
-    } catch (e) {
-      console.error("Error during customer search with query", q, e);
-    }
-  }
-
-  return null;
+function setCors(res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
 export default async function handler(req, res) {
-  // CORS
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  setCors(res);
 
   if (req.method === "OPTIONS") {
-    return res.status(200).end();
+    res.status(200).end();
+    return;
   }
 
-  if (req.method !== "GET" && req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "GET") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+
+  const email = (req.query.email || "").toString().toLowerCase().trim();
+
+  if (!email) {
+    res.status(400).json({ ok: false, error: "Missing ?email=" });
+    return;
   }
 
   try {
-    // Support both GET (?email=) and POST ({ email })
-    let email = null;
+    // 1) Find the customer by email + pull metafields directly
+    const query = `
+      query GetCustomerByEmail($query: String!) {
+        customers(first: 1, query: $query) {
+          edges {
+            node {
+              id
+              email
 
-    if (req.method === "GET") {
-      email =
-        req.query.email ||
-        req.query.userEmail ||
-        req.query.customerId ||
-        null;
-    } else {
-      const body = req.body || {};
-      email =
-        body.email ||
-        body.userEmail ||
-        body.customerId ||
-        null;
-    }
+              metafield(namespace: "custom", key: "daily_logs") {
+                id
+                type
+                value
+              }
 
-    if (!email) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Missing email" });
-    }
-
-    email = String(email).toLowerCase();
-
-    // ==============================
-    // 1) TRY NEW METAFIELD-BASED FLOW
-    // ==============================
-    let logs = [];
-    let startWeight = null;
-    let goalWeight = null;
-    let calorieGoal = null;
-
-    try {
-      const customerNode = await findCustomerWithQueries(email);
-
-      if (customerNode) {
-        const mfDailyLogs = customerNode.metafield;
-        if (mfDailyLogs && typeof mfDailyLogs.value === "string") {
-          try {
-            const parsed = JSON.parse(mfDailyLogs.value || "[]");
-            if (Array.isArray(parsed)) {
-              logs = parsed.map(metafieldEntryToLog);
+              metafield(namespace: "custom", key: "start_weight") {
+                value
+              }
+              metafield(namespace: "custom", key: "goal_weight") {
+                value
+              }
+              metafield(namespace: "custom", key: "calorie_goal") {
+                value
+              }
             }
-          } catch (e) {
-            console.error(
-              "Error parsing daily_logs metafield JSON:",
-              e
-            );
           }
         }
-
-        if (
-          customerNode.metafield_start &&
-          customerNode.metafield_start.value != null
-        ) {
-          startWeight = toNum(customerNode.metafield_start.value);
-        }
-        if (
-          customerNode.metafield_goal &&
-          customerNode.metafield_goal.value != null
-        ) {
-          goalWeight = toNum(customerNode.metafield_goal.value);
-        }
-        if (
-          customerNode.metafield_cal_goal &&
-          customerNode.metafield_cal_goal.value != null
-        ) {
-          calorieGoal = toNum(customerNode.metafield_cal_goal.value);
-        }
-      } else {
-        console.log(
-          "PJ GET-LOGS: no customer found via any search pattern for email",
-          email
-        );
       }
-    } catch (e) {
-      console.error("Error fetching customer/metafield daily logs:", e);
-      // fall through to metaobject fallback
-    }
+    `;
 
-    if (logs.length > 0) {
-      logs.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-      return res.status(200).json({
+    const data = await shopifyAdminFetch(query, {
+      query: `email:${email}`,
+    });
+
+    const edges = data?.data?.customers?.edges || [];
+    if (!edges.length) {
+      res.status(200).json({
         ok: true,
         email,
-        source: "metafield",
-        start_weight: startWeight,
-        goal_weight: goalWeight,
-        calorie_goal: calorieGoal,
-        logs,
+        source: "none",
+        logs: [],
       });
+      return;
     }
 
-    // =====================================
-    // 2) FALLBACK: OLD METAOBJECT-BASED FLOW
-    // =====================================
+    const customer = edges[0].node;
 
-    const queryString = `customer_id:${email}`;
+    // 2) Read daily_logs metafield (JSON array)
+    const mf = customer.metafield;
+    let logs = [];
 
-    const data = await shopifyAdminFetch(DAILY_LOG_QUERY, {
-      type: "daily_log",
-      first: 200,
-      query: queryString,
-    });
+    if (mf && mf.value) {
+      try {
+        const parsed = JSON.parse(mf.value);
+        if (Array.isArray(parsed)) {
+          logs = parsed.map((log) => ({
+            date: log.date || null,
+            weight: log.weight ?? null,
+            calories: log.calories ?? log.total_calories ?? null,
+            steps: log.steps ?? null,
+            meals: log.meals ?? null,
+            total_calories:
+              log.total_calories != null ? log.total_calories : log.calories ?? null,
+            mood: log.mood ?? log.feeling ?? null,
+            struggle: log.struggle ?? null,
+            coach_focus: log.coach_focus || "Stay consistent today.",
+            flag: log.flag ?? false,
+          }));
+        }
+      } catch (err) {
+        console.error("Error parsing daily_logs metafield JSON:", err);
+      }
+    }
 
-    const edges = data?.metaobjects?.edges || [];
-    const metaobjectLogs = edges.map((edge) =>
-      metaobjectToLog(edge.node)
-    );
+    // 3) Sort logs by date DESC (latest first)
+    function normalizeDate(value) {
+      if (!value) return null;
+      if (value instanceof Date) return value;
+      if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
+        return new Date(value + "T00:00:00");
+      }
+      const t = Date.parse(value);
+      if (!isNaN(t)) return new Date(t);
+      return null;
+    }
 
-    metaobjectLogs.sort((a, b) =>
-      (a.date || "").localeCompare(b.date || "")
-    );
+    logs = logs
+      .map((l) => ({
+        ...l,
+        _d: normalizeDate(l.date),
+      }))
+      .filter((l) => !!l._d)
+      .sort((a, b) => b._d.getTime() - a._d.getTime());
 
-    return res.status(200).json({
+    // 4) Grab start/goal/calorie goals from metafields (if set)
+    const startWeightMf = customer.metafield__custom_start_weight || customer.metafield_start_weight;
+    const goalWeightMf = customer.metafield__custom_goal_weight || customer.metafield_goal_weight;
+    const calorieGoalMf =
+      customer.metafield__custom_calorie_goal || customer.metafield_calorie_goal;
+
+    const start_weight = startWeightMf?.value
+      ? Number(startWeightMf.value)
+      : null;
+    const goal_weight = goalWeightMf?.value ? Number(goalWeightMf.value) : null;
+    const calorie_goal = calorieGoalMf?.value
+      ? Number(calorieGoalMf.value)
+      : null;
+
+    res.status(200).json({
       ok: true,
       email,
-      source: "metaobject",
-      logs: metaobjectLogs,
+      source: "metafield",
+      start_weight,
+      goal_weight,
+      calorie_goal,
+      logs,
     });
   } catch (err) {
-    console.error("get-daily-logs error:", err);
-    return res.status(500).json({
+    console.error("Error in /api/get-daily-logs:", err);
+    res.status(500).json({
       ok: false,
+      email,
       error: "Internal server error",
-      details: err.message || String(err),
+      details: err?.message || String(err),
     });
   }
 }
+
