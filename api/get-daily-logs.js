@@ -5,19 +5,16 @@ const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
 
 /**
- * Simple CORS helper
+ * Basic CORS helper
  */
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization"
-  );
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
 /**
- * Helper: call Shopify Admin GraphQL and return data
+ * Helper: call Shopify Admin GraphQL
  */
 async function shopifyAdminFetch(query, variables = {}) {
   const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`;
@@ -33,8 +30,8 @@ async function shopifyAdminFetch(query, variables = {}) {
       body: JSON.stringify({ query, variables }),
     });
   } catch (err) {
-    console.error("get-daily-logs: network error calling Shopify:", err);
-    throw new Error("Network error contacting Shopify");
+    console.error("get-daily-logs: network error talking to Shopify:", err);
+    throw new Error("Network error contacting Shopify Admin API");
   }
 
   let json;
@@ -42,74 +39,14 @@ async function shopifyAdminFetch(query, variables = {}) {
     json = await res.json();
   } catch (err) {
     console.error("get-daily-logs: failed to parse Shopify JSON:", err);
-    throw new Error("Bad JSON from Shopify");
+    throw new Error("Invalid JSON from Shopify Admin API");
   }
 
-  if (json.errors) {
-    console.error("get-daily-logs: Shopify GraphQL errors:", json.errors);
-    throw new Error("Shopify GraphQL error");
-  }
-
-  if (!json.data) {
-    console.error("get-daily-logs: missing data in Shopify response:", json);
-    throw new Error("Shopify GraphQL error");
-  }
-
-  return json.data;
+  return json;
 }
 
 /**
- * Map a metaobject node → simple daily log object
- */
-function mapMetaobjectToLog(node) {
-  const out = {
-    id: node.id,
-    gid: node.id,
-  };
-
-  if (Array.isArray(node.fields)) {
-    node.fields.forEach((f) => {
-      if (!f || !f.key) return;
-      out[f.key] = f.value;
-    });
-  }
-
-  // Normalize common numeric fields if present
-  const numKeys = [
-    "weight",
-    "calories",
-    "steps",
-    "daily_protein",
-    "daily_carbs",
-    "daily_fats",
-  ];
-
-  numKeys.forEach((k) => {
-    if (out[k] == null || out[k] === "") {
-      out[k] = null;
-    } else {
-      const n = Number(out[k]);
-      out[k] = isNaN(n) ? null : n;
-    }
-  });
-
-  // Flag
-  if ("flag" in out) {
-    const v = out.flag;
-    out.flag =
-      v === true ||
-      v === "true" ||
-      v === "1" ||
-      v === 1 ||
-      v === "yes" ||
-      v === "Y";
-  }
-
-  return out;
-}
-
-/**
- * GET /api/get-daily-logs?email=...
+ * NEXT handler
  */
 export default async function handler(req, res) {
   setCors(res);
@@ -124,28 +61,32 @@ export default async function handler(req, res) {
     return;
   }
 
-  const email =
-    (req.query.email || req.query.e || "").toString().toLowerCase().trim();
+  const emailRaw =
+    (req.query.email ||
+      req.query.userEmail ||
+      req.query.e ||
+      "").toString();
+
+  const email = emailRaw.toLowerCase().trim();
 
   if (!email) {
-    res.status(400).json({ ok: false, error: "Missing email query parameter" });
+    res.status(400).json({ ok: false, error: "Missing ?email=" });
     return;
   }
 
-  try {
-    // We search metaobjects by a field that stores the email.
-    // Old code used something like customer_id:EMAIL – keep that pattern.
-    const search = `customer_id:${email}`;
+  console.log("get-daily-logs: fetching daily_logs metafield for", email);
 
+  try {
+    // 1) Find customer by email + pull custom.daily_logs metafield
     const query = `
-      query GetDailyLogs($search: String!) {
-        metaobjects(type: "daily_log", first: 90, query: $search) {
+      query GetCustomerDailyLogs($query: String!) {
+        customers(first: 1, query: $query) {
           edges {
             node {
               id
-              handle
-              fields {
-                key
+              email
+              metafield(namespace: "custom", key: "daily_logs") {
+                type
                 value
               }
             }
@@ -154,31 +95,80 @@ export default async function handler(req, res) {
       }
     `;
 
-    const data = await shopifyAdminFetch(query, { search });
+    const variables = {
+      query: `email:${email}`,
+    };
 
-    const edges = data.metaobjects?.edges || [];
-    const logs = edges.map((edge) => mapMetaobjectToLog(edge.node));
+    const shopifyJson = await shopifyAdminFetch(query, variables);
 
-    // Sort newest → oldest by date if available
-    logs.sort((a, b) => {
-      const da = a.date ? Date.parse(a.date) : 0;
-      const db = b.date ? Date.parse(b.date) : 0;
-      return db - da;
-    });
+    if (shopifyJson.errors) {
+      console.error("get-daily-logs: Shopify GraphQL errors:", shopifyJson.errors);
+      // Still return 200 so the dashboard doesn't blow up – just no logs.
+      res.status(200).json({
+        ok: false,
+        email,
+        error: "Shopify GraphQL error",
+        shopifyErrors: shopifyJson.errors,
+        logs: [],
+        source: "error",
+      });
+      return;
+    }
 
+    const edges = shopifyJson.data?.customers?.edges || [];
+    if (!edges.length) {
+      console.log("get-daily-logs: no customer found for", email);
+      res.status(200).json({
+        ok: true,
+        email,
+        logs: [],
+        source: "no_customer",
+      });
+      return;
+    }
+
+    const customerNode = edges[0].node;
+    const mf = customerNode.metafield;
+
+    let logs = [];
+
+    if (mf && typeof mf.value === "string" && mf.value.trim().length > 0) {
+      try {
+        const parsed = JSON.parse(mf.value);
+        if (Array.isArray(parsed)) {
+          logs = parsed;
+        } else {
+          console.warn(
+            "get-daily-logs: daily_logs metafield is not an array, got:",
+            typeof parsed
+          );
+        }
+      } catch (err) {
+        console.error(
+          "get-daily-logs: failed to parse daily_logs metafield JSON:",
+          err,
+          "raw value:",
+          mf.value
+        );
+      }
+    } else {
+      console.log("get-daily-logs: no daily_logs metafield or empty value");
+    }
+
+    // Shape the response for the dashboard
     res.status(200).json({
       ok: true,
       email,
-      source: "metaobject",
       logs,
+      source: "customer_metafield",
     });
   } catch (err) {
-    console.error("Error in /api/get-daily-logs:", err);
+    console.error("get-daily-logs: unexpected server error:", err);
     res.status(500).json({
       ok: false,
       email,
       error: "Internal server error",
-      details: err?.message || "Unknown error",
+      details: err?.message || String(err),
     });
   }
 }
