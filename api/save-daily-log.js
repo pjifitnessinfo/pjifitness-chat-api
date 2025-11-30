@@ -5,6 +5,17 @@ const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
 
 /**
+ * Basic CORS helper
+ */
+function setCors(res) {
+  // If you want to lock this down, replace * with your Shopify domain
+  // e.g. "https://pjifitness.com"
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+/**
  * Helper: call Shopify Admin GraphQL
  */
 async function shopifyAdminFetch(query, variables = {}) {
@@ -62,7 +73,6 @@ function normalizeDateString(d) {
       // If it's already like "2025-11-30" or "2025-11-30T..."
       if (d.length >= 10) {
         const sliced = d.slice(0, 10);
-        // basic sanity check: YYYY-MM-DD pattern
         if (/^\d{4}-\d{2}-\d{2}$/.test(sliced)) return sliced;
       }
     }
@@ -89,7 +99,6 @@ function mergeDailyLogs(existing, incoming) {
     merged.date = incoming.date;
   }
 
-  // Overwrite scalar fields if present in incoming
   const scalarFields = [
     "weight",
     "calories",
@@ -110,7 +119,6 @@ function mergeDailyLogs(existing, incoming) {
     }
   });
 
-  // Merge meals: append new meals to existing meals
   const existingMeals = Array.isArray(existing?.meals) ? existing.meals : [];
   const incomingMeals = Array.isArray(incoming?.meals) ? incoming.meals : [];
 
@@ -118,7 +126,6 @@ function mergeDailyLogs(existing, incoming) {
     merged.meals = [...existingMeals, ...incomingMeals];
   }
 
-  // Recompute total_calories from meals if we can
   if (Array.isArray(merged.meals) && merged.meals.length > 0) {
     const totalFromMeals = merged.meals.reduce((sum, meal) => {
       const mc = toNumberOrNull(meal?.calories);
@@ -134,7 +141,6 @@ function mergeDailyLogs(existing, incoming) {
     incoming.total_calories !== null &&
     incoming.total_calories !== ""
   ) {
-    // Fall back to incoming total_calories if no meals
     merged.total_calories = incoming.total_calories;
   }
 
@@ -147,7 +153,6 @@ function mergeDailyLogs(existing, incoming) {
 function normalizeIncomingLog(rawLog) {
   const log = { ...(rawLog || {}) };
 
-  // Ensure a date exists
   let normalizedDate = null;
   if (log.date) {
     normalizedDate = normalizeDateString(log.date);
@@ -155,7 +160,7 @@ function normalizeIncomingLog(rawLog) {
 
   if (!normalizedDate) {
     const now = new Date();
-    normalizedDate = now.toISOString().slice(0, 10); // YYYY-MM-DD
+    normalizedDate = now.toISOString().slice(0, 10);
   }
 
   log.date = normalizedDate;
@@ -164,8 +169,6 @@ function normalizeIncomingLog(rawLog) {
 
 /**
  * Ensure ownerId is a proper Shopify Customer GID
- * - Accepts gid://shopify/Customer/123 already
- * - Also accepts plain numeric like 9603496542392 and wraps it
  */
 function normalizeOwnerId(raw) {
   if (!raw) return raw;
@@ -175,24 +178,28 @@ function normalizeOwnerId(raw) {
     return s;
   }
 
-  // If it's numeric-ish, wrap it in the Customer GID format
   const digits = s.replace(/\D/g, "");
   if (digits.length > 0) {
     return `gid://shopify/Customer/${digits}`;
   }
 
-  // Fallback: return as-is (but this probably won't work with Shopify)
   console.warn("OwnerId could not be normalized to a Customer GID:", raw);
   return s;
 }
 
 export default async function handler(req, res) {
+  setCors(res);
+
+  if (req.method === "OPTIONS") {
+    // Preflight request
+    return res.status(200).end();
+  }
+
   if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
+    res.setHeader("Allow", "POST,OPTIONS");
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
-  // Handle JSON body
   let body;
   try {
     body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
@@ -232,7 +239,6 @@ export default async function handler(req, res) {
   const normalizedIncoming = normalizeIncomingLog(incomingLog);
   const logDate = normalizedIncoming.date;
 
-  // 1) Fetch existing daily_logs metafield for this customer
   const GET_DAILY_LOGS = `
     query GetDailyLogs($id: ID!) {
       customer(id: $id) {
@@ -271,10 +277,8 @@ export default async function handler(req, res) {
     }
   } catch (err) {
     console.error("Error fetching existing daily_logs metafield:", err);
-    // We can still proceed with an empty array; just log it.
   }
 
-  // Normalize all existing dates to YYYY-MM-DD so we can match by calendar day
   if (Array.isArray(existingLogs) && existingLogs.length > 0) {
     existingLogs = existingLogs.map((entry) => {
       if (!entry) return entry;
@@ -287,7 +291,6 @@ export default async function handler(req, res) {
     });
   }
 
-  // 2) Merge this log into the array by date (calendar day)
   let updatedLogs = Array.isArray(existingLogs) ? [...existingLogs] : [];
 
   const idx = updatedLogs.findIndex(
@@ -295,15 +298,12 @@ export default async function handler(req, res) {
   );
 
   if (idx === -1) {
-    // No entry for this date yet → push new
     updatedLogs.push(normalizedIncoming);
   } else {
-    // Merge with existing entry for same date
     const merged = mergeDailyLogs(updatedLogs[idx], normalizedIncoming);
     updatedLogs[idx] = merged;
   }
 
-  // 3) Save back to Shopify via metafieldsSet
   const METAFIELDS_SET = `
     mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
       metafieldsSet(metafields: $metafields) {
