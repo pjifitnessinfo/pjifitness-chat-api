@@ -374,58 +374,57 @@ export default async function handler(req, res) {
     let { reply, log } = splitCoachAndLog(fullText);
 
     console.log("AI fullText:", fullText);
-    console.log("Parsed LOG_JSON (raw):", JSON.stringify(log, null, 2));
+    console.log("Parsed LOG_JSON:", JSON.stringify(log, null, 2));
 
     // ==================================================
-    // FALLBACK: if calories exist but meals is empty,
-    // force a Day Summary meal so the dashboard shows it
+    // SAFETY NET: ALWAYS CREATE A MEAL IF CALORIES EXIST
     // ==================================================
-    let fixedLog = log;
-
-    if (fixedLog && typeof fixedLog === "object") {
-      // Normalize meals to an array
-      if (!Array.isArray(fixedLog.meals)) {
-        fixedLog.meals = [];
+    let finalLog = log;
+    if (finalLog) {
+      // Make sure meals is at least an empty array
+      if (!Array.isArray(finalLog.meals)) {
+        finalLog.meals = [];
       }
 
-      const hasMeals = Array.isArray(fixedLog.meals) && fixedLog.meals.length > 0;
+      const hasMeals = finalLog.meals.length > 0;
+      const totalFromField =
+        finalLog.total_calories !== null &&
+        finalLog.total_calories !== undefined &&
+        !Number.isNaN(Number(finalLog.total_calories))
+          ? Number(finalLog.total_calories)
+          : null;
+      const caloriesFromField =
+        finalLog.calories !== null &&
+        finalLog.calories !== undefined &&
+        !Number.isNaN(Number(finalLog.calories))
+          ? Number(finalLog.calories)
+          : null;
 
-      // Use total_calories first, otherwise calories
-      let total = null;
-      if (fixedLog.total_calories !== null && fixedLog.total_calories !== undefined) {
-        const n = Number(fixedLog.total_calories);
-        if (Number.isFinite(n) && n > 0) total = n;
-      } else if (fixedLog.calories !== null && fixedLog.calories !== undefined) {
-        const n = Number(fixedLog.calories);
-        if (Number.isFinite(n) && n > 0) total = n;
-      }
+      const bestCalories = totalFromField !== null ? totalFromField : caloriesFromField;
 
-      // If we have calories but no meals, create a fallback Day Summary meal
-      if (!hasMeals && total !== null) {
-        fixedLog.total_calories = total;
-        fixedLog.meals = [
+      // If there are no meals but we DO have a calorie total, create a Day Summary meal
+      if (!hasMeals && bestCalories !== null) {
+        finalLog.meals = [
           {
             meal_type: "Day Summary",
             items: ["Total calories only"],
-            calories: total,
+            calories: bestCalories,
           },
         ];
-      }
 
-      // Always ensure coach_focus is a non-empty string
-      if (!fixedLog.coach_focus || typeof fixedLog.coach_focus !== "string" || !fixedLog.coach_focus.trim()) {
-        fixedLog.coach_focus = "Stay consistent today.";
+        // Also make sure total_calories is set
+        if (totalFromField === null) {
+          finalLog.total_calories = bestCalories;
+        }
       }
     }
-
-    console.log("LOG_JSON after fallback fix:", JSON.stringify(fixedLog, null, 2));
 
     // ===================================
     // SAVE DAILY LOG TO SHOPIFY IF EXISTS
     // ===================================
     let saveResult = null;
 
-    if (fixedLog && email) {
+    if (finalLog && email) {
       try {
         const { customerId, existingLogs } = body; // <- coming from frontend
 
@@ -436,7 +435,7 @@ export default async function handler(req, res) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               email,
-              log: fixedLog,
+              log: finalLog,
               customerId: customerId || null,
               existingLogs: existingLogs || [],
             }),
@@ -458,7 +457,7 @@ export default async function handler(req, res) {
 
     res.status(200).json({
       reply: reply || "Sorry, I couldn't generate a response right now.",
-      log: fixedLog,
+      log: finalLog,
       saveResult,
     });
   } catch (err) {
