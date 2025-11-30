@@ -352,7 +352,7 @@ export default async function handler(req, res) {
     {
       ownerId,
       namespace: "custom",
-      key: "breakfast_cals",
+      key: "breakfast_calories",
       type: "number_integer",
       value: String(breakfastCals || 0),
     },
@@ -367,7 +367,7 @@ export default async function handler(req, res) {
     {
       ownerId,
       namespace: "custom",
-      key: "lunch_cals",
+      key: "lunch_calories",
       type: "number_integer",
       value: String(lunchCals || 0),
     },
@@ -382,7 +382,7 @@ export default async function handler(req, res) {
     {
       ownerId,
       namespace: "custom",
-      key: "dinner_cals",
+      key: "dinner_calories",
       type: "number_integer",
       value: String(dinnerCals || 0),
     },
@@ -397,7 +397,7 @@ export default async function handler(req, res) {
     {
       ownerId,
       namespace: "custom",
-      key: "snacks_cals",
+      key: "snacks_calories",
       type: "number_integer",
       value: String(snacksCals || 0),
     },
