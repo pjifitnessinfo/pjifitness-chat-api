@@ -8,8 +8,7 @@ const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
  * Basic CORS helper
  */
 function setCors(res) {
-  // If you want to lock this down, replace * with your Shopify domain
-  // e.g. "https://pjifitness.com"
+  // You can later replace "*" with your real domain, e.g. "https://pjifitness.com"
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -53,16 +52,6 @@ async function shopifyAdminFetch(query, variables = {}) {
 }
 
 /**
- * Safely coerce something to a number, or null if invalid
- */
-function toNumberOrNull(value) {
-  if (value === null || value === undefined) return null;
-  const n = typeof value === "string" ? parseFloat(value) : Number(value);
-  if (!isFinite(n)) return null;
-  return n;
-}
-
-/**
  * Normalize any date-ish thing into YYYY-MM-DD
  */
 function normalizeDateString(d) {
@@ -70,7 +59,6 @@ function normalizeDateString(d) {
 
   try {
     if (typeof d === "string") {
-      // If it's already like "2025-11-30" or "2025-11-30T..."
       if (d.length >= 10) {
         const sliced = d.slice(0, 10);
         if (/^\d{4}-\d{2}-\d{2}$/.test(sliced)) return sliced;
@@ -83,68 +71,6 @@ function normalizeDateString(d) {
   } catch (e) {
     return null;
   }
-}
-
-/**
- * Merge a new daily log into an existing one for the same date.
- * - Meals are appended
- * - Scalars (weight, steps, mood, struggle, coach_focus, calories) are overwritten if present in new log
- * - total_calories is recomputed from all meals if possible
- */
-function mergeDailyLogs(existing, incoming) {
-  const merged = { ...(existing || {}) };
-
-  // Date should already be normalized before calling this
-  if (!merged.date && incoming.date) {
-    merged.date = incoming.date;
-  }
-
-  const scalarFields = [
-    "weight",
-    "calories",
-    "steps",
-    "mood",
-    "struggle",
-    "coach_focus",
-  ];
-
-  scalarFields.forEach((field) => {
-    if (
-      Object.prototype.hasOwnProperty.call(incoming, field) &&
-      incoming[field] !== undefined &&
-      incoming[field] !== null &&
-      incoming[field] !== ""
-    ) {
-      merged[field] = incoming[field];
-    }
-  });
-
-  const existingMeals = Array.isArray(existing?.meals) ? existing.meals : [];
-  const incomingMeals = Array.isArray(incoming?.meals) ? incoming.meals : [];
-
-  if (existingMeals.length || incomingMeals.length) {
-    merged.meals = [...existingMeals, ...incomingMeals];
-  }
-
-  if (Array.isArray(merged.meals) && merged.meals.length > 0) {
-    const totalFromMeals = merged.meals.reduce((sum, meal) => {
-      const mc = toNumberOrNull(meal?.calories);
-      return mc !== null ? sum + mc : sum;
-    }, 0);
-
-    if (totalFromMeals > 0) {
-      merged.total_calories = totalFromMeals;
-    }
-  } else if (
-    Object.prototype.hasOwnProperty.call(incoming, "total_calories") &&
-    incoming.total_calories !== undefined &&
-    incoming.total_calories !== null &&
-    incoming.total_calories !== ""
-  ) {
-    merged.total_calories = incoming.total_calories;
-  }
-
-  return merged;
 }
 
 /**
@@ -200,6 +126,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
+  // Parse body
   let body;
   try {
     body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
@@ -239,6 +166,7 @@ export default async function handler(req, res) {
   const normalizedIncoming = normalizeIncomingLog(incomingLog);
   const logDate = normalizedIncoming.date;
 
+  // 1) Fetch existing daily_logs array
   const GET_DAILY_LOGS = `
     query GetDailyLogs($id: ID!) {
       customer(id: $id) {
@@ -269,6 +197,9 @@ export default async function handler(req, res) {
           const parsed = JSON.parse(mf.value);
           if (Array.isArray(parsed)) {
             existingLogs = parsed;
+          } else if (parsed && typeof parsed === "object") {
+            // Old format: single object → wrap in array
+            existingLogs = [parsed];
           }
         } catch (err) {
           console.error("Error parsing existing daily_logs JSON:", err);
@@ -279,31 +210,11 @@ export default async function handler(req, res) {
     console.error("Error fetching existing daily_logs metafield:", err);
   }
 
-  if (Array.isArray(existingLogs) && existingLogs.length > 0) {
-    existingLogs = existingLogs.map((entry) => {
-      if (!entry) return entry;
-      const copy = { ...entry };
-      if (copy.date) {
-        const nd = normalizeDateString(copy.date);
-        if (nd) copy.date = nd;
-      }
-      return copy;
-    });
-  }
+  // 2) Append this new log as its own entry (NO MERGE)
+  const updatedLogs = Array.isArray(existingLogs) ? [...existingLogs] : [];
+  updatedLogs.push(normalizedIncoming);
 
-  let updatedLogs = Array.isArray(existingLogs) ? [...existingLogs] : [];
-
-  const idx = updatedLogs.findIndex(
-    (entry) => entry && entry.date === logDate
-  );
-
-  if (idx === -1) {
-    updatedLogs.push(normalizedIncoming);
-  } else {
-    const merged = mergeDailyLogs(updatedLogs[idx], normalizedIncoming);
-    updatedLogs[idx] = merged;
-  }
-
+  // 3) Save back to Shopify
   const METAFIELDS_SET = `
     mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
       metafieldsSet(metafields: $metafields) {
