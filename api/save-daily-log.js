@@ -117,51 +117,19 @@ function normalizeOwnerId(raw) {
 }
 
 /**
- * Helper: normalize a single log object for merging
+ * Make sure a meal object is in a safe shape
  */
-function normalizeLogForMerging(log) {
-  if (!log || typeof log !== "object") return null;
-  const copy = { ...log };
+function normalizeMeal(meal) {
+  if (!meal || typeof meal !== "object") return null;
+  const m = { ...meal };
 
-  // Normalize date
-  copy.date = normalizeDateString(copy.date) || copy.date || null;
+  m.meal_type = m.meal_type || "Meal";
+  m.items = Array.isArray(m.items) ? m.items : [];
+  const c = Number(m.calories);
+  m.calories = Number.isFinite(c) ? c : 0;
+  if (m.coach_note === undefined) m.coach_note = null;
 
-  // Ensure meals is an array
-  if (!Array.isArray(copy.meals)) {
-    copy.meals = [];
-  }
-
-  // Recompute total_calories from meals if possible
-  const totalFromMeals = copy.meals.reduce((sum, m) => {
-    if (!m) return sum;
-    const c = Number(m.calories);
-    return Number.isFinite(c) ? sum + c : sum;
-  }, 0);
-
-  if (copy.meals.length > 0 && totalFromMeals > 0) {
-    copy.total_calories = totalFromMeals;
-  } else if (
-    copy.total_calories !== null &&
-    copy.total_calories !== undefined &&
-    !Number.isNaN(Number(copy.total_calories))
-  ) {
-    copy.total_calories = Number(copy.total_calories);
-  } else {
-    copy.total_calories = null;
-  }
-
-  // Normalize top-level calories if present
-  if (
-    copy.calories !== null &&
-    copy.calories !== undefined &&
-    !Number.isNaN(Number(copy.calories))
-  ) {
-    copy.calories = Number(copy.calories);
-  } else {
-    copy.calories = null;
-  }
-
-  return copy;
+  return m;
 }
 
 /**
@@ -171,95 +139,122 @@ function normalizeLogForMerging(log) {
  * - Update weight/steps/etc. when new values are provided.
  */
 function mergeDailyLog(existingLogs, newLogRaw) {
-  const logsArray = Array.isArray(existingLogs) ? existingLogs : [];
-  const normalizedNew = normalizeLogForMerging(newLogRaw);
+  const logs = Array.isArray(existingLogs) ? [...existingLogs] : [];
+  if (!newLogRaw || typeof newLogRaw !== "object") return logs;
 
-  if (!normalizedNew || !normalizedNew.date) {
-    console.warn("mergeDailyLog: incoming log missing a valid date, skipping", newLogRaw);
-    return logsArray;
+  // Ensure the new log has a normalized date
+  const incoming = { ...newLogRaw };
+  const normalizedDate = normalizeDateString(incoming.date);
+  if (!normalizedDate) {
+    console.warn("mergeDailyLog: incoming log missing valid date, skipping", incoming);
+    return logs;
   }
+  incoming.date = normalizedDate;
 
-  // Normalize existing logs
-  const logs = logsArray.map((l) => normalizeLogForMerging(l)).filter(Boolean);
+  // Normalize meals on the incoming log
+  const incomingMealsRaw = Array.isArray(incoming.meals) ? incoming.meals : [];
+  const incomingMeals = incomingMealsRaw
+    .map(normalizeMeal)
+    .filter(Boolean);
 
+  // Find existing log for this date
   const idx = logs.findIndex(
-    (l) => normalizeDateString(l.date) === normalizedNew.date
+    (l) => normalizeDateString(l.date) === normalizedDate
   );
 
-  // If this date doesn't exist yet -> add as new entry
+  // If no existing log for this date → just add new one
   if (idx === -1) {
-    // Ensure total_calories is consistent with its meals
-    const totalFromMeals = normalizedNew.meals.reduce((sum, m) => {
-      if (!m) return sum;
-      const c = Number(m.calories);
-      return Number.isFinite(c) ? sum + c : sum;
-    }, 0);
+    const totalFromMeals = incomingMeals.reduce(
+      (sum, m) => sum + (m.calories || 0),
+      0
+    );
 
-    normalizedNew.total_calories =
-      normalizedNew.meals.length > 0 && totalFromMeals > 0
-        ? totalFromMeals
-        : normalizedNew.total_calories ?? null;
-
-    return [...logs, normalizedNew];
+    return [
+      ...logs,
+      {
+        date: normalizedDate,
+        weight:
+          incoming.weight !== undefined && incoming.weight !== null
+            ? incoming.weight
+            : null,
+        calories:
+          incoming.calories !== undefined && incoming.calories !== null
+            ? Number(incoming.calories)
+            : null,
+        steps:
+          incoming.steps !== undefined && incoming.steps !== null
+            ? incoming.steps
+            : null,
+        meals: incomingMeals,
+        total_calories:
+          incomingMeals.length > 0
+            ? totalFromMeals
+            : incoming.total_calories ?? null,
+        mood: incoming.mood ?? null,
+        struggle: incoming.struggle ?? null,
+        coach_focus: incoming.coach_focus || "",
+      },
+    ];
   }
 
   // Merge with existing log for that date
-  const existing = logs[idx];
+  const existing = logs[idx] || {};
 
-  const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
-  const newMeals = Array.isArray(normalizedNew.meals) ? normalizedNew.meals : [];
-  const mergedMeals = [...existingMeals, ...newMeals];
+  const existingMealsRaw = Array.isArray(existing.meals)
+    ? existing.meals
+    : [];
+  const existingMeals = existingMealsRaw
+    .map(normalizeMeal)
+    .filter(Boolean);
 
-  const mergedTotalCalories = mergedMeals.reduce((sum, m) => {
-    if (!m) return sum;
-    const c = Number(m.calories);
-    return Number.isFinite(c) ? sum + c : sum;
-  }, 0);
+  const mergedMeals = [...existingMeals, ...incomingMeals];
+  const mergedTotalCalories = mergedMeals.reduce(
+    (sum, m) => sum + (m.calories || 0),
+    0
+  );
 
   const merged = {
     ...existing,
-    // keep date from normalizedNew (same YYYY-MM-DD)
-    date: normalizedNew.date,
+    date: normalizedDate,
+
+    // Keep or update numeric fields
+    weight:
+      incoming.weight !== undefined && incoming.weight !== null
+        ? incoming.weight
+        : existing.weight ?? null,
+    steps:
+      incoming.steps !== undefined && incoming.steps !== null
+        ? incoming.steps
+        : existing.steps ?? null,
+    calories:
+      incoming.calories !== undefined && incoming.calories !== null
+        ? Number(incoming.calories)
+        : existing.calories ?? null,
+
     meals: mergedMeals,
     total_calories:
       mergedMeals.length > 0 && mergedTotalCalories > 0
         ? mergedTotalCalories
-        : null,
+        : existing.total_calories ?? null,
 
-    // Prefer new weight/steps/calories if provided, otherwise keep existing
-    weight:
-      normalizedNew.weight !== null && normalizedNew.weight !== undefined
-        ? normalizedNew.weight
-        : existing.weight ?? null,
-    steps:
-      normalizedNew.steps !== null && normalizedNew.steps !== undefined
-        ? normalizedNew.steps
-        : existing.steps ?? null,
-    calories:
-      normalizedNew.calories !== null && normalizedNew.calories !== undefined
-        ? normalizedNew.calories
-        : existing.calories ?? null,
-
-    // Mood / struggle: take new if present, else keep old
     mood:
-      normalizedNew.mood !== null && normalizedNew.mood !== undefined
-        ? normalizedNew.mood
+      incoming.mood !== undefined && incoming.mood !== null
+        ? incoming.mood
         : existing.mood ?? null,
     struggle:
-      normalizedNew.struggle !== null && normalizedNew.struggle !== undefined
-        ? normalizedNew.struggle
+      incoming.struggle !== undefined && incoming.struggle !== null
+        ? incoming.struggle
         : existing.struggle ?? null,
 
-    // coach_focus: prefer the newest non-empty one
     coach_focus:
-      (normalizedNew.coach_focus && String(normalizedNew.coach_focus).trim()) ||
+      (incoming.coach_focus && String(incoming.coach_focus).trim()) ||
       (existing.coach_focus && String(existing.coach_focus).trim()) ||
       "",
   };
 
-  const newLogs = [...logs];
-  newLogs[idx] = merged;
-  return newLogs;
+  const updated = [...logs];
+  updated[idx] = merged;
+  return updated;
 }
 
 export default async function handler(req, res) {
