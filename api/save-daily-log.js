@@ -91,6 +91,12 @@ function normalizeIncomingLog(rawLog) {
   }
 
   log.date = normalizedDate;
+
+  // Be a bit defensive on meals
+  if (!Array.isArray(log.meals)) {
+    log.meals = [];
+  }
+
   return log;
 }
 
@@ -114,147 +120,6 @@ function normalizeOwnerId(raw) {
 
   console.warn("OwnerId could not be normalized to a Customer GID:", raw);
   return s;
-}
-
-/**
- * Make sure a meal object is in a safe shape
- */
-function normalizeMeal(meal) {
-  if (!meal || typeof meal !== "object") return null;
-  const m = { ...meal };
-
-  m.meal_type = m.meal_type || "Meal";
-  m.items = Array.isArray(m.items) ? m.items : [];
-  const c = Number(m.calories);
-  m.calories = Number.isFinite(c) ? c : 0;
-  if (m.coach_note === undefined) m.coach_note = null;
-
-  return m;
-}
-
-/**
- * Merge a new daily log into an existing array of logs (by date).
- * - If no log exists for that date, push a new one.
- * - If one exists, append meals and recompute total_calories.
- * - Update weight/steps/etc. when new values are provided.
- */
-function mergeDailyLog(existingLogs, newLogRaw) {
-  const logs = Array.isArray(existingLogs) ? [...existingLogs] : [];
-  if (!newLogRaw || typeof newLogRaw !== "object") return logs;
-
-  // Ensure the new log has a normalized date
-  const incoming = { ...newLogRaw };
-  const normalizedDate = normalizeDateString(incoming.date);
-  if (!normalizedDate) {
-    console.warn("mergeDailyLog: incoming log missing valid date, skipping", incoming);
-    return logs;
-  }
-  incoming.date = normalizedDate;
-
-  // Normalize meals on the incoming log
-  const incomingMealsRaw = Array.isArray(incoming.meals) ? incoming.meals : [];
-  const incomingMeals = incomingMealsRaw
-    .map(normalizeMeal)
-    .filter(Boolean);
-
-  // Find existing log for this date
-  const idx = logs.findIndex(
-    (l) => normalizeDateString(l.date) === normalizedDate
-  );
-
-  // If no existing log for this date → just add new one
-  if (idx === -1) {
-    const totalFromMeals = incomingMeals.reduce(
-      (sum, m) => sum + (m.calories || 0),
-      0
-    );
-
-    return [
-      ...logs,
-      {
-        date: normalizedDate,
-        weight:
-          incoming.weight !== undefined && incoming.weight !== null
-            ? incoming.weight
-            : null,
-        calories:
-          incoming.calories !== undefined && incoming.calories !== null
-            ? Number(incoming.calories)
-            : null,
-        steps:
-          incoming.steps !== undefined && incoming.steps !== null
-            ? incoming.steps
-            : null,
-        meals: incomingMeals,
-        total_calories:
-          incomingMeals.length > 0
-            ? totalFromMeals
-            : incoming.total_calories ?? null,
-        mood: incoming.mood ?? null,
-        struggle: incoming.struggle ?? null,
-        coach_focus: incoming.coach_focus || "",
-      },
-    ];
-  }
-
-  // Merge with existing log for that date
-  const existing = logs[idx] || {};
-
-  const existingMealsRaw = Array.isArray(existing.meals)
-    ? existing.meals
-    : [];
-  const existingMeals = existingMealsRaw
-    .map(normalizeMeal)
-    .filter(Boolean);
-
-  const mergedMeals = [...existingMeals, ...incomingMeals];
-  const mergedTotalCalories = mergedMeals.reduce(
-    (sum, m) => sum + (m.calories || 0),
-    0
-  );
-
-  const merged = {
-    ...existing,
-    date: normalizedDate,
-
-    // Keep or update numeric fields
-    weight:
-      incoming.weight !== undefined && incoming.weight !== null
-        ? incoming.weight
-        : existing.weight ?? null,
-    steps:
-      incoming.steps !== undefined && incoming.steps !== null
-        ? incoming.steps
-        : existing.steps ?? null,
-    calories:
-      incoming.calories !== undefined && incoming.calories !== null
-        ? Number(incoming.calories)
-        : existing.calories ?? null,
-
-    meals: mergedMeals,
-    total_calories:
-      mergedMeals.length > 0 && mergedTotalCalories > 0
-        ? mergedTotalCalories
-        : existing.total_calories ?? null,
-
-    mood:
-      incoming.mood !== undefined && incoming.mood !== null
-        ? incoming.mood
-        : existing.mood ?? null,
-    struggle:
-      incoming.struggle !== undefined && incoming.struggle !== null
-        ? incoming.struggle
-        : existing.struggle ?? null,
-
-    coach_focus:
-      (incoming.coach_focus && String(incoming.coach_focus).trim()) ||
-      (existing.coach_focus && String(existing.coach_focus).trim()) ||
-      "",
-  };
-
-  const updated = [...logs];
-  updated[idx] = merged;
-  return updated;
 }
 
 export default async function handler(req, res) {
@@ -365,9 +230,11 @@ export default async function handler(req, res) {
   }
 
   // ===============================
-  // 2) Merge this new log by date
+  // 2) APPEND this new log
+  //    (never merge, never overwrite)
   // ===============================
-  const updatedLogs = mergeDailyLog(existingLogs, normalizedIncoming);
+  const updatedLogs = Array.isArray(existingLogs) ? [...existingLogs] : [];
+  updatedLogs.push(normalizedIncoming);
 
   // ===============================
   // 3) Save back to Shopify
