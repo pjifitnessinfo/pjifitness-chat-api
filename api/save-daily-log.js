@@ -91,12 +91,6 @@ function normalizeIncomingLog(rawLog) {
   }
 
   log.date = normalizedDate;
-
-  // Ensure meals is always an array
-  if (!Array.isArray(log.meals)) {
-    log.meals = [];
-  }
-
   return log;
 }
 
@@ -123,85 +117,16 @@ function normalizeOwnerId(raw) {
 }
 
 /**
- * Helper: sum calories from meals
+ * Helper to map meal_type to one of breakfast/lunch/dinner/snacks
  */
-function sumMealCalories(meals) {
-  if (!Array.isArray(meals)) return 0;
-  let total = 0;
-  for (const m of meals) {
-    if (!m) continue;
-    const c = Number(m.calories);
-    if (!Number.isNaN(c) && c > 0) {
-      total += c;
-    }
-  }
-  return total;
-}
-
-/**
- * Merge a new log into an existing log for the same date
- * - Appends meals
- * - Recomputes total_calories from all meals
- * - Uses "latest" values for weight, steps, mood, struggle, coach_focus
- */
-function mergeLogsByDate(existing, incoming) {
-  const merged = { ...(existing || {}) };
-
-  merged.date = incoming.date; // same date
-
-  // Always ensure meals arrays
-  const existingMeals = Array.isArray(existing?.meals) ? existing.meals : [];
-  const incomingMeals = Array.isArray(incoming?.meals) ? incoming.meals : [];
-
-  merged.meals = [...existingMeals, ...incomingMeals];
-
-  // Latest numeric fields win if provided
-  merged.weight =
-    incoming.weight !== null && incoming.weight !== undefined
-      ? incoming.weight
-      : existing.weight ?? null;
-
-  merged.steps =
-    incoming.steps !== null && incoming.steps !== undefined
-      ? incoming.steps
-      : existing.steps ?? null;
-
-  // Keep both calories + total_calories for compatibility,
-  // but recompute total_calories from ALL meals if we have any.
-  const mealTotal = sumMealCalories(merged.meals);
-
-  if (mealTotal > 0) {
-    merged.total_calories = mealTotal;
-    merged.calories = mealTotal;
-  } else {
-    const inTotal =
-      incoming.total_calories ?? incoming.calories ?? null;
-    const exTotal =
-      existing.total_calories ?? existing.calories ?? null;
-    merged.total_calories = inTotal ?? exTotal ?? null;
-    merged.calories = merged.total_calories;
-  }
-
-  // Mood / struggle: latest non-null wins
-  merged.mood =
-    (incoming.mood !== undefined && incoming.mood !== null && incoming.mood !== "")
-      ? incoming.mood
-      : existing.mood ?? null;
-
-  merged.struggle =
-    (incoming.struggle !== undefined && incoming.struggle !== null && incoming.struggle !== "")
-      ? incoming.struggle
-      : existing.struggle ?? null;
-
-  // Coach focus: latest non-empty wins
-  merged.coach_focus =
-    (incoming.coach_focus && String(incoming.coach_focus).trim().length > 0)
-      ? incoming.coach_focus
-      : (existing.coach_focus && String(existing.coach_focus).trim().length > 0)
-        ? existing.coach_focus
-        : "Stay consistent today.";
-
-  return merged;
+function mapMealSlot(mealTypeRaw) {
+  if (!mealTypeRaw) return null;
+  const t = String(mealTypeRaw).toLowerCase();
+  if (t.includes("breakfast")) return "breakfast";
+  if (t.includes("lunch")) return "lunch";
+  if (t.includes("dinner") || t.includes("supper")) return "dinner";
+  if (t.includes("snack")) return "snacks";
+  return null;
 }
 
 export default async function handler(req, res) {
@@ -242,7 +167,7 @@ export default async function handler(req, res) {
     log,
     daily_log,
     dailyLog,
-    email // not used for saving, but OK if present
+    email, // not used for saving, but OK if present
   } = body || {};
 
   // We accept multiple possible fields for the customer ID
@@ -250,20 +175,20 @@ export default async function handler(req, res) {
     bodyOwner || customerId || customer_id || customerGid || customer_gid;
 
   const ownerId = normalizeOwnerId(rawOwnerId);
-  const incomingLogRaw = log || daily_log || dailyLog;
+  const incomingLog = log || daily_log || dailyLog;
 
   if (!ownerId) {
     return res
       .status(400)
       .json({ ok: false, error: "Missing customerId / ownerId" });
   }
-  if (!incomingLogRaw) {
+  if (!incomingLog) {
     return res
       .status(400)
       .json({ ok: false, error: "Missing daily log payload" });
   }
 
-  const normalizedIncoming = normalizeIncomingLog(incomingLogRaw);
+  const normalizedIncoming = normalizeIncomingLog(incomingLog);
   const logDate = normalizedIncoming.date;
 
   // ===============================
@@ -311,59 +236,67 @@ export default async function handler(req, res) {
     // If this fails, we’ll just treat it as no existing logs
   }
 
-  // Ensure existing logs is an array of objects
-  if (!Array.isArray(existingLogs)) {
-    existingLogs = [];
-  }
+  // ===============================
+  // 2) Append this new log
+  //    (NEVER merge; each message = new entry)
+  // ===============================
+  const updatedLogs = Array.isArray(existingLogs) ? [...existingLogs] : [];
+  updatedLogs.push(normalizedIncoming);
 
   // ===============================
-  // 2) Merge this new log by DATE
-  //    - If a log for this date exists: merge + append meals
-  //    - Else: push as a new entry
+  // 2b) Derive per-meal metafields for TODAY
   // ===============================
-  let updatedLogs = [...existingLogs];
+  const todayStr = new Date().toISOString().slice(0, 10);
 
-  const targetDate = logDate;
-  let indexForDate = -1;
+  const mealBuckets = {
+    breakfast: { descParts: [], cals: 0 },
+    lunch: { descParts: [], cals: 0 },
+    dinner: { descParts: [], cals: 0 },
+    snacks: { descParts: [], cals: 0 },
+  };
 
-  for (let i = 0; i < updatedLogs.length; i++) {
-    const d = normalizeDateString(updatedLogs[i]?.date);
-    if (d && d === targetDate) {
-      indexForDate = i;
-      break;
-    }
+  try {
+    updatedLogs.forEach((entry) => {
+      if (!entry) return;
+      const d = normalizeDateString(entry.date);
+      if (!d || d !== todayStr) return;
+
+      const meals = Array.isArray(entry.meals) ? entry.meals : [];
+      meals.forEach((meal) => {
+        if (!meal) return;
+        const slot = mapMealSlot(meal.meal_type);
+        if (!slot || !mealBuckets[slot]) return;
+
+        const items = Array.isArray(meal.items) ? meal.items : [];
+        const text =
+          items.length > 0 ? items.join(", ") : String(meal.meal_type || "").trim();
+        if (text) {
+          mealBuckets[slot].descParts.push(text);
+        }
+
+        const rawCal = meal.calories;
+        const numCal = rawCal == null ? 0 : parseFloat(rawCal);
+        if (Number.isFinite(numCal) && numCal > 0) {
+          mealBuckets[slot].cals += Math.round(numCal);
+        }
+      });
+    });
+  } catch (err) {
+    console.error("Error aggregating per-meal data:", err);
   }
 
-  if (indexForDate >= 0) {
-    // Merge with existing log for that date
-    const existingForDate = updatedLogs[indexForDate] || {};
-    const merged = mergeLogsByDate(existingForDate, normalizedIncoming);
-    updatedLogs[indexForDate] = merged;
-  } else {
-    // No log for this date yet: push as new entry
-    const safeIncoming = {
-      ...normalizedIncoming,
-      meals: Array.isArray(normalizedIncoming.meals)
-        ? normalizedIncoming.meals
-        : [],
-    };
+  const safeInt = (n) =>
+    Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
 
-    // If meals exist but total_calories isn’t set, compute it
-    const mealTotal = sumMealCalories(safeIncoming.meals);
-    if (mealTotal > 0) {
-      safeIncoming.total_calories = mealTotal;
-      safeIncoming.calories = mealTotal;
-    }
+  const breakfastDesc = mealBuckets.breakfast.descParts.join(" | ");
+  const lunchDesc = mealBuckets.lunch.descParts.join(" | ");
+  const dinnerDesc = mealBuckets.dinner.descParts.join(" | ");
+  const snacksDesc = mealBuckets.snacks.descParts.join(" | ");
 
-    if (
-      !safeIncoming.coach_focus ||
-      String(safeIncoming.coach_focus).trim().length === 0
-    ) {
-      safeIncoming.coach_focus = "Stay consistent today.";
-    }
-
-    updatedLogs.push(safeIncoming);
-  }
+  const breakfastCals = safeInt(mealBuckets.breakfast.cals);
+  const lunchCals = safeInt(mealBuckets.lunch.cals);
+  const dinnerCals = safeInt(mealBuckets.dinner.cals);
+  const snacksCals = safeInt(mealBuckets.snacks.cals);
 
   // ===============================
   // 3) Save back to Shopify
@@ -387,12 +320,73 @@ export default async function handler(req, res) {
   `;
 
   const metafieldsPayload = [
+    // Full history JSON
     {
       ownerId,
       namespace: "custom",
       key: "daily_logs",
       type: "json",
       value: JSON.stringify(updatedLogs),
+    },
+    // Breakfast
+    {
+      ownerId,
+      namespace: "custom",
+      key: "breakfast_description",
+      type: "multi_line_text_field",
+      value: breakfastDesc || "",
+    },
+    {
+      ownerId,
+      namespace: "custom",
+      key: "breakfast_cals",
+      type: "number_integer",
+      value: String(breakfastCals || 0),
+    },
+    // Lunch
+    {
+      ownerId,
+      namespace: "custom",
+      key: "lunch_description",
+      type: "multi_line_text_field",
+      value: lunchDesc || "",
+    },
+    {
+      ownerId,
+      namespace: "custom",
+      key: "lunch_cals",
+      type: "number_integer",
+      value: String(lunchCals || 0),
+    },
+    // Dinner
+    {
+      ownerId,
+      namespace: "custom",
+      key: "dinner_description",
+      type: "multi_line_text_field",
+      value: dinnerDesc || "",
+    },
+    {
+      ownerId,
+      namespace: "custom",
+      key: "dinner_cals",
+      type: "number_integer",
+      value: String(dinnerCals || 0),
+    },
+    // Snacks
+    {
+      ownerId,
+      namespace: "custom",
+      key: "snacks_description",
+      type: "multi_line_text_field",
+      value: snacksDesc || "",
+    },
+    {
+      ownerId,
+      namespace: "custom",
+      key: "snacks_cals",
+      type: "number_integer",
+      value: String(snacksCals || 0),
     },
   ];
 
@@ -401,8 +395,7 @@ export default async function handler(req, res) {
       metafields: metafieldsPayload,
     });
 
-    const userErrors =
-      result?.metafieldsSet?.userErrors || [];
+    const userErrors = result?.metafieldsSet?.userErrors || [];
     if (userErrors.length > 0) {
       console.error("metafieldsSet userErrors:", userErrors);
       return res.status(500).json({
@@ -412,13 +405,23 @@ export default async function handler(req, res) {
       });
     }
 
+    const totalDayCals =
+      breakfastCals + lunchCals + dinnerCals + snacksCals;
+
     return res.status(200).json({
       ok: true,
       savedDate: logDate,
       logsCount: updatedLogs.length,
+      mealsToday: {
+        breakfastCals,
+        lunchCals,
+        dinnerCals,
+        snacksCals,
+        totalDayCals,
+      },
     });
   } catch (err) {
-    console.error("Error saving daily_logs metafield:", err);
+    console.error("Error saving metafields:", err);
     return res.status(500).json({
       ok: false,
       error: "Error saving daily logs metafield",
