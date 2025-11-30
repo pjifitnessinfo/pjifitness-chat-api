@@ -116,6 +116,152 @@ function normalizeOwnerId(raw) {
   return s;
 }
 
+/**
+ * Helper: normalize a single log object for merging
+ */
+function normalizeLogForMerging(log) {
+  if (!log || typeof log !== "object") return null;
+  const copy = { ...log };
+
+  // Normalize date
+  copy.date = normalizeDateString(copy.date) || copy.date || null;
+
+  // Ensure meals is an array
+  if (!Array.isArray(copy.meals)) {
+    copy.meals = [];
+  }
+
+  // Recompute total_calories from meals if possible
+  const totalFromMeals = copy.meals.reduce((sum, m) => {
+    if (!m) return sum;
+    const c = Number(m.calories);
+    return Number.isFinite(c) ? sum + c : sum;
+  }, 0);
+
+  if (copy.meals.length > 0 && totalFromMeals > 0) {
+    copy.total_calories = totalFromMeals;
+  } else if (
+    copy.total_calories !== null &&
+    copy.total_calories !== undefined &&
+    !Number.isNaN(Number(copy.total_calories))
+  ) {
+    copy.total_calories = Number(copy.total_calories);
+  } else {
+    copy.total_calories = null;
+  }
+
+  // Normalize top-level calories if present
+  if (
+    copy.calories !== null &&
+    copy.calories !== undefined &&
+    !Number.isNaN(Number(copy.calories))
+  ) {
+    copy.calories = Number(copy.calories);
+  } else {
+    copy.calories = null;
+  }
+
+  return copy;
+}
+
+/**
+ * Merge a new daily log into an existing array of logs (by date).
+ * - If no log exists for that date, push a new one.
+ * - If one exists, append meals and recompute total_calories.
+ * - Update weight/steps/etc. when new values are provided.
+ */
+function mergeDailyLog(existingLogs, newLogRaw) {
+  const logsArray = Array.isArray(existingLogs) ? existingLogs : [];
+  const normalizedNew = normalizeLogForMerging(newLogRaw);
+
+  if (!normalizedNew || !normalizedNew.date) {
+    console.warn("mergeDailyLog: incoming log missing a valid date, skipping", newLogRaw);
+    return logsArray;
+  }
+
+  // Normalize existing logs
+  const logs = logsArray.map((l) => normalizeLogForMerging(l)).filter(Boolean);
+
+  const idx = logs.findIndex(
+    (l) => normalizeDateString(l.date) === normalizedNew.date
+  );
+
+  // If this date doesn't exist yet -> add as new entry
+  if (idx === -1) {
+    // Ensure total_calories is consistent with its meals
+    const totalFromMeals = normalizedNew.meals.reduce((sum, m) => {
+      if (!m) return sum;
+      const c = Number(m.calories);
+      return Number.isFinite(c) ? sum + c : sum;
+    }, 0);
+
+    normalizedNew.total_calories =
+      normalizedNew.meals.length > 0 && totalFromMeals > 0
+        ? totalFromMeals
+        : normalizedNew.total_calories ?? null;
+
+    return [...logs, normalizedNew];
+  }
+
+  // Merge with existing log for that date
+  const existing = logs[idx];
+
+  const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
+  const newMeals = Array.isArray(normalizedNew.meals) ? normalizedNew.meals : [];
+  const mergedMeals = [...existingMeals, ...newMeals];
+
+  const mergedTotalCalories = mergedMeals.reduce((sum, m) => {
+    if (!m) return sum;
+    const c = Number(m.calories);
+    return Number.isFinite(c) ? sum + c : sum;
+  }, 0);
+
+  const merged = {
+    ...existing,
+    // keep date from normalizedNew (same YYYY-MM-DD)
+    date: normalizedNew.date,
+    meals: mergedMeals,
+    total_calories:
+      mergedMeals.length > 0 && mergedTotalCalories > 0
+        ? mergedTotalCalories
+        : null,
+
+    // Prefer new weight/steps/calories if provided, otherwise keep existing
+    weight:
+      normalizedNew.weight !== null && normalizedNew.weight !== undefined
+        ? normalizedNew.weight
+        : existing.weight ?? null,
+    steps:
+      normalizedNew.steps !== null && normalizedNew.steps !== undefined
+        ? normalizedNew.steps
+        : existing.steps ?? null,
+    calories:
+      normalizedNew.calories !== null && normalizedNew.calories !== undefined
+        ? normalizedNew.calories
+        : existing.calories ?? null,
+
+    // Mood / struggle: take new if present, else keep old
+    mood:
+      normalizedNew.mood !== null && normalizedNew.mood !== undefined
+        ? normalizedNew.mood
+        : existing.mood ?? null,
+    struggle:
+      normalizedNew.struggle !== null && normalizedNew.struggle !== undefined
+        ? normalizedNew.struggle
+        : existing.struggle ?? null,
+
+    // coach_focus: prefer the newest non-empty one
+    coach_focus:
+      (normalizedNew.coach_focus && String(normalizedNew.coach_focus).trim()) ||
+      (existing.coach_focus && String(existing.coach_focus).trim()) ||
+      "",
+  };
+
+  const newLogs = [...logs];
+  newLogs[idx] = merged;
+  return newLogs;
+}
+
 export default async function handler(req, res) {
   setCors(res);
 
@@ -220,15 +366,13 @@ export default async function handler(req, res) {
     }
   } catch (err) {
     console.error("Error fetching existing daily_logs metafield:", err);
-    // If this fails, we’ll just treat it as no existing logs
+    // If this fails, we'll just treat it as no existing logs
   }
 
   // ===============================
-  // 2) Append this new log
-  //    (NEVER merge; each message = new entry)
+  // 2) Merge this new log by date
   // ===============================
-  const updatedLogs = Array.isArray(existingLogs) ? [...existingLogs] : [];
-  updatedLogs.push(normalizedIncoming);
+  const updatedLogs = mergeDailyLog(existingLogs, normalizedIncoming);
 
   // ===============================
   // 3) Save back to Shopify
