@@ -2,13 +2,14 @@
 
 const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
-const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
+const SHOPIFY_API_VERSION =
+  process.env.SHOPIFY_API_VERSION || "2024-01";
 
 /**
  * Basic CORS helper
  */
 function setCors(res) {
-  // You can later replace "*" with your real domain, e.g. "https://pjifitness.com"
+  // TODO: tighten this to your real domain (e.g. "https://pjifitness.com")
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -100,10 +101,12 @@ function normalizeOwnerId(raw) {
   if (!raw) return raw;
   let s = String(raw).trim();
 
+  // Already a full GID
   if (s.startsWith("gid://shopify/Customer/")) {
     return s;
   }
 
+  // If it's numeric (e.g. "9603496542392"), wrap it
   const digits = s.replace(/\D/g, "");
   if (digits.length > 0) {
     return `gid://shopify/Customer/${digits}`;
@@ -123,16 +126,23 @@ export default async function handler(req, res) {
 
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST,OPTIONS");
-    return res.status(405).json({ ok: false, error: "Method not allowed" });
+    return res
+      .status(405)
+      .json({ ok: false, error: "Method not allowed" });
   }
 
   // Parse body
   let body;
   try {
-    body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+    body =
+      typeof req.body === "string"
+        ? JSON.parse(req.body)
+        : req.body || {};
   } catch (err) {
     console.error("Invalid JSON body:", err);
-    return res.status(400).json({ ok: false, error: "Invalid JSON body" });
+    return res
+      .status(400)
+      .json({ ok: false, error: "Invalid JSON body" });
   }
 
   const {
@@ -144,8 +154,10 @@ export default async function handler(req, res) {
     log,
     daily_log,
     dailyLog,
+    email, // not used for saving, but OK if present
   } = body || {};
 
+  // We accept multiple possible fields for the customer ID
   const rawOwnerId =
     bodyOwner || customerId || customer_id || customerGid || customer_gid;
 
@@ -166,21 +178,19 @@ export default async function handler(req, res) {
   const normalizedIncoming = normalizeIncomingLog(incomingLog);
   const logDate = normalizedIncoming.date;
 
-  // 1) Fetch existing daily_logs array
+  // ===============================
+  // 1) Fetch existing daily_logs
+  // ===============================
   const GET_DAILY_LOGS = `
     query GetDailyLogs($id: ID!) {
       customer(id: $id) {
         id
-        metafields(first: 1, namespace: "custom", keys: ["daily_logs"]) {
-          edges {
-            node {
-              id
-              key
-              namespace
-              type
-              value
-            }
-          }
+        dailyLogs: metafield(namespace: "custom", key: "daily_logs") {
+          id
+          key
+          namespace
+          type
+          value
         }
       }
     }
@@ -189,32 +199,40 @@ export default async function handler(req, res) {
   let existingLogs = [];
   try {
     const data = await shopifyAdminFetch(GET_DAILY_LOGS, { id: ownerId });
-    const edges = data?.customer?.metafields?.edges || [];
-    if (edges.length > 0 && edges[0].node) {
-      const mf = edges[0].node;
-      if (mf.value) {
-        try {
-          const parsed = JSON.parse(mf.value);
-          if (Array.isArray(parsed)) {
-            existingLogs = parsed;
-          } else if (parsed && typeof parsed === "object") {
-            // Old format: single object → wrap in array
-            existingLogs = [parsed];
-          }
-        } catch (err) {
-          console.error("Error parsing existing daily_logs JSON:", err);
+
+    const mf = data?.customer?.dailyLogs;
+    if (mf && mf.value) {
+      try {
+        const parsed = JSON.parse(mf.value);
+        if (Array.isArray(parsed)) {
+          existingLogs = parsed;
+        } else if (parsed && typeof parsed === "object") {
+          // Old format: single object → wrap in array
+          existingLogs = [parsed];
+        } else {
+          console.warn(
+            "daily_logs metafield value was not array/object, resetting to []"
+          );
         }
+      } catch (err) {
+        console.error("Error parsing existing daily_logs JSON:", err);
       }
     }
   } catch (err) {
     console.error("Error fetching existing daily_logs metafield:", err);
+    // If this fails, we’ll just treat it as no existing logs
   }
 
-  // 2) Append this new log as its own entry (NO MERGE)
+  // ===============================
+  // 2) Append this new log
+  //    (NEVER merge; each message = new entry)
+  // ===============================
   const updatedLogs = Array.isArray(existingLogs) ? [...existingLogs] : [];
   updatedLogs.push(normalizedIncoming);
 
+  // ===============================
   // 3) Save back to Shopify
+  // ===============================
   const METAFIELDS_SET = `
     mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
       metafieldsSet(metafields: $metafields) {
@@ -248,7 +266,8 @@ export default async function handler(req, res) {
       metafields: metafieldsPayload,
     });
 
-    const userErrors = result?.metafieldsSet?.userErrors || [];
+    const userErrors =
+      result?.metafieldsSet?.userErrors || [];
     if (userErrors.length > 0) {
       console.error("metafieldsSet userErrors:", userErrors);
       return res.status(500).json({
