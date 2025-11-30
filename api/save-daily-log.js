@@ -52,6 +52,30 @@ function toNumberOrNull(value) {
 }
 
 /**
+ * Normalize any date-ish thing into YYYY-MM-DD
+ */
+function normalizeDateString(d) {
+  if (!d) return null;
+
+  try {
+    if (typeof d === "string") {
+      // If it's already like "2025-11-30" or "2025-11-30T..."
+      if (d.length >= 10) {
+        const sliced = d.slice(0, 10);
+        // basic sanity check: YYYY-MM-DD pattern
+        if (/^\d{4}-\d{2}-\d{2}$/.test(sliced)) return sliced;
+      }
+    }
+
+    const dt = new Date(d);
+    if (!isFinite(dt.getTime())) return null;
+    return dt.toISOString().slice(0, 10);
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
  * Merge a new daily log into an existing one for the same date.
  * - Meals are appended
  * - Scalars (weight, steps, mood, struggle, coach_focus, calories) are overwritten if present in new log
@@ -60,7 +84,7 @@ function toNumberOrNull(value) {
 function mergeDailyLogs(existing, incoming) {
   const merged = { ...(existing || {}) };
 
-  // Keep/assign date
+  // Date should already be normalized before calling this
   if (!merged.date && incoming.date) {
     merged.date = incoming.date;
   }
@@ -118,17 +142,23 @@ function mergeDailyLogs(existing, incoming) {
 }
 
 /**
- * Normalize incoming log (make sure date exists, etc.)
+ * Normalize incoming log (make sure date exists & is YYYY-MM-DD)
  */
 function normalizeIncomingLog(rawLog) {
   const log = { ...(rawLog || {}) };
 
-  // Ensure a date string YYYY-MM-DD exists
-  if (!log.date) {
-    const now = new Date();
-    log.date = now.toISOString().slice(0, 10); // YYYY-MM-DD
+  // Ensure a date exists
+  let normalizedDate = null;
+  if (log.date) {
+    normalizedDate = normalizeDateString(log.date);
   }
 
+  if (!normalizedDate) {
+    const now = new Date();
+    normalizedDate = now.toISOString().slice(0, 10); // YYYY-MM-DD
+  }
+
+  log.date = normalizedDate;
   return log;
 }
 
@@ -244,7 +274,20 @@ export default async function handler(req, res) {
     // We can still proceed with an empty array; just log it.
   }
 
-  // 2) Merge this log into the array by date
+  // Normalize all existing dates to YYYY-MM-DD so we can match by calendar day
+  if (Array.isArray(existingLogs) && existingLogs.length > 0) {
+    existingLogs = existingLogs.map((entry) => {
+      if (!entry) return entry;
+      const copy = { ...entry };
+      if (copy.date) {
+        const nd = normalizeDateString(copy.date);
+        if (nd) copy.date = nd;
+      }
+      return copy;
+    });
+  }
+
+  // 2) Merge this log into the array by date (calendar day)
   let updatedLogs = Array.isArray(existingLogs) ? [...existingLogs] : [];
 
   const idx = updatedLogs.findIndex(
