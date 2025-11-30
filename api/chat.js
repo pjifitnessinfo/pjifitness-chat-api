@@ -24,14 +24,14 @@ export const config = {
 };
 
 // ======================================================
-// RUN_INSTRUCTIONS (logging + meals + mood + notes)
+// RUN_INSTRUCTIONS (logging + mood + notes)
 // ======================================================
 const RUN_INSTRUCTIONS = `
 You are the PJiFitness AI Coach.
 
 Your job:
 1) Guide simple daily check-ins.
-2) Translate everything the user says into clean, structured daily logs (including MEALS).
+2) Translate everything the user says into clean, structured daily logs.
 3) Keep everything extremely easy for real humans to follow.
 
 ======================================================
@@ -100,14 +100,12 @@ For conceptual fitness questions WITHOUT specific, loggable data ("Why is my wei
 - Do NOT force a <LOG_JSON>.
 
 But:
-
 IF THE MESSAGE CONTAINS ANY MEAL OR FOOD WORDS
 (breakfast, lunch, dinner, snack, ate, eating, meal, food, calories, cals)
 YOU MUST:
 - Treat it as LOGGING MODE.
 - Build at least one meal entry in the JSON.
 - Include a <LOG_JSON> block.
-- Do NOT leave "meals" as an empty array when food is mentioned.
 
 ======================================================
 D. HOW TO READ USER MESSAGES (NUMBERS + MOOD/NOTES)
@@ -145,7 +143,7 @@ IMPORTANT:
 - A sentence like "Felt tired but proud I stayed on plan, biggest struggle was late-night snacking" should populate BOTH mood AND struggle.
 
 ======================================================
-E. MEAL & CALORIE DETECTION (STRICT + NON-EMPTY MEALS)
+E. MEAL & CALORIE DETECTION (STRICT)
 ======================================================
 
 Whenever the user mentions food, meals, or calories in ANY way, you MUST:
@@ -155,8 +153,8 @@ Whenever the user mentions food, meals, or calories in ANY way, you MUST:
 
 - If food items are listed:
    - Create one or more meal entries.
-   - meal_type = "Breakfast" / "Lunch" / "Dinner" / "Snack" / "Other" / "Day Summary" (choose best label).
-   - items = list of foods, like ["2 eggs", "toast"].
+   - meal_type = Breakfast / Lunch / Dinner / Snack (choose best label).
+   - items = list of foods.
    - calories = user-given or reasonable estimate (never 0 or null if they clearly ate).
 
 - If ONLY total calories for the day are given:
@@ -167,36 +165,14 @@ Whenever the user mentions food, meals, or calories in ANY way, you MUST:
        "calories": <total for day>
      }
 
-3) total_calories:
-   - Set "total_calories" to the best estimate of total calories for the day so far.
-   - If they gave a clear total ("2100 calories today"), use that for both "calories" and "total_calories".
+3) total_calories = sum of all meals or the single total.
 
 4) If the user logs only weight or steps with NO calories and NO food:
    - meals = []
    - total_calories = null (unless you already know a total for today).
 
-CRITICAL RULE:
-- If the user mentions a meal like:
-  "Breakfast: 400 calories, 2 eggs and toast."
-  you MUST create a meal object like:
-  {
-    "meal_type": "Breakfast",
-    "items": ["2 eggs", "toast"],
-    "calories": 400
-  }
-- In that case, "meals" MUST NOT be empty. Do not output "meals": [] when food is mentioned.
-
 ======================================================
-F. DATE HANDLING
-======================================================
-
-- Assume the user is in America/New_York.
-- The "date" field should be that timezone's current date in "YYYY-MM-DD" format,
-  unless the user clearly refers to a different day (e.g., "Yesterday I had...").
-- If they clearly say "yesterday", subtract one day from today and use that date.
-
-======================================================
-G. DAILY SUMMARY IN THE REPLY (OPTIONAL BUT ENCOURAGED)
+F. DAILY SUMMARY IN THE REPLY (OPTIONAL BUT ENCOURAGED)
 ======================================================
 
 When you have clear data for today, end your coaching reply with:
@@ -207,6 +183,19 @@ When you have clear data for today, end your coaching reply with:
 • Steps: X  
 
 Omit fields you truly don’t know.
+
+======================================================
+G. COACH_FOCUS (MANDATORY)
+======================================================
+
+In every JSON log, you MUST include a non-empty "coach_focus" string.
+Never leave coach_focus null or empty.
+
+Examples:
+- "Stay under your calorie target today."
+- "Limit late-night snacks."
+- "Prioritize protein at meals."
+- "Keep steps above 8k."
 
 ======================================================
 H. REQUIRED JSON FORMAT
@@ -221,7 +210,7 @@ You MUST output a JSON object shaped EXACTLY like this:
   "steps": number | null,
   "meals": [
     {
-      "meal_type": "Breakfast" | "Lunch" | "Dinner" | "Snack" | "Other" | "Day Summary",
+      "meal_type": "Breakfast" | "Lunch" | "Dinner" | "Snack" | "Day Summary",
       "items": ["string"],
       "calories": number
     }
@@ -233,7 +222,6 @@ You MUST output a JSON object shaped EXACTLY like this:
 }
 
 Do NOT add extra top-level fields to this JSON. Keep this shape exactly.
-When the user mentions food or calories, "meals" MUST contain at least one entry (never empty).
 
 ======================================================
 I. RESPONSE STRUCTURE FOR THIS API
@@ -248,9 +236,6 @@ For LOGGING MODE (health/fitness messages with loggable data) you MUST respond w
 <LOG_JSON>
 [JSON object ONLY — no code fences, no explanation]
 </LOG_JSON>
-
-- The JSON inside <LOG_JSON> must follow the exact shape described above.
-- Do NOT put any other text inside <LOG_JSON> besides the JSON.
 
 For GENERAL CHAT (non-fitness questions, or fitness questions with NO loggable daily data in that message):
 - Answer normally WITHOUT <LOG_JSON>.
@@ -386,17 +371,61 @@ export default async function handler(req, res) {
     });
 
     const fullText = extractTextFromResponse(aiResponse);
-    const { reply, log } = splitCoachAndLog(fullText);
+    let { reply, log } = splitCoachAndLog(fullText);
 
     console.log("AI fullText:", fullText);
-    console.log("Parsed LOG_JSON:", JSON.stringify(log, null, 2));
+    console.log("Parsed LOG_JSON (raw):", JSON.stringify(log, null, 2));
+
+    // ==================================================
+    // FALLBACK: if calories exist but meals is empty,
+    // force a Day Summary meal so the dashboard shows it
+    // ==================================================
+    let fixedLog = log;
+
+    if (fixedLog && typeof fixedLog === "object") {
+      // Normalize meals to an array
+      if (!Array.isArray(fixedLog.meals)) {
+        fixedLog.meals = [];
+      }
+
+      const hasMeals = Array.isArray(fixedLog.meals) && fixedLog.meals.length > 0;
+
+      // Use total_calories first, otherwise calories
+      let total = null;
+      if (fixedLog.total_calories !== null && fixedLog.total_calories !== undefined) {
+        const n = Number(fixedLog.total_calories);
+        if (Number.isFinite(n) && n > 0) total = n;
+      } else if (fixedLog.calories !== null && fixedLog.calories !== undefined) {
+        const n = Number(fixedLog.calories);
+        if (Number.isFinite(n) && n > 0) total = n;
+      }
+
+      // If we have calories but no meals, create a fallback Day Summary meal
+      if (!hasMeals && total !== null) {
+        fixedLog.total_calories = total;
+        fixedLog.meals = [
+          {
+            meal_type: "Day Summary",
+            items: ["Total calories only"],
+            calories: total,
+          },
+        ];
+      }
+
+      // Always ensure coach_focus is a non-empty string
+      if (!fixedLog.coach_focus || typeof fixedLog.coach_focus !== "string" || !fixedLog.coach_focus.trim()) {
+        fixedLog.coach_focus = "Stay consistent today.";
+      }
+    }
+
+    console.log("LOG_JSON after fallback fix:", JSON.stringify(fixedLog, null, 2));
 
     // ===================================
     // SAVE DAILY LOG TO SHOPIFY IF EXISTS
     // ===================================
     let saveResult = null;
 
-    if (log && email) {
+    if (fixedLog && email) {
       try {
         const { customerId, existingLogs } = body; // <- coming from frontend
 
@@ -407,7 +436,7 @@ export default async function handler(req, res) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               email,
-              log,
+              log: fixedLog,
               customerId: customerId || null,
               existingLogs: existingLogs || [],
             }),
@@ -429,7 +458,7 @@ export default async function handler(req, res) {
 
     res.status(200).json({
       reply: reply || "Sorry, I couldn't generate a response right now.",
-      log,
+      log: fixedLog,
       saveResult,
     });
   } catch (err) {
