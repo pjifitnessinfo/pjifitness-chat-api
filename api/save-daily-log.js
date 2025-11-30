@@ -91,12 +91,6 @@ function normalizeIncomingLog(rawLog) {
   }
 
   log.date = normalizedDate;
-
-  // Be a bit defensive on meals
-  if (!Array.isArray(log.meals)) {
-    log.meals = [];
-  }
-
   return log;
 }
 
@@ -120,6 +114,65 @@ function normalizeOwnerId(raw) {
 
   console.warn("OwnerId could not be normalized to a Customer GID:", raw);
   return s;
+}
+
+/**
+ * Merge two logs that share the same date into ONE daily log.
+ * Goal:
+ *  - meals: append
+ *  - total_calories: sum (if available), otherwise sum of meal calories
+ *  - weight, steps, mood, struggle, coach_focus: take from newest (incoming)
+ */
+function mergeLogsByDate(existing, incoming) {
+  const merged = { ...(existing || {}) };
+
+  // Always trust incoming date (both should match anyway)
+  merged.date = incoming.date;
+
+  // ---- Meals ----
+  const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
+  const incomingMeals = Array.isArray(incoming.meals) ? incoming.meals : [];
+  merged.meals = [...existingMeals, ...incomingMeals];
+
+  // ---- Total calories ----
+  const existingTotal = Number(existing.total_calories || existing.calories || 0);
+  const incomingTotal = Number(incoming.total_calories || incoming.calories || 0);
+
+  let totalFromMeals = 0;
+  merged.meals.forEach((m) => {
+    if (m && m.calories != null && !Number.isNaN(Number(m.calories))) {
+      totalFromMeals += Number(m.calories);
+    }
+  });
+
+  // Prefer explicit totals if they exist, otherwise sum meals
+  const combinedExplicit = existingTotal + incomingTotal;
+  if (combinedExplicit > 0) {
+    merged.total_calories = combinedExplicit;
+  } else {
+    merged.total_calories = totalFromMeals > 0 ? totalFromMeals : null;
+  }
+
+  // For compatibility, keep a simple "calories" field mirroring total_calories
+  merged.calories = merged.total_calories;
+
+  // ---- Weight / steps / mood / struggle / coach_focus ----
+  // Use incoming as "latest" for these fields
+  const keysToOverride = [
+    "weight",
+    "steps",
+    "mood",
+    "struggle",
+    "coach_focus",
+  ];
+
+  keysToOverride.forEach((key) => {
+    if (incoming[key] !== undefined && incoming[key] !== null && incoming[key] !== "") {
+      merged[key] = incoming[key];
+    }
+  });
+
+  return merged;
 }
 
 export default async function handler(req, res) {
@@ -226,15 +279,33 @@ export default async function handler(req, res) {
     }
   } catch (err) {
     console.error("Error fetching existing daily_logs metafield:", err);
-    // If this fails, we'll just treat it as no existing logs
+    // If this fails, we’ll just treat it as no existing logs
+  }
+
+  if (!Array.isArray(existingLogs)) {
+    existingLogs = [];
   }
 
   // ===============================
-  // 2) APPEND this new log
-  //    (never merge, never overwrite)
+  // 2) Merge with existing log for this date (if any)
   // ===============================
-  const updatedLogs = Array.isArray(existingLogs) ? [...existingLogs] : [];
-  updatedLogs.push(normalizedIncoming);
+  let updatedLogs = [...existingLogs];
+
+  const indexForDate = updatedLogs.findIndex((entry) => {
+    if (!entry) return false;
+    const ed = entry.date || entry.dateString || null;
+    const norm = normalizeDateString(ed);
+    return norm === logDate;
+  });
+
+  if (indexForDate >= 0) {
+    // Merge into existing entry for this date
+    const merged = mergeLogsByDate(updatedLogs[indexForDate], normalizedIncoming);
+    updatedLogs[indexForDate] = merged;
+  } else {
+    // No existing entry for this date → push as new
+    updatedLogs.push(normalizedIncoming);
+  }
 
   // ===============================
   // 3) Save back to Shopify
