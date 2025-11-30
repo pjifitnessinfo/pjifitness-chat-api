@@ -2,8 +2,7 @@
 
 const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
-const SHOPIFY_API_VERSION =
-  process.env.SHOPIFY_API_VERSION || "2024-01";
+const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
 
 /**
  * Basic CORS helper
@@ -139,9 +138,7 @@ export default async function handler(req, res) {
 
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST,OPTIONS");
-    return res
-      .status(405)
-      .json({ ok: false, error: "Method not allowed" });
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
   // Parse body
@@ -153,9 +150,7 @@ export default async function handler(req, res) {
         : req.body || {};
   } catch (err) {
     console.error("Invalid JSON body:", err);
-    return res
-      .status(400)
-      .json({ ok: false, error: "Invalid JSON body" });
+    return res.status(400).json({ ok: false, error: "Invalid JSON body" });
   }
 
   const {
