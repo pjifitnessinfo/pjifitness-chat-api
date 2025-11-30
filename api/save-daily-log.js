@@ -34,7 +34,7 @@ async function shopifyAdminFetch(query, variables = {}) {
   }
 
   if (!res.ok || json.errors) {
-    console.error("Shopify GraphQL error:", json);
+    console.error("Shopify GraphQL error:", JSON.stringify(json, null, 2));
     throw new Error("Shopify GraphQL error");
   }
 
@@ -60,7 +60,7 @@ function toNumberOrNull(value) {
 function mergeDailyLogs(existing, incoming) {
   const merged = { ...(existing || {}) };
 
-  // Always keep the same date if it already existed
+  // Keep/assign date
   if (!merged.date && incoming.date) {
     merged.date = incoming.date;
   }
@@ -132,13 +132,37 @@ function normalizeIncomingLog(rawLog) {
   return log;
 }
 
+/**
+ * Ensure ownerId is a proper Shopify Customer GID
+ * - Accepts gid://shopify/Customer/123 already
+ * - Also accepts plain numeric like 9603496542392 and wraps it
+ */
+function normalizeOwnerId(raw) {
+  if (!raw) return raw;
+  let s = String(raw).trim();
+
+  if (s.startsWith("gid://shopify/Customer/")) {
+    return s;
+  }
+
+  // If it's numeric-ish, wrap it in the Customer GID format
+  const digits = s.replace(/\D/g, "");
+  if (digits.length > 0) {
+    return `gid://shopify/Customer/${digits}`;
+  }
+
+  // Fallback: return as-is (but this probably won't work with Shopify)
+  console.warn("OwnerId could not be normalized to a Customer GID:", raw);
+  return s;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
-  // Support multiple possible body shapes just in case:
+  // Handle JSON body
   let body;
   try {
     body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
@@ -152,30 +176,27 @@ export default async function handler(req, res) {
     customer_id,
     customerGid,
     customer_gid,
+    ownerId: bodyOwner,
     log,
     daily_log,
     dailyLog,
   } = body || {};
 
-  const ownerId =
-    customerId || customer_id || customerGid || customer_gid;
+  const rawOwnerId =
+    bodyOwner || customerId || customer_id || customerGid || customer_gid;
 
+  const ownerId = normalizeOwnerId(rawOwnerId);
   const incomingLog = log || daily_log || dailyLog;
 
   if (!ownerId) {
     return res
       .status(400)
-      .json({ ok: false, error: "Missing customerId / customerGid" });
+      .json({ ok: false, error: "Missing customerId / ownerId" });
   }
   if (!incomingLog) {
     return res
       .status(400)
       .json({ ok: false, error: "Missing daily log payload" });
-  }
-
-  // Make sure this looks like a Shopify GID
-  if (!String(ownerId).startsWith("gid://")) {
-    console.warn("OwnerId is not a Shopify GID:", ownerId);
   }
 
   const normalizedIncoming = normalizeIncomingLog(incomingLog);
@@ -202,14 +223,11 @@ export default async function handler(req, res) {
   `;
 
   let existingLogs = [];
-  let metafieldId = null;
-
   try {
     const data = await shopifyAdminFetch(GET_DAILY_LOGS, { id: ownerId });
     const edges = data?.customer?.metafields?.edges || [];
     if (edges.length > 0 && edges[0].node) {
       const mf = edges[0].node;
-      metafieldId = mf.id || null;
       if (mf.value) {
         try {
           const parsed = JSON.parse(mf.value);
