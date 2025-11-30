@@ -2,7 +2,8 @@
 
 const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
-const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
+const SHOPIFY_API_VERSION =
+  process.env.SHOPIFY_API_VERSION || "2024-01";
 
 /**
  * Basic CORS helper
@@ -138,7 +139,9 @@ export default async function handler(req, res) {
 
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST,OPTIONS");
-    return res.status(405).json({ ok: false, error: "Method not allowed" });
+    return res
+      .status(405)
+      .json({ ok: false, error: "Method not allowed" });
   }
 
   // Parse body
@@ -150,7 +153,9 @@ export default async function handler(req, res) {
         : req.body || {};
   } catch (err) {
     console.error("Invalid JSON body:", err);
-    return res.status(400).json({ ok: false, error: "Invalid JSON body" });
+    return res
+      .status(400)
+      .json({ ok: false, error: "Invalid JSON body" });
   }
 
   const {
@@ -239,9 +244,13 @@ export default async function handler(req, res) {
   updatedLogs.push(normalizedIncoming);
 
   // ===============================
-  // 2b) Derive per-meal metafields for TODAY
+  // 2b) Derive per-meal metafields
+  //     for THE LOG'S OWN DATE
   // ===============================
-  const todayStr = new Date().toISOString().slice(0, 10);
+  // Use the log's date as the target for aggregation.
+  // If for some reason it's missing, fall back to "today".
+  const targetDate =
+    logDate || new Date().toISOString().slice(0, 10);
 
   const mealBuckets = {
     breakfast: { descParts: [], cals: 0 },
@@ -254,7 +263,7 @@ export default async function handler(req, res) {
     updatedLogs.forEach((entry) => {
       if (!entry) return;
       const d = normalizeDateString(entry.date);
-      if (!d || d !== todayStr) return;
+      if (!d || d !== targetDate) return;
 
       const meals = Array.isArray(entry.meals) ? entry.meals : [];
       meals.forEach((meal) => {
@@ -264,13 +273,16 @@ export default async function handler(req, res) {
 
         const items = Array.isArray(meal.items) ? meal.items : [];
         const text =
-          items.length > 0 ? items.join(", ") : String(meal.meal_type || "").trim();
+          items.length > 0
+            ? items.join(", ")
+            : String(meal.meal_type || "").trim();
         if (text) {
           mealBuckets[slot].descParts.push(text);
         }
 
         const rawCal = meal.calories;
-        const numCal = rawCal == null ? 0 : parseFloat(rawCal);
+        const numCal =
+          rawCal == null ? 0 : parseFloat(rawCal);
         if (Number.isFinite(numCal) && numCal > 0) {
           mealBuckets[slot].cals += Math.round(numCal);
         }
@@ -283,10 +295,16 @@ export default async function handler(req, res) {
   const safeInt = (n) =>
     Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
 
-  const breakfastDesc = mealBuckets.breakfast.descParts.join(" | ");
-  const lunchDesc = mealBuckets.lunch.descParts.join(" | ");
-  const dinnerDesc = mealBuckets.dinner.descParts.join(" | ");
-  const snacksDesc = mealBuckets.snacks.descParts.join(" | ");
+  // Build descriptions; if there truly are no meals for that slot
+  // we leave descParts empty and will handle that on the dashboard UI.
+  const breakfastDesc =
+    mealBuckets.breakfast.descParts.join(" | ");
+  const lunchDesc =
+    mealBuckets.lunch.descParts.join(" | ");
+  const dinnerDesc =
+    mealBuckets.dinner.descParts.join(" | ");
+  const snacksDesc =
+    mealBuckets.snacks.descParts.join(" | ");
 
   const breakfastCals = safeInt(mealBuckets.breakfast.cals);
   const lunchCals = safeInt(mealBuckets.lunch.cals);
@@ -407,7 +425,8 @@ export default async function handler(req, res) {
       ok: true,
       savedDate: logDate,
       logsCount: updatedLogs.length,
-      mealsToday: {
+      mealsForDate: targetDate,
+      mealsSummary: {
         breakfastCals,
         lunchCals,
         dinnerCals,
