@@ -1,178 +1,200 @@
 // /api/save-daily-log.js
-// Append a log object to customer.metafields.custom.daily_logs (JSON array).
 
 const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
 
-async function parseBody(req) {
-  return new Promise((resolve, reject) => {
-    try {
-      if (req.body && typeof req.body === "object") {
-        return resolve(req.body);
-      }
-      let data = "";
-      req.on("data", chunk => { data += chunk; });
-      req.on("end", () => {
-        if (!data) return resolve({});
-        try {
-          resolve(JSON.parse(data));
-        } catch (e) {
-          console.error("Invalid JSON body", e);
-          resolve({});
-        }
-      });
-    } catch (e) {
-      reject(e);
-    }
-  });
-}
-
+/**
+ * Helper: call Shopify Admin GraphQL
+ */
 async function shopifyAdminFetch(query, variables = {}) {
-  if (!SHOPIFY_STORE_DOMAIN || !SHOPIFY_ADMIN_API_TOKEN) {
-    throw new Error("Missing Shopify env vars");
-  }
-
   const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_TOKEN
-    },
-    body: JSON.stringify({ query, variables })
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_TOKEN,
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+  } catch (err) {
+    console.error("Network error when calling Shopify:", err);
+    throw new Error("Network error contacting Shopify");
+  }
 
-  const json = await res.json();
-  if (json.errors) {
-    console.error("Shopify GraphQL errors:", JSON.stringify(json.errors, null, 2));
+  let json;
+  try {
+    json = await res.json();
+  } catch (err) {
+    console.error("Error parsing Shopify response JSON:", err);
+    throw new Error("Invalid JSON from Shopify");
+  }
+
+  if (!res.ok || json.errors) {
+    console.error("Shopify GraphQL error:", JSON.stringify(json, null, 2));
     throw new Error("Shopify GraphQL error");
   }
-  return json;
+
+  return json.data;
 }
 
-export default async function handler(req, res) {
-  // ---- CORS handling ----
-  if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    res.status(200).end();
-    return;
+/**
+ * Sanitize the log object so only the fields we expect get stored.
+ * IMPORTANT: this includes meals + macros now.
+ */
+function sanitizeLog(raw) {
+  if (!raw || typeof raw !== "object") return null;
+
+  const SAFE_FIELDS = [
+    "date",
+    "weight",
+    "calories",
+    "total_calories",
+    "steps",
+    "mood",
+    "struggle",
+    "coach_focus",
+    "calorie_target",
+    "protein",
+    "carbs",
+    "fat",
+    "meals", // <-- NEW: keep meals
+  ];
+
+  const clean = {};
+  for (const key of SAFE_FIELDS) {
+    if (raw[key] !== undefined) {
+      clean[key] = raw[key];
+    }
   }
 
-  // Allow browser calls from Shopify
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  // Ensure date exists + is ISO (YYYY-MM-DD)
+  if (!clean.date) {
+    clean.date = new Date().toISOString().slice(0, 10);
+  }
 
+  return clean;
+}
+
+/**
+ * Default export – Vercel API Route
+ */
+export default async function handler(req, res) {
   if (req.method !== "POST") {
-    res.status(405).json({ error: "Method not allowed" });
-    return;
+    res.setHeader("Allow", "POST");
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
   let body;
   try {
-    body = await parseBody(req);
-  } catch (e) {
-    console.error("Error parsing body", e);
-    res.status(400).json({ error: "Invalid request body" });
-    return;
+    body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+  } catch (err) {
+    console.error("Error parsing request body:", err);
+    return res.status(400).json({ error: "Invalid JSON body" });
   }
 
   const { customerId, log } = body || {};
   if (!customerId || !log) {
-    res.status(400).json({ error: "Missing customerId or log" });
-    return;
+    return res.status(400).json({ error: "Missing customerId or log" });
   }
 
-  // Build Shopify global ID from numeric ID
-  const gid = customerId.startsWith("gid://")
-    ? customerId
-    : `gid://shopify/Customer/${customerId}`;
+  const safeLog = sanitizeLog(log);
+  if (!safeLog) {
+    return res.status(400).json({ error: "Invalid log payload" });
+  }
+
+  // 1) Read existing daily_logs metafield
+  const GET_LOGS_QUERY = `
+    query GetDailyLogs($id: ID!) {
+      customer(id: $id) {
+        id
+        metafield(namespace: "custom", key: "daily_logs") {
+          id
+          value
+        }
+      }
+    }
+  `;
+
+  let existingLogs = [];
+  let metafieldId = null;
 
   try {
-    // 1) Get existing daily_logs metafield for this customer
-    const getQuery = `
-      query GetDailyLogs($id: ID!) {
-        customer(id: $id) {
-          id
-          metafield(namespace: "custom", key: "daily_logs") {
-            id
-            value
-          }
-        }
-      }
-    `;
+    const data = await shopifyAdminFetch(GET_LOGS_QUERY, { id: customerId });
 
-    const getResp = await shopifyAdminFetch(getQuery, { id: gid });
-    const customer = getResp.data?.customer;
-
-    let existingLogs = [];
-    if (customer?.metafield?.value) {
+    const mf = data?.customer?.metafield;
+    if (mf && mf.value) {
+      metafieldId = mf.id;
       try {
-        existingLogs = JSON.parse(customer.metafield.value) || [];
-      } catch (e) {
-        console.warn("Could not parse existing daily_logs JSON, resetting.", e);
-        existingLogs = [];
+        const parsed = JSON.parse(mf.value);
+        if (Array.isArray(parsed)) {
+          existingLogs = parsed;
+        }
+      } catch (err) {
+        console.error("Error parsing existing daily_logs JSON:", err);
       }
     }
+  } catch (err) {
+    console.error("Error fetching existing daily_logs:", err);
+    // Keep going; we'll just treat as empty logs
+  }
 
-    // 2) Append new log
-    const newLog = {
-      date: log.date || new Date().toISOString().slice(0, 10),
-      weight: log.weight ?? null,
-      calories: log.calories ?? null,
-      steps: log.steps ?? null,
-      meals: Array.isArray(log.meals) ? log.meals : [],
-      total_calories: log.total_calories ?? log.calories ?? null,
-      mood: log.mood ?? null,
-      struggle: log.struggle ?? null,
-      coach_focus: log.coach_focus || "Daily check-in saved."
-    };
+  // 2) Append the new log (most recent at the end)
+  const updatedLogs = [...existingLogs, safeLog];
 
-    const updatedLogs = [...existingLogs, newLog];
+  // Optional: cap history (e.g., last 365 logs)
+  const MAX_LOGS = 365;
+  const trimmedLogs =
+    updatedLogs.length > MAX_LOGS
+      ? updatedLogs.slice(updatedLogs.length - MAX_LOGS)
+      : updatedLogs;
 
-    // 3) Save back to Shopify metafield
-    const setMutation = `
-      mutation SetDailyLogs($metafields: [MetafieldsSetInput!]!) {
-        metafieldsSet(metafields: $metafields) {
-          metafields {
-            id
-            key
-            namespace
-          }
-          userErrors {
-            field
-            message
-          }
+  const valueString = JSON.stringify(trimmedLogs);
+
+  // 3) Write back to Shopify
+  const SET_LOGS_MUTATION = `
+    mutation SaveDailyLogs($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        metafields {
+          id
+          key
+          namespace
+        }
+        userErrors {
+          field
+          message
         }
       }
-    `;
+    }
+  `;
 
-    const metafieldsInput = [
-      {
-        ownerId: gid,
-        namespace: "custom",
-        key: "daily_logs",
-        type: "json",
-        value: JSON.stringify(updatedLogs)
-      }
-    ];
+  const metafieldsInput = [
+    {
+      ownerId: customerId,
+      namespace: "custom",
+      key: "daily_logs",
+      type: "json",
+      value: valueString,
+    },
+  ];
 
-    const setResp = await shopifyAdminFetch(setMutation, {
-      metafields: metafieldsInput
+  try {
+    const result = await shopifyAdminFetch(SET_LOGS_MUTATION, {
+      metafields: metafieldsInput,
     });
 
-    const userErrors = setResp.data?.metafieldsSet?.userErrors || [];
-    if (userErrors.length > 0) {
-      console.error("Shopify metafieldsSet userErrors:", userErrors);
-      res.status(500).json({ error: "Failed to save daily_logs", details: userErrors });
-      return;
+    const errors = result?.metafieldsSet?.userErrors || [];
+    if (errors.length) {
+      console.error("Shopify metafieldsSet errors:", errors);
+      return res.status(500).json({ error: "Failed to save daily_logs", details: errors });
     }
-
-    res.status(200).json({ ok: true });
-  } catch (e) {
-    console.error("save-daily-log error:", e);
-    res.status(500).json({ error: "Server error" });
+  } catch (err) {
+    console.error("Error saving daily_logs metafield:", err);
+    return res.status(500).json({ error: "Error saving daily_logs" });
   }
+
+  return res.status(200).json({ ok: true, log: safeLog });
 }
