@@ -1,5 +1,5 @@
 // /api/chat.js
-// Very simple Chat endpoint using OpenAI REST API.
+// Simple Chat endpoint using OpenAI REST API.
 // Expects: { message, email, customerId, threadId } in JSON body.
 // Returns: { reply }
 
@@ -43,6 +43,18 @@ async function parseBody(req) {
 }
 
 export default async function handler(req, res) {
+  // ---- CORS handling ----
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.status(200).end();
+    return;
+  }
+
+  // Allow browser calls from Shopify
+  res.setHeader("Access-Control-Allow-Origin", "*");
+
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -94,9 +106,10 @@ export default async function handler(req, res) {
     }
 
     const data = await openaiRes.json();
-    const reply = data.choices?.[0]?.message?.content || "Sorry, I’m not sure what to say to that.";
+    const reply =
+      data.choices?.[0]?.message?.content ||
+      "Sorry, I’m not sure what to say to that.";
 
-    // We don't use threadId any more; just stateless replies.
     res.status(200).json({ reply });
   } catch (e) {
     console.error("Chat handler error:", e);
