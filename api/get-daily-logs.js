@@ -31,7 +31,7 @@ async function shopifyAdminFetch(query, variables = {}) {
     json = await res.json();
   } catch (err) {
     console.error("get-daily-logs: failed to parse Shopify response JSON:", err);
-    throw new Error("Failed to parse Shopify response from Shopify");
+    throw new Error("Failed to parse JSON response from Shopify");
   }
 
   if (!res.ok || json.errors) {
@@ -65,8 +65,10 @@ function smartParse(value) {
   }
 
   // Try JSON (for meals array, etc.)
-  if ((trimmed.startsWith("[") && trimmed.endsWith("]")) ||
-      (trimmed.startsWith("{") && trimmed.endsWith("}"))) {
+  if (
+    (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+    (trimmed.startsWith("{") && trimmed.endsWith("}"))
+  ) {
     try {
       return JSON.parse(trimmed);
     } catch {
@@ -119,22 +121,26 @@ export default async function handler(req, res) {
     return;
   }
 
-  const email = (req.query.email || req.query.userEmail || "").toLowerCase().trim();
+  const email = (req.query.email || req.query.userEmail || "")
+    .toLowerCase()
+    .trim();
 
   if (!email) {
-    res.status(400).json({ ok: false, error: "Missing ?email= query parameter" });
+    res
+      .status(400)
+      .json({ ok: false, error: "Missing ?email= query parameter" });
     return;
   }
 
   try {
-    // 🔹 IMPORTANT: We ONLY query metaobjects, NOT customers (avoids PII restriction)
+    // We ONLY query metaobjects, NOT customers (avoids PII restriction)
     const query = /* GraphQL */ `
-      query DailyLogsByCustomer($customerId: String!) {
+      query DailyLogsByCustomer($query: String!) {
         metaobjects(
           type: "daily_log"
           first: 100
           reverse: true
-          query: $customerId
+          query: $query
         ) {
           edges {
             node {
@@ -150,8 +156,9 @@ export default async function handler(req, res) {
       }
     `;
 
+    // We store customer_id as the email string in the metaobject
     const variables = {
-      customerId: email, // we save customer_id as the email string in the metaobject
+      query: "customer_id:" + email,
     };
 
     const json = await shopifyAdminFetch(query, variables);
@@ -159,7 +166,7 @@ export default async function handler(req, res) {
     const edges = json.data?.metaobjects?.edges || [];
     const logs = edges
       .map((edge) => flattenDailyLogMetaobject(edge.node))
-      // safety: only keep logs that actually match this email in customer_id
+      // Safety: only keep logs that actually match this email in customer_id
       .filter((log) => {
         const cid = (log.customer_id || log.customerId || "").toLowerCase();
         return cid === email;
