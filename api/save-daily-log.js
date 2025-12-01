@@ -53,6 +53,18 @@ async function shopifyAdminFetch(query, variables = {}) {
 }
 
 export default async function handler(req, res) {
+  // ---- CORS handling ----
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.status(200).end();
+    return;
+  }
+
+  // Allow browser calls from Shopify
+  res.setHeader("Access-Control-Allow-Origin", "*");
+
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -96,8 +108,6 @@ export default async function handler(req, res) {
     const customer = getResp.data?.customer;
 
     let existingLogs = [];
-    let metafieldId = null;
-
     if (customer?.metafield?.value) {
       try {
         existingLogs = JSON.parse(customer.metafield.value) || [];
@@ -105,7 +115,6 @@ export default async function handler(req, res) {
         console.warn("Could not parse existing daily_logs JSON, resetting.", e);
         existingLogs = [];
       }
-      metafieldId = customer.metafield.id;
     }
 
     // 2) Append new log
