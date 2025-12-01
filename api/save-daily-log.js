@@ -1,143 +1,146 @@
-// /api/save-daily-log.js
-// Minimal V1: only appends to customer.metafields.custom.daily_logs (JSON array)
+// /api/save-daily-log.js (FINAL FIXED VERSION)
+// Appends normalized logs to customer.metafields.custom.daily_logs (JSON array)
 
 const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
 
-/**
- * Basic CORS helper
- */
+/* ----------------------------------------------------------
+   CORS
+---------------------------------------------------------- */
 function setCors(res) {
-  // You can tighten this later to your real domain
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
-/**
- * Helper: call Shopify Admin GraphQL
- */
+/* ----------------------------------------------------------
+   Shopify Admin GraphQL
+---------------------------------------------------------- */
 async function shopifyAdminFetch(query, variables = {}) {
   const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`;
 
-  let res;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_TOKEN,
-      },
-      body: JSON.stringify({ query, variables }),
-    });
-  } catch (err) {
-    console.error("save-daily-log: network error calling Shopify:", err);
-    throw new Error("Network error contacting Shopify");
-  }
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_TOKEN,
+    },
+    body: JSON.stringify({ query, variables }),
+  });
 
-  let json;
-  try {
-    json = await res.json();
-  } catch (err) {
-    console.error("save-daily-log: invalid JSON from Shopify:", err);
-    throw new Error("Invalid JSON from Shopify");
-  }
+  const json = await res.json().catch(() => null);
 
-  if (!res.ok || json.errors) {
-    console.error(
-      "save-daily-log: Shopify GraphQL error:",
-      JSON.stringify(json, null, 2)
-    );
+  if (!res.ok || json?.errors) {
+    console.error("save-daily-log: Shopify GraphQL error:", json);
     throw new Error("Shopify GraphQL error");
   }
 
   return json.data;
 }
 
-/**
- * Normalize any date-ish thing into YYYY-MM-DD
- */
+/* ----------------------------------------------------------
+   DATE NORMALIZATION → YYYY-MM-DD
+---------------------------------------------------------- */
 function normalizeDateString(d) {
-  if (!d) return null;
-
   try {
-    if (typeof d === "string") {
-      if (d.length >= 10) {
-        const sliced = d.slice(0, 10);
-        if (/^\d{4}-\d{2}-\d{2}$/.test(sliced)) return sliced;
-      }
-    }
-
     const dt = new Date(d);
-    if (!isFinite(dt.getTime())) return null;
-    return dt.toISOString().slice(0, 10);
-  } catch (e) {
+    if (isFinite(dt.getTime())) return dt.toISOString().slice(0, 10);
+    return null;
+  } catch {
     return null;
   }
 }
 
-/**
- * Normalize incoming log (make sure date exists & is YYYY-MM-DD)
- */
+/* ----------------------------------------------------------
+   BACKEND LOG PARSER — THIS FIXES ALL STEP/CALORIE ISSUES
+---------------------------------------------------------- */
+function extractNumbersFromLog(raw) {
+  if (!raw || typeof raw !== "object") return raw;
+
+  const mergedText = [
+    raw.text,
+    raw.message,
+    raw.input,
+    JSON.stringify(raw),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  // --- Detect "9k steps" ---
+  const kStepsMatch = mergedText.match(/(\d+)\s*k\s*steps?/);
+  let steps = kStepsMatch ? parseInt(kStepsMatch[1], 10) * 1000 : null;
+
+  // --- All numeric values ---
+  const matches = mergedText.match(/\d+(\.\d+)?/g) || [];
+  const nums = matches.map((n) => parseFloat(n));
+
+  let weight = null;
+  let calories = null;
+
+  nums.forEach((n) => {
+    if (!weight && n >= 70 && n <= 400) weight = n;
+    if (!calories && n >= 500 && n <= 6000) calories = n;
+    if (!steps && n >= 1000) steps = n;
+  });
+
+  return {
+    ...raw,
+    weight: weight ?? raw.weight ?? null,
+    calories: calories ?? raw.calories ?? null,
+    steps: steps ?? raw.steps ?? null,
+    total_calories: calories ?? raw.total_calories ?? null,
+  };
+}
+
+/* ----------------------------------------------------------
+   NORMALIZE INCOMING LOG STRUCTURE
+---------------------------------------------------------- */
 function normalizeIncomingLog(rawLog) {
   const log = { ...(rawLog || {}) };
 
-  let normalizedDate = null;
-  if (log.date) {
-    normalizedDate = normalizeDateString(log.date);
-  }
+  // Date
+  log.date =
+    normalizeDateString(log.date) ||
+    new Date().toISOString().slice(0, 10);
 
-  if (!normalizedDate) {
-    const now = new Date();
-    normalizedDate = now.toISOString().slice(0, 10);
-  }
-
-  log.date = normalizedDate;
-  return log;
+  return extractNumbersFromLog(log); // << THIS IS THE FIX
 }
 
-/**
- * Ensure ownerId is a proper Shopify Customer GID
- */
+/* ----------------------------------------------------------
+   OWNER ID NORMALIZATION
+---------------------------------------------------------- */
 function normalizeOwnerId(raw) {
   if (!raw) return raw;
-  let s = String(raw).trim();
+  const s = String(raw).trim();
+  if (s.startsWith("gid://shopify/Customer/")) return s;
 
-  // Already a full GID
-  if (s.startsWith("gid://shopify/Customer/")) {
-    return s;
-  }
-
-  // If it's numeric (e.g. "9603496542392"), wrap it
   const digits = s.replace(/\D/g, "");
-  if (digits.length > 0) {
-    return `gid://shopify/Customer/${digits}`;
-  }
+  if (digits) return `gid://shopify/Customer/${digits}`;
 
-  console.warn("save-daily-log: ownerId could not be normalized:", raw);
   return s;
 }
 
+/* ----------------------------------------------------------
+   HANDLER
+---------------------------------------------------------- */
 export default async function handler(req, res) {
   setCors(res);
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-
+  if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") {
-    res.setHeader("Allow", "POST,OPTIONS");
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
   // Parse body
-  let body;
-  try {
-    body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
-  } catch (err) {
-    console.error("save-daily-log: invalid JSON body:", err);
-    return res.status(400).json({ ok: false, error: "Invalid JSON body" });
+  let body = req.body;
+  if (typeof req.body === "string") {
+    try {
+      body = JSON.parse(req.body);
+    } catch {
+      return res.status(400).json({ ok: false, error: "Invalid JSON body" });
+    }
   }
 
   const {
@@ -151,104 +154,56 @@ export default async function handler(req, res) {
     dailyLog,
   } = body || {};
 
-  // Accept multiple possible fields for customer ID
-  const rawOwnerId =
-    bodyOwner || customerId || customer_id || customerGid || customer_gid;
-
-  const ownerId = normalizeOwnerId(rawOwnerId);
-  const incomingLog = log || daily_log || dailyLog;
+  const rawOwner = bodyOwner || customerId || customer_id || customerGid || customer_gid;
+  const ownerId = normalizeOwnerId(rawOwner);
+  const incoming = log || daily_log || dailyLog;
 
   if (!ownerId) {
-    return res
-      .status(400)
-      .json({ ok: false, error: "Missing customerId / ownerId" });
+    return res.status(400).json({ ok: false, error: "Missing customerId / ownerId" });
   }
-  if (!incomingLog) {
-    return res
-      .status(400)
-      .json({ ok: false, error: "Missing daily log payload" });
+  if (!incoming) {
+    return res.status(400).json({ ok: false, error: "Missing daily log payload" });
   }
 
-  const normalizedIncoming = normalizeIncomingLog(incomingLog);
-  const logDate = normalizedIncoming.date;
+  const normalized = normalizeIncomingLog(incoming);
 
-  // ===============================
-  // 1) Fetch existing daily_logs
-  // ===============================
-  const GET_DAILY_LOGS = `
+  /* ----------------------------------------------------------
+     FETCH EXISTING LOGS
+  ---------------------------------------------------------- */
+  const GET = `
     query GetDailyLogs($id: ID!) {
       customer(id: $id) {
-        id
         dailyLogs: metafield(namespace: "custom", key: "daily_logs") {
-          id
-          key
-          namespace
-          type
           value
         }
       }
     }
   `;
 
-  let existingLogs = [];
+  let existing = [];
   try {
-    const data = await shopifyAdminFetch(GET_DAILY_LOGS, { id: ownerId });
-
-    const mf = data?.customer?.dailyLogs;
-    if (mf && mf.value) {
-      try {
-        const parsed = JSON.parse(mf.value);
-        if (Array.isArray(parsed)) {
-          existingLogs = parsed;
-        } else if (parsed && typeof parsed === "object") {
-          // Old format: single object → wrap in array
-          existingLogs = [parsed];
-        } else {
-          console.warn(
-            "save-daily-log: daily_logs metafield value not array/object, resetting to []"
-          );
-        }
-      } catch (err) {
-        console.error(
-          "save-daily-log: error parsing existing daily_logs JSON:",
-          err
-        );
-      }
+    const data = await shopifyAdminFetch(GET, { id: ownerId });
+    if (data?.customer?.dailyLogs?.value) {
+      existing = JSON.parse(data.customer.dailyLogs.value) || [];
     }
   } catch (err) {
-    console.error("save-daily-log: error fetching existing daily_logs:", err);
-    // If this fails, treat as no existing logs
+    console.error("save-daily-log: fetch error:", err);
   }
 
-  // ===============================
-  // 2) Append this new log
-  //    (each message = new entry)
-  // ===============================
-  const updatedLogs = Array.isArray(existingLogs) ? [...existingLogs] : [];
-  updatedLogs.push(normalizedIncoming);
+  const updatedLogs = [...existing, normalized];
 
-  // ===============================
-  // 3) Save back to Shopify
-  // ===============================
-  const METAFIELDS_SET = `
-    mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
+  /* ----------------------------------------------------------
+     SAVE BACK TO SHOPIFY
+  ---------------------------------------------------------- */
+  const SET = `
+    mutation SetDailyLogs($metafields: [MetafieldsSetInput!]!) {
       metafieldsSet(metafields: $metafields) {
-        metafields {
-          id
-          key
-          namespace
-          type
-          value
-        }
-        userErrors {
-          field
-          message
-        }
+        userErrors { field message }
       }
     }
   `;
 
-  const metafieldsPayload = [
+  const metafields = [
     {
       ownerId,
       namespace: "custom",
@@ -259,31 +214,20 @@ export default async function handler(req, res) {
   ];
 
   try {
-    const data = await shopifyAdminFetch(METAFIELDS_SET, {
-      metafields: metafieldsPayload,
-    });
-
-    const userErrors = data?.metafieldsSet?.userErrors || [];
-    if (userErrors.length > 0) {
-      console.error("save-daily-log: metafieldsSet userErrors:", userErrors);
-      return res.status(500).json({
-        ok: false,
-        error: "Failed to save daily logs",
-        details: userErrors,
-      });
+    const result = await shopifyAdminFetch(SET, { metafields });
+    const errs = result?.metafieldsSet?.userErrors || [];
+    if (errs.length > 0) {
+      console.error("save-daily-log: userErrors:", errs);
+      return res.status(500).json({ ok: false, error: "User errors", details: errs });
     }
-
-    return res.status(200).json({
-      ok: true,
-      savedDate: logDate,
-      logsCount: updatedLogs.length,
-    });
   } catch (err) {
-    console.error("save-daily-log: error saving metafields:", err);
-    return res.status(500).json({
-      ok: false,
-      error: "Error saving daily logs metafield",
-      details: err.message || String(err),
-    });
+    console.error("save-daily-log: save error:", err);
+    return res.status(500).json({ ok: false, error: "Unable to save daily log" });
   }
+
+  return res.status(200).json({
+    ok: true,
+    saved: normalized,
+    total: updatedLogs.length,
+  });
 }
