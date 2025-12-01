@@ -1,15 +1,15 @@
 // /api/save-daily-log.js
+// Minimal V1: only appends to customer.metafields.custom.daily_logs (JSON array)
 
 const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
-const SHOPIFY_API_VERSION =
-  process.env.SHOPIFY_API_VERSION || "2024-01";
+const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
 
 /**
  * Basic CORS helper
  */
 function setCors(res) {
-  // TODO: tighten this to your real domain (e.g. "https://pjifitness.com")
+  // You can tighten this later to your real domain
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -32,7 +32,7 @@ async function shopifyAdminFetch(query, variables = {}) {
       body: JSON.stringify({ query, variables }),
     });
   } catch (err) {
-    console.error("Network error when calling Shopify:", err);
+    console.error("save-daily-log: network error calling Shopify:", err);
     throw new Error("Network error contacting Shopify");
   }
 
@@ -40,12 +40,15 @@ async function shopifyAdminFetch(query, variables = {}) {
   try {
     json = await res.json();
   } catch (err) {
-    console.error("Error parsing Shopify JSON:", err);
+    console.error("save-daily-log: invalid JSON from Shopify:", err);
     throw new Error("Invalid JSON from Shopify");
   }
 
   if (!res.ok || json.errors) {
-    console.error("Shopify GraphQL error:", JSON.stringify(json, null, 2));
+    console.error(
+      "save-daily-log: Shopify GraphQL error:",
+      JSON.stringify(json, null, 2)
+    );
     throw new Error("Shopify GraphQL error");
   }
 
@@ -112,50 +115,29 @@ function normalizeOwnerId(raw) {
     return `gid://shopify/Customer/${digits}`;
   }
 
-  console.warn("OwnerId could not be normalized to a Customer GID:", raw);
+  console.warn("save-daily-log: ownerId could not be normalized:", raw);
   return s;
-}
-
-/**
- * Helper to map meal_type to one of breakfast/lunch/dinner/snacks
- */
-function mapMealSlot(mealTypeRaw) {
-  if (!mealTypeRaw) return null;
-  const t = String(mealTypeRaw).toLowerCase();
-  if (t.includes("breakfast")) return "breakfast";
-  if (t.includes("lunch")) return "lunch";
-  if (t.includes("dinner") || t.includes("supper")) return "dinner";
-  if (t.includes("snack")) return "snacks";
-  return null;
 }
 
 export default async function handler(req, res) {
   setCors(res);
 
   if (req.method === "OPTIONS") {
-    // Preflight request
     return res.status(200).end();
   }
 
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST,OPTIONS");
-    return res
-      .status(405)
-      .json({ ok: false, error: "Method not allowed" });
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
   // Parse body
   let body;
   try {
-    body =
-      typeof req.body === "string"
-        ? JSON.parse(req.body)
-        : req.body || {};
+    body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
   } catch (err) {
-    console.error("Invalid JSON body:", err);
-    return res
-      .status(400)
-      .json({ ok: false, error: "Invalid JSON body" });
+    console.error("save-daily-log: invalid JSON body:", err);
+    return res.status(400).json({ ok: false, error: "Invalid JSON body" });
   }
 
   const {
@@ -167,10 +149,9 @@ export default async function handler(req, res) {
     log,
     daily_log,
     dailyLog,
-    email, // not used for saving, but OK if present
   } = body || {};
 
-  // We accept multiple possible fields for the customer ID
+  // Accept multiple possible fields for customer ID
   const rawOwnerId =
     bodyOwner || customerId || customer_id || customerGid || customer_gid;
 
@@ -224,92 +205,27 @@ export default async function handler(req, res) {
           existingLogs = [parsed];
         } else {
           console.warn(
-            "daily_logs metafield value was not array/object, resetting to []"
+            "save-daily-log: daily_logs metafield value not array/object, resetting to []"
           );
         }
       } catch (err) {
-        console.error("Error parsing existing daily_logs JSON:", err);
+        console.error(
+          "save-daily-log: error parsing existing daily_logs JSON:",
+          err
+        );
       }
     }
   } catch (err) {
-    console.error("Error fetching existing daily_logs metafield:", err);
-    // If this fails, we’ll just treat it as no existing logs
+    console.error("save-daily-log: error fetching existing daily_logs:", err);
+    // If this fails, treat as no existing logs
   }
 
   // ===============================
   // 2) Append this new log
-  //    (NEVER merge; each message = new entry)
+  //    (each message = new entry)
   // ===============================
   const updatedLogs = Array.isArray(existingLogs) ? [...existingLogs] : [];
   updatedLogs.push(normalizedIncoming);
-
-  // ===============================
-  // 2b) Derive per-meal metafields
-  //     for THE LOG'S OWN DATE
-  // ===============================
-  // Use the log's date as the target for aggregation.
-  // If for some reason it's missing, fall back to "today".
-  const targetDate =
-    logDate || new Date().toISOString().slice(0, 10);
-
-  const mealBuckets = {
-    breakfast: { descParts: [], cals: 0 },
-    lunch: { descParts: [], cals: 0 },
-    dinner: { descParts: [], cals: 0 },
-    snacks: { descParts: [], cals: 0 },
-  };
-
-  try {
-    updatedLogs.forEach((entry) => {
-      if (!entry) return;
-      const d = normalizeDateString(entry.date);
-      if (!d || d !== targetDate) return;
-
-      const meals = Array.isArray(entry.meals) ? entry.meals : [];
-      meals.forEach((meal) => {
-        if (!meal) return;
-        const slot = mapMealSlot(meal.meal_type);
-        if (!slot || !mealBuckets[slot]) return;
-
-        const items = Array.isArray(meal.items) ? meal.items : [];
-        const text =
-          items.length > 0
-            ? items.join(", ")
-            : String(meal.meal_type || "").trim();
-        if (text) {
-          mealBuckets[slot].descParts.push(text);
-        }
-
-        const rawCal = meal.calories;
-        const numCal =
-          rawCal == null ? 0 : parseFloat(rawCal);
-        if (Number.isFinite(numCal) && numCal > 0) {
-          mealBuckets[slot].cals += Math.round(numCal);
-        }
-      });
-    });
-  } catch (err) {
-    console.error("Error aggregating per-meal data:", err);
-  }
-
-  const safeInt = (n) =>
-    Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
-
-  // Build descriptions; if there truly are no meals for that slot
-  // we leave descParts empty and will handle that on the dashboard UI.
-  const breakfastDesc =
-    mealBuckets.breakfast.descParts.join(" | ");
-  const lunchDesc =
-    mealBuckets.lunch.descParts.join(" | ");
-  const dinnerDesc =
-    mealBuckets.dinner.descParts.join(" | ");
-  const snacksDesc =
-    mealBuckets.snacks.descParts.join(" | ");
-
-  const breakfastCals = safeInt(mealBuckets.breakfast.cals);
-  const lunchCals = safeInt(mealBuckets.lunch.cals);
-  const dinnerCals = safeInt(mealBuckets.dinner.cals);
-  const snacksCals = safeInt(mealBuckets.snacks.cals);
 
   // ===============================
   // 3) Save back to Shopify
@@ -333,7 +249,6 @@ export default async function handler(req, res) {
   `;
 
   const metafieldsPayload = [
-    // Full history JSON
     {
       ownerId,
       namespace: "custom",
@@ -341,76 +256,16 @@ export default async function handler(req, res) {
       type: "json",
       value: JSON.stringify(updatedLogs),
     },
-    // Breakfast
-    {
-      ownerId,
-      namespace: "custom",
-      key: "breakfast_description",
-      type: "multi_line_text_field",
-      value: breakfastDesc || "",
-    },
-    {
-      ownerId,
-      namespace: "custom",
-      key: "breakfast_calories",
-      type: "number_integer",
-      value: String(breakfastCals || 0),
-    },
-    // Lunch
-    {
-      ownerId,
-      namespace: "custom",
-      key: "lunch_description",
-      type: "multi_line_text_field",
-      value: lunchDesc || "",
-    },
-    {
-      ownerId,
-      namespace: "custom",
-      key: "lunch_calories",
-      type: "number_integer",
-      value: String(lunchCals || 0),
-    },
-    // Dinner
-    {
-      ownerId,
-      namespace: "custom",
-      key: "dinner_description",
-      type: "multi_line_text_field",
-      value: dinnerDesc || "",
-    },
-    {
-      ownerId,
-      namespace: "custom",
-      key: "dinner_calories",
-      type: "number_integer",
-      value: String(dinnerCals || 0),
-    },
-    // Snacks
-    {
-      ownerId,
-      namespace: "custom",
-      key: "snacks_description",
-      type: "multi_line_text_field",
-      value: snacksDesc || "",
-    },
-    {
-      ownerId,
-      namespace: "custom",
-      key: "snacks_calories",
-      type: "number_integer",
-      value: String(snacksCals || 0),
-    },
   ];
 
   try {
-    const result = await shopifyAdminFetch(METAFIELDS_SET, {
+    const data = await shopifyAdminFetch(METAFIELDS_SET, {
       metafields: metafieldsPayload,
     });
 
-    const userErrors = result?.metafieldsSet?.userErrors || [];
+    const userErrors = data?.metafieldsSet?.userErrors || [];
     if (userErrors.length > 0) {
-      console.error("metafieldsSet userErrors:", userErrors);
+      console.error("save-daily-log: metafieldsSet userErrors:", userErrors);
       return res.status(500).json({
         ok: false,
         error: "Failed to save daily logs",
@@ -418,27 +273,17 @@ export default async function handler(req, res) {
       });
     }
 
-    const totalDayCals =
-      breakfastCals + lunchCals + dinnerCals + snacksCals;
-
     return res.status(200).json({
       ok: true,
       savedDate: logDate,
       logsCount: updatedLogs.length,
-      mealsForDate: targetDate,
-      mealsSummary: {
-        breakfastCals,
-        lunchCals,
-        dinnerCals,
-        snacksCals,
-        totalDayCals,
-      },
     });
   } catch (err) {
-    console.error("Error saving metafields:", err);
+    console.error("save-daily-log: error saving metafields:", err);
     return res.status(500).json({
       ok: false,
       error: "Error saving daily logs metafield",
+      details: err.message || String(err),
     });
   }
 }
