@@ -17,7 +17,7 @@ export default async function handler(req, res) {
 
   try {
     const {
-      email,
+      email: rawEmail,
       startWeight,
       goalWeight,
       age,
@@ -27,6 +27,8 @@ export default async function handler(req, res) {
       alcoholNights,
       mealsOut,
     } = req.body || {};
+
+    const email = (rawEmail || "").toLowerCase().trim();
 
     if (!email) {
       return res.status(400).json({ error: "Missing email" });
@@ -68,11 +70,23 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         query,
-        variables: { query: `email:${email}` },
+        variables: { query: "email:" + email },
       }),
     });
 
+    if (!queryRes.ok) {
+      const text = await queryRes.text();
+      console.error("save-onboarding: customer query HTTP error:", text);
+      return res.status(502).json({ error: "Error querying Shopify customers" });
+    }
+
     const queryJson = await queryRes.json();
+
+    if (queryJson.errors) {
+      console.error("save-onboarding: Shopify customer query errors:", queryJson.errors);
+      return res.status(502).json({ error: "Shopify customer query error", details: queryJson.errors });
+    }
+
     const edges = queryJson?.data?.customers?.edges || [];
     if (!edges.length) {
       return res
@@ -83,7 +97,7 @@ export default async function handler(req, res) {
     const customerId = edges[0].node.id;
 
     // Build metafields from whatever we have
-    // 🔴 IMPORTANT: type must match Shopify metafield definition type:
+    // IMPORTANT: type must match Shopify metafield definition type:
     //   - Integer → number_integer
     //   - Text (single line) → single_line_text_field
     const metafields = [];
@@ -191,11 +205,27 @@ export default async function handler(req, res) {
       }),
     });
 
+    if (!mutationRes.ok) {
+      const text = await mutationRes.text();
+      console.error("save-onboarding: customerUpdate HTTP error:", text);
+      return res
+        .status(502)
+        .json({ error: "Error calling Shopify customerUpdate" });
+    }
+
     const mutationJson = await mutationRes.json();
+
+    if (mutationJson.errors) {
+      console.error("save-onboarding: Shopify mutation errors:", mutationJson.errors);
+      return res
+        .status(502)
+        .json({ error: "Shopify mutation error", details: mutationJson.errors });
+    }
+
     const errors =
       mutationJson?.data?.customerUpdate?.userErrors || [];
     if (errors.length) {
-      console.error("Shopify metafield errors:", errors);
+      console.error("Shopify metafield userErrors:", errors);
       return res
         .status(400)
         .json({ error: "Shopify userErrors", details: errors });
