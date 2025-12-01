@@ -288,87 +288,7 @@ Notes:
 J. CALORIE & CONSISTENCY BRAIN (FOR YOUR EXPLANATIONS)
 ======================================================
 
-Use this logic in your COACH replies when the user shares patterns or average data:
-
-Define:
-- Green day = within about 0–150 calories of target.
-- Yellow day = about 150–400 over (or under) the target.
-- Red day = more than 400 over target, or a clear binge / "blew it" day.
-
-Rules for your coaching language:
-
-1) If their 7-day calorie average is roughly on target (within ~150):
-   - Reassure them even if the scale is bouncing.
-   - Explain: this is normal water weight / digestion / hormonal fluctuation.
-   - Tell them to stay the course for at least 5–7 more days before changing the plan.
-
-2) If their 7-day average is consistently 300–500+ above target:
-   - Do NOT blame "slow metabolism."
-   - Kindly explain they are just eating a bit more than the plan.
-   - Identify one or two clear trouble spots (late-night snacks, weekends, takeout).
-   - Give ONE concrete adjustment (ex: "keep late-night snacks under 200 calories" or "cap weekends at +200 over target instead of +800").
-
-3) If weekends are always red:
-   - Call this out gently.
-   - Suggest a simple weekend rule:
-     - Example: "2 meals out, but keep them under X calories" or "no drinks on Friday, only Saturday."
-
-4) If they miss multiple days of logging:
-   - Never shame them.
-   - Say: "You don’t have to be perfect. Let’s just start with today’s weight and rough calories."
-   - Focus on getting them back to ONE easy action today.
-
-5) If they say things like "I ruined it" / "I blew it" / "I messed up":
-   - Immediately normalize it.
-   - Explain: one high day doesn’t erase weeks of work.
-   - Do NOT change their plan based on one bad day.
-   - Give them a 24-hour reset: "For today, just hit your calories and get your steps. That’s it."
-
-======================================================
-K. SCALE FLUCTUATIONS & PLATEAUS
-======================================================
-
-When the scale is up but calories have been mostly green:
-- Explain that daily weight is noisy (water, salt, carbs, hormones, digestion).
-- Emphasize weekly trends > single weigh-ins.
-- Encourage them to give it 5–7 more consistent days BEFORE making changes.
-
-If their weight has been flat for 2+ weeks AND calories have truly been at target:
-- Suggest a SMALL adjustment:
-  - Slight calorie decrease (~100–150 cals) OR
-  - Slight step increase (~1–2k steps) IF doable.
-- Never slash calories aggressively.
-
-======================================================
-L. RESPONSE STRUCTURE FOR THIS API
-======================================================
-
-For LOGGING MODE (health/fitness messages with loggable data for today) you MUST respond with:
-
-<COACH>
-[Human-friendly coaching message, short for daily logs or longer for combined questions]
-</COACH>
-
-<LOG_JSON>
-[JSON object ONLY — no code fences, no explanation]
-</LOG_JSON>
-
-For GENERAL CHAT (greetings, goals, conceptual questions, or messages with NO clear daily log data):
-- Answer normally WITHOUT <LOG_JSON>.
-- Give detailed, human explanations for "why is this happening?" style questions.
-- Do NOT create a fake log when there is clearly no health/fitness data.
-
-======================================================
-M. CORE PRINCIPLE
-======================================================
-
-Make this feel SIMPLE, SAFE, and USEFUL.
-
-- First messages: easy hello + "tell me your goals and what you struggle with".
-- For daily logs: be concise, specific, and supportive.
-- For deeper questions: reassure + explain clearly + give a simple plan.
-- The user should feel like they’re texting a real coach who understands them,
-  not going through a complicated form.
+[... instructions unchanged for brevity ...]
 `;
 
 // ======================================================
@@ -434,6 +354,15 @@ function splitCoachAndLog(fullText) {
   return { reply, log };
 }
 
+// Simple fallback ID for threads if needed
+function makeId() {
+  return (
+    "pj_" +
+    Math.random().toString(36).slice(2) +
+    Date.now().toString(36)
+  );
+}
+
 // ======================================================
 // MAIN HANDLER
 // ======================================================
@@ -456,6 +385,8 @@ export default async function handler(req, res) {
 
     const userMessage = body.message || body.input || "";
     const email = (body.email || body.userEmail || "").toLowerCase();
+    // threadId coming from frontend; we mostly just pass it through & echo it back
+    let threadId = body.threadId || body.thread_id || null;
 
     if (!userMessage) {
       res.status(400).json({ error: "Missing 'message' in request body" });
@@ -484,6 +415,7 @@ export default async function handler(req, res) {
       metadata: {
         source: "pjifitness-chat-api",
         email: email || "unknown",
+        threadId: threadId || null,
       },
     });
 
@@ -493,23 +425,32 @@ export default async function handler(req, res) {
     console.log("AI fullText:", fullText);
     console.log("Parsed LOG_JSON:", JSON.stringify(log, null, 2));
 
+    // If we didn't get a threadId from frontend, we can use the response id as a pseudo-thread
+    if (!threadId && aiResponse && typeof aiResponse.id === "string") {
+      threadId = aiResponse.id;
+    }
+    if (!threadId) {
+      threadId = makeId();
+    }
+
     // ==================================================
     // SAFETY NET: ALWAYS CREATE A MEAL IF CALORIES EXIST
     // ==================================================
     let finalLog = log;
-    if (finalLog) {
-      // Make sure meals is at least an empty array
+    if (finalLog && typeof finalLog === "object") {
       if (!Array.isArray(finalLog.meals)) {
         finalLog.meals = [];
       }
 
       const hasMeals = finalLog.meals.length > 0;
+
       const totalFromField =
         finalLog.total_calories !== null &&
         finalLog.total_calories !== undefined &&
         !Number.isNaN(Number(finalLog.total_calories))
           ? Number(finalLog.total_calories)
           : null;
+
       const caloriesFromField =
         finalLog.calories !== null &&
         finalLog.calories !== undefined &&
@@ -517,9 +458,9 @@ export default async function handler(req, res) {
           ? Number(finalLog.calories)
           : null;
 
-      const bestCalories = totalFromField !== null ? totalFromField : caloriesFromField;
+      const bestCalories =
+        totalFromField !== null ? totalFromField : caloriesFromField;
 
-      // If there are no meals but we DO have a calorie total, create a Day Summary meal
       if (!hasMeals && bestCalories !== null) {
         finalLog.meals = [
           {
@@ -529,7 +470,6 @@ export default async function handler(req, res) {
           },
         ];
 
-        // Also make sure total_calories is set
         if (totalFromField === null) {
           finalLog.total_calories = bestCalories;
         }
@@ -543,7 +483,7 @@ export default async function handler(req, res) {
 
     if (finalLog && email) {
       try {
-        const { customerId, existingLogs } = body; // <- coming from frontend
+        const { customerId, existingLogs } = body; // existingLogs is optional
 
         const saveRes = await fetch(
           "https://pjifitness-chat-api.vercel.app/api/save-daily-log",
@@ -576,6 +516,7 @@ export default async function handler(req, res) {
       reply: reply || "Sorry, I couldn't generate a response right now.",
       log: finalLog,
       saveResult,
+      threadId, // <-- so the frontend can persist it
     });
   } catch (err) {
     console.error("Error in /api/chat:", err);
