@@ -539,6 +539,157 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
   }
 }
 
+/* ==================================================
+   NEW: HELPERS FOR DAILY TOTAL CALORIES FROM CHAT
+   ================================================== */
+
+// Parse messages like:
+//  - "log today as 1850 calories"
+//  - "today was about 2200 cals"
+//  - "I was around 2000 calories today"
+// We ONLY treat these as **daily totals** (not per meal).
+function parseDailyCaloriesFromMessage(msg) {
+  if (!msg || typeof msg !== "string") return null;
+  const text = msg.toLowerCase();
+
+  // Require some "day" context so we don't confuse a single meal with the whole day
+  const mentionsDay =
+    text.includes("today") ||
+    text.includes("for the day") ||
+    text.includes("whole day") ||
+    text.includes("all day") ||
+    text.includes("the day");
+
+  // Pattern 1: "log today as 1850" (with or without "calories")
+  let m = text.match(/log\s+(?:today|the day)\s+as\s+(\d{3,4})/i);
+  if (m && m[1]) {
+    const n = Number(m[1]);
+    if (n >= 500 && n <= 6000) return n;
+  }
+
+  // Pattern 2: "today was about 2200 calories", "2000 cals today", etc.
+  if (mentionsDay) {
+    // Look for "#### calories/cals" somewhere in a message that talks about today/the day
+    m = text.match(/(\d{3,4})\s*(?:calories|cals?|kcals?)/i);
+    if (m && m[1]) {
+      const n = Number(m[1]);
+      if (n >= 500 && n <= 6000) return n;
+    }
+  }
+
+  return null;
+}
+
+// Read existing daily_logs metafield for a customer
+async function getDailyLogsMetafield(customerGid) {
+  if (!customerGid) return { logs: [], metafieldId: null };
+
+  const data = await shopifyGraphQL(
+    `
+    query GetDailyLogs($id: ID!) {
+      customer(id: $id) {
+        metafield(namespace: "custom", key: "daily_logs") {
+          id
+          value
+        }
+      }
+    }
+    `,
+    { id: customerGid }
+  );
+
+  const mf = data?.customer?.metafield;
+  if (!mf || !mf.value) {
+    return { logs: [], metafieldId: null };
+  }
+
+  try {
+    const parsed = JSON.parse(mf.value);
+    if (Array.isArray(parsed)) {
+      return { logs: parsed, metafieldId: mf.id || null };
+    }
+    return { logs: [], metafieldId: mf.id || null };
+  } catch (e) {
+    console.error("Error parsing daily_logs metafield JSON", e, mf.value);
+    return { logs: [], metafieldId: mf.id || null };
+  }
+}
+
+// Upsert today's total_calories into daily_logs (JSON array)
+async function upsertDailyTotalCalories(customerGid, totalCalories) {
+  if (!customerGid || !totalCalories) return;
+
+  const { logs, metafieldId } = await getDailyLogsMetafield(customerGid);
+
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD in UTC
+
+  // Find existing log for today, if any
+  const idx = logs.findIndex(entry => entry && entry.date === today);
+
+  if (idx >= 0) {
+    // Update existing log for today, but keep other fields as-is
+    const existing = logs[idx] || {};
+    logs[idx] = {
+      ...existing,
+      date: today,
+      total_calories: totalCalories,
+      calories: totalCalories,
+      coach_focus: existing.coach_focus || "Daily calories logged from chat.",
+      meals: existing.meals || []
+    };
+  } else {
+    // Create new log object for today
+    logs.push({
+      date: today,
+      weight: null,
+      calories: totalCalories,
+      total_calories: totalCalories,
+      steps: null,
+      meals: [],
+      mood: null,
+      struggle: null,
+      coach_focus: "Daily calories logged from chat."
+    });
+  }
+
+  const mutation = `
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        metafields {
+          id
+          key
+          namespace
+          type
+          value
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+  `;
+
+  const metafieldInput = {
+    ownerId: customerGid,
+    namespace: "custom",
+    key: "daily_logs",
+    type: "json",
+    value: JSON.stringify(logs)
+  };
+
+  const variables = {
+    metafields: [metafieldInput]
+  };
+
+  const data = await shopifyGraphQL(mutation, variables);
+  const userErrors = data?.metafieldsSet?.userErrors || [];
+  if (userErrors.length) {
+    console.error("metafieldsSet userErrors (daily_logs):", userErrors);
+    throw new Error("Shopify userErrors when saving daily_logs");
+  }
+}
+
 export default async function handler(req, res) {
   // ---- CORS handling ----
   if (req.method === "OPTIONS") {
@@ -623,6 +774,35 @@ export default async function handler(req, res) {
     shopifyMetafieldReadStatus = "no_customer_id";
   }
 
+  // Base debug payload (we'll reuse in success + error responses)
+  const debug = {
+    customerGid: customerGid || null,
+    customerIdNumeric: customerNumericId,
+    inboundMessage: userMessage,
+    historyCount: history.length,
+    appendUserMessage,
+    onboarding_complete: onboardingComplete,
+    shopifyMetafieldReadStatus,
+    messagesCount: null, // set later
+    model: "gpt-4.1-mini"
+  };
+
+  // === NEW: Try to parse "daily total calories" from the user's message ===
+  if (customerGid && userMessage) {
+    const parsedDailyCals = parseDailyCaloriesFromMessage(userMessage);
+    if (parsedDailyCals) {
+      debug.parsedDailyCalories = parsedDailyCals;
+      try {
+        await upsertDailyTotalCalories(customerGid, parsedDailyCals);
+        debug.dailyCaloriesSavedToDailyLogs = true;
+      } catch (e) {
+        console.error("Error saving daily total calories from chat", e);
+        debug.dailyCaloriesSavedToDailyLogs = false;
+        debug.dailyCaloriesSaveError = String(e?.message || e);
+      }
+    }
+  }
+
   // Build messages with full conversation context
   const messages = [
     { role: "system", content: SYSTEM_PROMPT }
@@ -655,18 +835,7 @@ export default async function handler(req, res) {
     messages.push({ role: "user", content: userMessage });
   }
 
-  // Base debug payload (we'll reuse in success + error responses)
-  const debug = {
-    customerGid: customerGid || null,
-    customerIdNumeric: customerNumericId,
-    inboundMessage: userMessage,
-    historyCount: history.length,
-    appendUserMessage,
-    onboarding_complete: onboardingComplete,
-    shopifyMetafieldReadStatus,
-    messagesCount: messages.length,
-    model: "gpt-4.1-mini"
-  };
+  debug.messagesCount = messages.length;
 
   try {
     const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
