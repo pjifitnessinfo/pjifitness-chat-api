@@ -509,13 +509,14 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
     }
   `;
 
+  // IMPORTANT CHANGE: store coach_plan as a single_line_text_field (JSON string)
   const variables = {
     metafields: [
       {
         ownerId,
         namespace: "custom",
         key: "coach_plan",
-        type: "json",
+        type: "single_line_text_field",
         value: JSON.stringify(coachPlan)
       },
       {
