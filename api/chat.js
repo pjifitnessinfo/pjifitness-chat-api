@@ -386,6 +386,7 @@ function extractCoachPlanJson(text) {
 }
 
 // Fallback: try to pull calories / protein / fat out of the text bullets
+// ONLY used while onboarding_complete is false/missing
 function extractPlanFromText(text) {
   if (!text) return null;
 
@@ -718,7 +719,7 @@ export default async function handler(req, res) {
     body = await parseBody(req);
   } catch (e) {
     console.error("Error parsing body", e);
-    res.status(400).json({ error: "Invalid request body" });
+    res.status(400).json({ error: "Invalid request body", debug: { parseError: String(e?.message || e) } });
     return;
   }
 
@@ -787,7 +788,7 @@ export default async function handler(req, res) {
     model: "gpt-4.1-mini"
   };
 
-  // === NEW: Try to parse "daily total calories" from the user's message ===
+  // === Try to parse "daily total calories" from the user's message ===
   if (customerGid && userMessage) {
     const parsedDailyCals = parseDailyCaloriesFromMessage(userMessage);
     if (parsedDailyCals) {
@@ -866,18 +867,21 @@ export default async function handler(req, res) {
 
     debug.modelReplyTruncated = !data.choices?.[0]?.message?.content;
 
-    // === Look for COACH_PLAN_JSON OR parse text, then save to Shopify ===
+    // === Find a plan (JSON block first, then safe fallback) ===
     let planJson = extractCoachPlanJson(rawReply);
     debug.planBlockFound = !!planJson;
 
-    if (!planJson) {
+    // If we didn't get the JSON block, and onboarding isn't complete yet,
+    // try the text-based fallback.
+    if (!planJson && (onboardingComplete === false || onboardingComplete === null)) {
       planJson = extractPlanFromText(rawReply);
       debug.planFromText = !!planJson;
     }
 
+    // Only save the plan when onboarding is not complete yet
     if (planJson) {
       debug.planJson = planJson;
-      if (customerGid) {
+      if (customerGid && (onboardingComplete === false || onboardingComplete === null)) {
         try {
           await saveCoachPlanForCustomer(customerGid, planJson);
           debug.planSavedToShopify = true;
@@ -888,7 +892,9 @@ export default async function handler(req, res) {
         }
       } else {
         debug.planSavedToShopify = false;
-        debug.planSaveError = "no_customer_id";
+        debug.planSaveSkippedReason = !customerGid
+          ? "no_customer_id"
+          : "onboarding_already_complete";
       }
     }
 
