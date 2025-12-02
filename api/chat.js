@@ -5,7 +5,7 @@
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// Shopify Admin API (for reading onboarding_complete metafield)
+// Shopify Admin API (for reading + writing onboarding/metafields)
 const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN; // e.g. "your-store.myshopify.com"
 const SHOPIFY_ADMIN_API_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 
@@ -359,6 +359,112 @@ async function parseBody(req) {
   });
 }
 
+/* ===============================
+   NEW HELPERS FOR PLAN SAVING
+   =============================== */
+
+// Extract the COACH_PLAN_JSON block and parse the JSON inside
+function extractCoachPlanJson(text) {
+  if (!text) return null;
+  const start = text.indexOf("[[COACH_PLAN_JSON");
+  if (start === -1) return null;
+  const end = text.indexOf("]]", start);
+  if (end === -1) return null;
+
+  const block = text.substring(start, end + 2);
+  const jsonStart = block.indexOf("{");
+  const jsonEnd = block.lastIndexOf("}");
+  if (jsonStart === -1 || jsonEnd === -1) return null;
+
+  const jsonString = block.substring(jsonStart, jsonEnd + 1);
+  try {
+    return JSON.parse(jsonString);
+  } catch (e) {
+    console.error("Failed to parse COACH_PLAN_JSON:", e, jsonString);
+    return null;
+  }
+}
+
+// Strip the COACH_PLAN_JSON block from the text before sending to user
+function stripCoachPlanBlock(text) {
+  if (!text) return text;
+  return text.replace(/\[\[COACH_PLAN_JSON[\s\S]*?\]\]/, "").trim();
+}
+
+// Save simplified plan into custom.coach_plan + mark onboarding_complete=true
+async function saveCoachPlanForCustomer(customerId, planJson) {
+  if (!customerId || !planJson) return;
+
+  const ownerId = `gid://shopify/Customer/${customerId}`;
+
+  // Map from detailed JSON to simple macros
+  const caloriesTarget = Number(planJson.calories_target) || 0;
+  const proteinTarget = Number(planJson.protein_target) || 0;
+  const fatTarget = Number(planJson.fat_target) || 0;
+
+  // Rough carb calculation from remaining calories
+  let carbs = 0;
+  if (caloriesTarget && proteinTarget && fatTarget) {
+    const calsFromProtein = proteinTarget * 4;
+    const calsFromFat = fatTarget * 9;
+    const remaining = caloriesTarget - (calsFromProtein + calsFromFat);
+    if (remaining > 0) {
+      carbs = Math.round(remaining / 4);
+    }
+  }
+
+  const coachPlan = {
+    calories: caloriesTarget,
+    protein: proteinTarget,
+    fat: fatTarget,
+    carbs
+  };
+
+  const mutation = `
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        metafields {
+          id
+          key
+          namespace
+          type
+          value
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+  `;
+
+  const variables = {
+    metafields: [
+      {
+        ownerId,
+        namespace: "custom",
+        key: "coach_plan",
+        type: "json",
+        value: JSON.stringify(coachPlan)
+      },
+      {
+        ownerId,
+        namespace: "custom",
+        key: "onboarding_complete",
+        type: "single_line_text_field",
+        value: "true"
+      }
+    ]
+  };
+
+  const data = await shopifyGraphQL(mutation, variables);
+  const userErrors = data?.metafieldsSet?.userErrors || [];
+  if (userErrors.length) {
+    console.error("metafieldsSet userErrors (coach_plan):", userErrors);
+    throw new Error("Shopify userErrors when saving coach_plan");
+  }
+}
+
 export default async function handler(req, res) {
   // ---- CORS handling ----
   if (req.method === "OPTIONS") {
@@ -505,13 +611,36 @@ export default async function handler(req, res) {
     }
 
     const data = await openaiRes.json();
-    const reply =
+    const rawReply =
       data.choices?.[0]?.message?.content ||
       "Sorry, I’m not sure what to say to that.";
 
     debug.modelReplyTruncated = !data.choices?.[0]?.message?.content;
 
-    res.status(200).json({ reply, debug });
+    // === NEW: look for COACH_PLAN_JSON, save to Shopify, and strip it out ===
+    const planJson = extractCoachPlanJson(rawReply);
+    debug.planBlockFound = !!planJson;
+
+    if (planJson) {
+      debug.planJson = planJson;
+      if (customerId) {
+        try {
+          await saveCoachPlanForCustomer(customerId, planJson);
+          debug.planSavedToShopify = true;
+        } catch (e) {
+          console.error("Error saving coach_plan metafield", e);
+          debug.planSavedToShopify = false;
+          debug.planSaveError = String(e?.message || e);
+        }
+      } else {
+        debug.planSavedToShopify = false;
+        debug.planSaveError = "no_customer_id";
+      }
+    }
+
+    const cleanedReply = stripCoachPlanBlock(rawReply);
+
+    res.status(200).json({ reply: cleanedReply, debug });
   } catch (e) {
     console.error("Chat handler error", e);
     debug.serverError = String(e?.message || e);
