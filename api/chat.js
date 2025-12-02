@@ -360,7 +360,7 @@ async function parseBody(req) {
 }
 
 /* ===============================
-   NEW HELPERS FOR PLAN SAVING
+   HELPERS FOR PLAN SAVING
    =============================== */
 
 // Extract the COACH_PLAN_JSON block and parse the JSON inside
@@ -385,6 +385,28 @@ function extractCoachPlanJson(text) {
   }
 }
 
+// Fallback: try to pull calories / protein / fat out of the text bullets
+function extractPlanFromText(text) {
+  if (!text) return null;
+
+  const calMatch = text.match(/calories[^0-9]*([0-9]{3,4})/i);
+  const proteinMatch = text.match(/protein[^0-9]*([0-9]{2,4})/i);
+  const fatMatch = text.match(/fat[s]?[^0-9]*([0-9]{1,3})/i);
+
+  if (!calMatch && !proteinMatch && !fatMatch) return null;
+
+  const plan = {
+    calories_target: calMatch ? Number(calMatch[1]) : 0,
+    protein_target: proteinMatch ? Number(proteinMatch[1]) : 0,
+    fat_target: fatMatch ? Number(fatMatch[1]) : 0
+  };
+
+  if (!plan.calories_target && !plan.protein_target && !plan.fat_target) {
+    return null;
+  }
+  return plan;
+}
+
 // Strip the COACH_PLAN_JSON block from the text before sending to user
 function stripCoachPlanBlock(text) {
   if (!text) return text;
@@ -397,7 +419,6 @@ async function saveCoachPlanForCustomer(customerId, planJson) {
 
   const ownerId = `gid://shopify/Customer/${customerId}`;
 
-  // Map from detailed JSON to simple macros
   const caloriesTarget = Number(planJson.calories_target) || 0;
   const proteinTarget = Number(planJson.protein_target) || 0;
   const fatTarget = Number(planJson.fat_target) || 0;
@@ -617,9 +638,14 @@ export default async function handler(req, res) {
 
     debug.modelReplyTruncated = !data.choices?.[0]?.message?.content;
 
-    // === NEW: look for COACH_PLAN_JSON, save to Shopify, and strip it out ===
-    const planJson = extractCoachPlanJson(rawReply);
+    // === NEW: look for COACH_PLAN_JSON OR parse text, then save to Shopify ===
+    let planJson = extractCoachPlanJson(rawReply);
     debug.planBlockFound = !!planJson;
+
+    if (!planJson) {
+      planJson = extractPlanFromText(rawReply);
+      debug.planFromText = !!planJson;
+    }
 
     if (planJson) {
       debug.planJson = planJson;
