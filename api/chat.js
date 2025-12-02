@@ -1,7 +1,7 @@
 // /api/chat.js
 // Chat endpoint using OpenAI REST API.
 // Expects: { message, email, customerId, threadId, history, appendUserMessage } in JSON body.
-// Returns: { reply }
+// Returns: { reply, debug }
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
@@ -401,10 +401,14 @@ export default async function handler(req, res) {
     return;
   }
 
-  // --- Read onboarding_complete metafield (if possible) ---
+  // --- Debug scaffold ---
+  let shopifyMetafieldReadStatus = "not_attempted";
   let onboardingComplete = null; // null = unknown / not fetched
+
+  // --- Read onboarding_complete metafield (if possible) ---
   if (customerId) {
     try {
+      shopifyMetafieldReadStatus = "fetching";
       const data = await shopifyGraphQL(
         `
         query GetCustomerOnboarding($id: ID!) {
@@ -421,11 +425,17 @@ export default async function handler(req, res) {
       const val = data?.customer?.metafield?.value;
       if (typeof val === "string") {
         onboardingComplete = (val === "true");
+        shopifyMetafieldReadStatus = "success";
+      } else {
+        shopifyMetafieldReadStatus = "no_metafield";
       }
     } catch (e) {
       console.error("Error fetching onboarding_complete metafield", e);
+      shopifyMetafieldReadStatus = "error";
       // Keep onboardingComplete as null if fetch fails
     }
+  } else {
+    shopifyMetafieldReadStatus = "no_customer_id";
   }
 
   // Build messages with full conversation context
@@ -460,6 +470,18 @@ export default async function handler(req, res) {
     messages.push({ role: "user", content: userMessage });
   }
 
+  // Base debug payload (we'll reuse in success + error responses)
+  const debug = {
+    customerId: customerId || null,
+    inboundMessage: userMessage,
+    historyCount: history.length,
+    appendUserMessage,
+    onboarding_complete: onboardingComplete,
+    shopifyMetafieldReadStatus,
+    messagesCount: messages.length,
+    model: "gpt-4.1-mini"
+  };
+
   try {
     const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -477,7 +499,8 @@ export default async function handler(req, res) {
     if (!openaiRes.ok) {
       const errText = await openaiRes.text();
       console.error("OpenAI error:", errText);
-      res.status(500).json({ error: "OpenAI API error" });
+      debug.openaiError = errText;
+      res.status(500).json({ error: "OpenAI API error", debug });
       return;
     }
 
@@ -486,9 +509,12 @@ export default async function handler(req, res) {
       data.choices?.[0]?.message?.content ||
       "Sorry, I’m not sure what to say to that.";
 
-    res.status(200).json({ reply });
+    debug.modelReplyTruncated = !data.choices?.[0]?.message?.content;
+
+    res.status(200).json({ reply, debug });
   } catch (e) {
     console.error("Chat handler error", e);
-    res.status(500).json({ error: "Server error" });
+    debug.serverError = String(e?.message || e);
+    res.status(500).json({ error: "Server error", debug });
   }
 }
