@@ -463,7 +463,7 @@ async function resolveCustomerGidFromBody(body) {
   }
 }
 
-// Save simplified plan into custom.coach_plan + mark onboarding_complete=true
+// Save simplified plan into custom.coach_plan (JSON) + mark onboarding_complete=true (boolean)
 async function saveCoachPlanForCustomer(customerGid, planJson) {
   if (!customerGid || !planJson) return;
 
@@ -509,21 +509,23 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
     }
   `;
 
-  // IMPORTANT CHANGE: store coach_plan as a single_line_text_field (JSON string)
+  // TYPES HERE MUST MATCH YOUR CUSTOMER METAFIELD DEFINITIONS:
+  // - coach_plan: JSON
+  // - onboarding_complete: Boolean (True or false)
   const variables = {
     metafields: [
       {
         ownerId,
         namespace: "custom",
         key: "coach_plan",
-        type: "single_line_text_field",
+        type: "json",
         value: JSON.stringify(coachPlan)
       },
       {
         ownerId,
         namespace: "custom",
         key: "onboarding_complete",
-        type: "single_line_text_field",
+        type: "boolean",
         value: "true"
       }
     ]
