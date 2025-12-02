@@ -5,6 +5,10 @@
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
+// Shopify Admin API (for reading onboarding_complete metafield)
+const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN; // e.g. "your-store.myshopify.com"
+const SHOPIFY_ADMIN_API_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+
 /* ============================================================
    SYSTEM PROMPT — ONBOARDING + DAILY COACH + PLAN JSON MARKER
    ============================================================ */
@@ -299,6 +303,38 @@ Your #1 mission:
 Make the user feel like they finally have a calm, competent coach who tells them exactly what to do today and reminds them that real fat loss happens over weeks and months, not from one perfect day.
 `;
 
+// --- Helper: Shopify GraphQL client (for metafields) ---
+async function shopifyGraphQL(query, variables = {}) {
+  if (!SHOPIFY_STORE_DOMAIN || !SHOPIFY_ADMIN_API_ACCESS_TOKEN) {
+    throw new Error("Missing Shopify env vars");
+  }
+
+  const res = await fetch(
+    `https://${SHOPIFY_STORE_DOMAIN}/admin/api/2024-01/graphql.json`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_ACCESS_TOKEN
+      },
+      body: JSON.stringify({ query, variables })
+    }
+  );
+
+  if (!res.ok) {
+    const text = await res.text();
+    console.error("Shopify GraphQL error:", text);
+    throw new Error("Shopify GraphQL error");
+  }
+
+  const json = await res.json();
+  if (json.errors) {
+    console.error("Shopify GraphQL errors:", json.errors);
+    throw new Error("Shopify GraphQL errors");
+  }
+  return json.data;
+}
+
 // Helper: parse body safely
 async function parseBody(req) {
   return new Promise((resolve, reject) => {
@@ -358,16 +394,52 @@ export default async function handler(req, res) {
   const userMessage = body.message || "";
   const history = Array.isArray(body.history) ? body.history : [];
   const appendUserMessage = !!body.appendUserMessage;
+  const customerId = body.customerId || null; // Shopify numeric ID (string)
 
   if (!userMessage && !history.length) {
     res.status(400).json({ error: "Missing 'message' in body" });
     return;
   }
 
+  // --- Read onboarding_complete metafield (if possible) ---
+  let onboardingComplete = null; // null = unknown / not fetched
+  if (customerId) {
+    try {
+      const data = await shopifyGraphQL(
+        `
+        query GetCustomerOnboarding($id: ID!) {
+          customer(id: $id) {
+            metafield(namespace: "custom", key: "onboarding_complete") {
+              value
+            }
+          }
+        }
+        `,
+        { id: `gid://shopify/Customer/${customerId}` }
+      );
+
+      const val = data?.customer?.metafield?.value;
+      if (typeof val === "string") {
+        onboardingComplete = (val === "true");
+      }
+    } catch (e) {
+      console.error("Error fetching onboarding_complete metafield", e);
+      // Keep onboardingComplete as null if fetch fails
+    }
+  }
+
   // Build messages with full conversation context
   const messages = [
     { role: "system", content: SYSTEM_PROMPT }
   ];
+
+  // Inject metafield context so the model knows onboarding status
+  if (onboardingComplete !== null) {
+    messages.push({
+      role: "system",
+      content: `custom.onboarding_complete: ${onboardingComplete ? "true" : "false"}`
+    });
+  }
 
   if (history.length) {
     const recent = history.slice(-20); // last 20 messages max
