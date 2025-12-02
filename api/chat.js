@@ -385,6 +385,28 @@ function extractCoachPlanJson(text) {
   }
 }
 
+// Fallback: try to pull calories / protein / fat out of the text bullets
+function extractPlanFromText(text) {
+  if (!text) return null;
+
+  const calMatch = text.match(/calories[^0-9]*([0-9]{3,4})/i);
+  const proteinMatch = text.match(/protein[^0-9]*([0-9]{2,4})/i);
+  const fatMatch = text.match(/fat[s]?[^0-9]*([0-9]{1,3})/i);
+
+  if (!calMatch && !proteinMatch && !fatMatch) return null;
+
+  const plan = {
+    calories_target: calMatch ? Number(calMatch[1]) : 0,
+    protein_target: proteinMatch ? Number(proteinMatch[1]) : 0,
+    fat_target: fatMatch ? Number(fatMatch[1]) : 0
+  };
+
+  if (!plan.calories_target && !plan.protein_target && !plan.fat_target) {
+    return null;
+  }
+  return plan;
+}
+
 // Strip the COACH_PLAN_JSON block from the text before sending to user
 function stripCoachPlanBlock(text) {
   if (!text) return text;
@@ -765,7 +787,7 @@ export default async function handler(req, res) {
     model: "gpt-4.1-mini"
   };
 
-  // === Try to parse "daily total calories" from the user's message ===
+  // === NEW: Try to parse "daily total calories" from the user's message ===
   if (customerGid && userMessage) {
     const parsedDailyCals = parseDailyCaloriesFromMessage(userMessage);
     if (parsedDailyCals) {
@@ -844,9 +866,14 @@ export default async function handler(req, res) {
 
     debug.modelReplyTruncated = !data.choices?.[0]?.message?.content;
 
-    // === Look ONLY for COACH_PLAN_JSON block (no text fallback) and save to Shopify ===
+    // === Look for COACH_PLAN_JSON OR parse text, then save to Shopify ===
     let planJson = extractCoachPlanJson(rawReply);
     debug.planBlockFound = !!planJson;
+
+    if (!planJson) {
+      planJson = extractPlanFromText(rawReply);
+      debug.planFromText = !!planJson;
+    }
 
     if (planJson) {
       debug.planJson = planJson;
