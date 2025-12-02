@@ -297,7 +297,41 @@ Rules for this block:
 - Do NOT mention “JSON”, “metadata”, or “for the app”.
 - The user should only see the normal coaching message; the app will quietly read the block.
 
-Outside of this special block, never show JSON or technical stuff to the user.
+======================================================
+I. MEAL LOGGING, ESTIMATES & EXPLANATIONS
+======================================================
+
+When the user describes what they ate (e.g. “Lunch: 2 homemade 1" meatballs on a hero with cheese and some fries”):
+
+1) Give a normal coaching reply in plain language.
+
+2) ALSO estimate that meal’s calories + protein + carbs + fats and include a hidden block at the END of your reply in EXACTLY this format:
+
+   [[MEAL_LOG_JSON {
+     "date": "YYYY-MM-DD",
+     "meal_type": "breakfast" | "lunch" | "dinner" | "snacks",
+     "items": ["short human-readable description here"],
+     "calories": 900,
+     "protein": 50,
+     "carbs": 90,
+     "fat": 40
+   }]]
+
+   - Use today’s date for "date" in YYYY-MM-DD.
+   - Pick the closest meal_type based on what they said.
+   - "items" should be a short list of what they ate in their own words.
+   - calories/protein/carbs/fat are rough estimates, all numbers (no strings).
+
+3) When food is generic or vague, EXPLAIN your estimate briefly in the visible text:
+   - Example: “I’m logging that as about 900–1000 calories. I assumed 2 medium beef meatballs (~300 cals), a white hero with cheese (~500–550), and a small handful of fries (~150). If that feels way off, tell me and I’ll adjust it.”
+
+4) Gently offer 1–2 easy substitution ideas when it makes sense:
+   - Example: “Next time, you could keep the meatballs but do a smaller roll or open-face the sandwich, and shrink the fries or swap them for a salad.”
+
+Keep explanations short (1–3 sentences) so you don’t overwhelm the user.
+Never show the words “JSON” or “MEAL_LOG_JSON” in the normal coaching text; that block is only for the app.
+
+Outside of all hidden blocks, never show JSON or technical stuff to the user.
 
 Your #1 mission:
 Make the user feel like they finally have a calm, competent coach who tells them exactly what to do today and reminds them that real fat loss happens over weeks and months, not from one perfect day.
@@ -541,7 +575,7 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
 }
 
 /* ==================================================
-   NEW: HELPERS FOR DAILY TOTAL CALORIES FROM CHAT
+   DAILY LOG HELPERS (CALORIES + MEALS/MACROS)
    ================================================== */
 
 // Parse messages like:
@@ -620,7 +654,7 @@ async function getDailyLogsMetafield(customerGid) {
 async function upsertDailyTotalCalories(customerGid, totalCalories) {
   if (!customerGid || !totalCalories) return;
 
-  const { logs, metafieldId } = await getDailyLogsMetafield(customerGid);
+  const { logs } = await getDailyLogsMetafield(customerGid);
 
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD in UTC
 
@@ -637,6 +671,7 @@ async function upsertDailyTotalCalories(customerGid, totalCalories) {
       calories: totalCalories,
       coach_focus: existing.coach_focus || "Daily calories logged from chat.",
       meals: existing.meals || []
+      // do NOT overwrite any macro totals if they exist
     };
   } else {
     // Create new log object for today
@@ -653,6 +688,42 @@ async function upsertDailyTotalCalories(customerGid, totalCalories) {
     });
   }
 
+  await saveDailyLogsMetafield(customerGid, logs);
+}
+
+// Extract one or more MEAL_LOG_JSON blocks from a reply
+function extractMealLogsFromText(text) {
+  if (!text) return [];
+  const results = [];
+  let searchIndex = 0;
+
+  while (true) {
+    const start = text.indexOf("[[MEAL_LOG_JSON", searchIndex);
+    if (start === -1) break;
+    const end = text.indexOf("]]", start);
+    if (end === -1) break;
+
+    const block = text.substring(start, end + 2);
+    const jsonStart = block.indexOf("{");
+    const jsonEnd = block.lastIndexOf("}");
+    if (jsonStart !== -1 && jsonEnd !== -1) {
+      const jsonString = block.substring(jsonStart, jsonEnd + 1);
+      try {
+        const obj = JSON.parse(jsonString);
+        results.push(obj);
+      } catch (e) {
+        console.error("Failed to parse MEAL_LOG_JSON:", e, jsonString);
+      }
+    }
+    searchIndex = end + 2;
+  }
+
+  return results;
+}
+
+// Save daily_logs metafield back to Shopify
+async function saveDailyLogsMetafield(customerGid, logs) {
+  if (!customerGid) return;
   const mutation = `
     mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
       metafieldsSet(metafields: $metafields) {
@@ -670,25 +741,113 @@ async function upsertDailyTotalCalories(customerGid, totalCalories) {
       }
     }
   `;
-
-  const metafieldInput = {
-    ownerId: customerGid,
-    namespace: "custom",
-    key: "daily_logs",
-    type: "json",
-    value: JSON.stringify(logs)
-  };
-
   const variables = {
-    metafields: [metafieldInput]
+    metafields: [
+      {
+        ownerId: customerGid,
+        namespace: "custom",
+        key: "daily_logs",
+        type: "json",
+        value: JSON.stringify(logs)
+      }
+    ]
   };
-
   const data = await shopifyGraphQL(mutation, variables);
   const userErrors = data?.metafieldsSet?.userErrors || [];
   if (userErrors.length) {
     console.error("metafieldsSet userErrors (daily_logs):", userErrors);
     throw new Error("Shopify userErrors when saving daily_logs");
   }
+}
+
+// Upsert a single meal (with calories + macros) into the correct day's log
+async function upsertMealLog(customerGid, meal) {
+  if (!customerGid || !meal) return;
+
+  const { logs } = await getDailyLogsMetafield(customerGid);
+
+  const date = meal.date || new Date().toISOString().slice(0, 10);
+  const cleanDate = String(date).slice(0, 10);
+
+  const idx = logs.findIndex(entry => entry && entry.date === cleanDate);
+
+  // Normalize macros
+  const cals = Number(meal.calories) || 0;
+  const protein = Number(meal.protein) || 0;
+  const carbs = Number(meal.carbs) || 0;
+  const fat = Number(meal.fat) || 0;
+  const mealType = meal.meal_type || "other";
+  let items = meal.items;
+  if (!Array.isArray(items)) {
+    if (typeof items === "string" && items.trim()) {
+      items = [items.trim()];
+    } else {
+      items = [];
+    }
+  }
+
+  if (idx >= 0) {
+    // Update existing log for that date
+    const existing = logs[idx] || {};
+    const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
+    const newMeal = {
+      meal_type: mealType,
+      items,
+      calories: cals,
+      protein,
+      carbs,
+      fat
+    };
+    const updatedMeals = existingMeals.concat([newMeal]);
+
+    // Recompute totals from all meals
+    let sumCals = 0, sumP = 0, sumC = 0, sumF = 0;
+    updatedMeals.forEach(m => {
+      sumCals += Number(m.calories) || 0;
+      sumP += Number(m.protein) || 0;
+      sumC += Number(m.carbs) || 0;
+      sumF += Number(m.fat) || 0;
+    });
+
+    logs[idx] = {
+      ...existing,
+      date: cleanDate,
+      meals: updatedMeals,
+      total_calories: sumCals || existing.total_calories || existing.calories || null,
+      calories: sumCals || existing.calories || null,
+      total_protein: sumP || existing.total_protein || existing.protein || null,
+      total_carbs: sumC || existing.total_carbs || existing.carbs || null,
+      total_fat: sumF || existing.total_fat || existing.fat || null,
+      coach_focus: existing.coach_focus || "Meals logged from chat."
+    };
+  } else {
+    // Create new log for that date
+    const newMeals = [{
+      meal_type: mealType,
+      items,
+      calories: cals,
+      protein,
+      carbs,
+      fat
+    }];
+
+    logs.push({
+      date: cleanDate,
+      weight: null,
+      steps: null,
+      meals: newMeals,
+      mood: null,
+      struggle: null,
+      coach_focus: "Meals logged from chat.",
+      calories: cals || null,
+      total_calories: cals || null,
+      total_protein: protein || null,
+      total_carbs: carbs || null,
+      total_fat: fat || null
+    });
+  }
+
+  await saveDailyLogsMetafield(customerGid, logs);
 }
 
 export default async function handler(req, res) {
@@ -898,7 +1057,27 @@ export default async function handler(req, res) {
       }
     }
 
-    const cleanedReply = stripCoachPlanBlock(rawReply);
+    // === Extract meal logs (if any) and upsert them ===
+    if (customerGid) {
+      const mealLogs = extractMealLogsFromText(rawReply);
+      if (mealLogs && mealLogs.length) {
+        debug.mealLogsFound = mealLogs.length;
+        try {
+          for (const meal of mealLogs) {
+            await upsertMealLog(customerGid, meal);
+          }
+          debug.mealLogsSavedToDailyLogs = true;
+        } catch (e) {
+          console.error("Error saving meal logs from chat", e);
+          debug.mealLogsSavedToDailyLogs = false;
+          debug.mealLogsSaveError = String(e?.message || e);
+        }
+      }
+    }
+
+    // Strip hidden blocks from visible reply
+    let cleanedReply = stripCoachPlanBlock(rawReply);
+    cleanedReply = cleanedReply.replace(/\[\[MEAL_LOG_JSON[\s\S]*?\]\]/g, "").trim();
 
     res.status(200).json({ reply: cleanedReply, debug });
   } catch (e) {
