@@ -360,7 +360,7 @@ async function parseBody(req) {
 }
 
 /* ===============================
-   HELPERS FOR PLAN SAVING
+   HELPERS FOR PLAN SAVING & ID
    =============================== */
 
 // Extract the COACH_PLAN_JSON block and parse the JSON inside
@@ -413,11 +413,61 @@ function stripCoachPlanBlock(text) {
   return text.replace(/\[\[COACH_PLAN_JSON[\s\S]*?\]\]/, "").trim();
 }
 
-// Save simplified plan into custom.coach_plan + mark onboarding_complete=true
-async function saveCoachPlanForCustomer(customerId, planJson) {
-  if (!customerId || !planJson) return;
+// Resolve a customer GID from request body (customerId or email)
+async function resolveCustomerGidFromBody(body) {
+  // Try various id fields first
+  let rawId =
+    body.customerId ||
+    body.shopifyCustomerId ||
+    body.customer_id ||
+    body.customer_id_raw ||
+    null;
 
-  const ownerId = `gid://shopify/Customer/${customerId}`;
+  if (rawId) {
+    const str = String(rawId);
+    if (str.startsWith("gid://shopify/Customer/")) {
+      return str;
+    }
+    const numeric = str.replace(/[^0-9]/g, "");
+    if (numeric) {
+      return `gid://shopify/Customer/${numeric}`;
+    }
+  }
+
+  // Fallback: try email lookup
+  const email = body.email;
+  if (!email) return null;
+
+  try {
+    const data = await shopifyGraphQL(
+      `
+      query FindCustomerByEmail($query: String!) {
+        customers(first: 1, query: $query) {
+          edges {
+            node {
+              id
+              email
+            }
+          }
+        }
+      }
+      `,
+      { query: `email:${email}` }
+    );
+
+    const node = data?.customers?.edges?.[0]?.node;
+    return node?.id || null;
+  } catch (e) {
+    console.error("Error resolving customer by email", e);
+    return null;
+  }
+}
+
+// Save simplified plan into custom.coach_plan + mark onboarding_complete=true
+async function saveCoachPlanForCustomer(customerGid, planJson) {
+  if (!customerGid || !planJson) return;
+
+  const ownerId = customerGid;
 
   const caloriesTarget = Number(planJson.calories_target) || 0;
   const proteinTarget = Number(planJson.protein_target) || 0;
@@ -521,19 +571,24 @@ export default async function handler(req, res) {
   const userMessage = body.message || "";
   const history = Array.isArray(body.history) ? body.history : [];
   const appendUserMessage = !!body.appendUserMessage;
-  const customerId = body.customerId || null; // Shopify numeric ID (string)
 
   if (!userMessage && !history.length) {
     res.status(400).json({ error: "Missing 'message' in body" });
     return;
   }
 
+  // Resolve customer GID (from id or email)
+  const customerGid = await resolveCustomerGidFromBody(body);
+  const customerNumericId = customerGid
+    ? String(customerGid).replace("gid://shopify/Customer/", "")
+    : null;
+
   // --- Debug scaffold ---
   let shopifyMetafieldReadStatus = "not_attempted";
   let onboardingComplete = null; // null = unknown / not fetched
 
   // --- Read onboarding_complete metafield (if possible) ---
-  if (customerId) {
+  if (customerGid) {
     try {
       shopifyMetafieldReadStatus = "fetching";
       const data = await shopifyGraphQL(
@@ -546,7 +601,7 @@ export default async function handler(req, res) {
           }
         }
         `,
-        { id: `gid://shopify/Customer/${customerId}` }
+        { id: customerGid }
       );
 
       const val = data?.customer?.metafield?.value;
@@ -599,7 +654,8 @@ export default async function handler(req, res) {
 
   // Base debug payload (we'll reuse in success + error responses)
   const debug = {
-    customerId: customerId || null,
+    customerGid: customerGid || null,
+    customerIdNumeric: customerNumericId,
     inboundMessage: userMessage,
     historyCount: history.length,
     appendUserMessage,
@@ -638,7 +694,7 @@ export default async function handler(req, res) {
 
     debug.modelReplyTruncated = !data.choices?.[0]?.message?.content;
 
-    // === NEW: look for COACH_PLAN_JSON OR parse text, then save to Shopify ===
+    // === Look for COACH_PLAN_JSON OR parse text, then save to Shopify ===
     let planJson = extractCoachPlanJson(rawReply);
     debug.planBlockFound = !!planJson;
 
@@ -649,9 +705,9 @@ export default async function handler(req, res) {
 
     if (planJson) {
       debug.planJson = planJson;
-      if (customerId) {
+      if (customerGid) {
         try {
-          await saveCoachPlanForCustomer(customerId, planJson);
+          await saveCoachPlanForCustomer(customerGid, planJson);
           debug.planSavedToShopify = true;
         } catch (e) {
           console.error("Error saving coach_plan metafield", e);
