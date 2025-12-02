@@ -1,6 +1,6 @@
 // /api/chat.js
-// Simple Chat endpoint using OpenAI REST API.
-// Expects: { message, email, customerId, threadId } in JSON body.
+// Chat endpoint using OpenAI REST API.
+// Expects: { message, email, customerId, threadId, history, appendUserMessage } in JSON body.
 // Returns: { reply }
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -356,10 +356,36 @@ export default async function handler(req, res) {
   }
 
   const userMessage = body.message || "";
+  const history = Array.isArray(body.history) ? body.history : [];
+  const appendUserMessage = !!body.appendUserMessage;
 
-  if (!userMessage) {
+  if (!userMessage && !history.length) {
     res.status(400).json({ error: "Missing 'message' in body" });
     return;
+  }
+
+  // Build messages with full conversation context
+  const messages = [
+    { role: "system", content: SYSTEM_PROMPT }
+  ];
+
+  if (history.length) {
+    const recent = history.slice(-20); // last 20 messages max
+    for (const m of recent) {
+      if (!m || typeof m.text !== "string") continue;
+      let role;
+      if (m.role === "user") role = "user";
+      else if (m.role === "coach") role = "assistant";
+      else continue;
+
+      messages.push({ role, content: m.text });
+    }
+  }
+
+  // For special triggers like "__start_onboarding__" (no user bubble),
+  // the current message is NOT in history, so we append it as a user turn.
+  if (appendUserMessage && userMessage) {
+    messages.push({ role: "user", content: userMessage });
   }
 
   try {
@@ -371,10 +397,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: "gpt-4.1-mini",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userMessage }
-        ],
+        messages,
         temperature: 0.7
       })
     });
@@ -393,7 +416,7 @@ export default async function handler(req, res) {
 
     res.status(200).json({ reply });
   } catch (e) {
-    console.error("Chat handler error:", e);
+    console.error("Chat handler error", e);
     res.status(500).json({ error: "Server error" });
   }
 }
