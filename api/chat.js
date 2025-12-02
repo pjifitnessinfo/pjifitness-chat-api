@@ -273,7 +273,21 @@ When (and ONLY when) you have finished onboarding and just presented their full 
 
 - At the VERY END of your reply, append a hidden machine-readable block for the app, in EXACTLY this format:
 
-  [[COACH_PLAN_JSON { "calories_target": 2050, "calories_low": 1900, "calories_high": 2200, "protein_target": 160, "protein_low": 145, "protein_high": 175, "fat_min": 55, "fat_target": 65, "steps_goal": 8000, "weekly_loss_low": 0.5, "weekly_loss_high": 1.0 }]]
+  [[COACH_PLAN_JSON {
+    "start_weight": 186,
+    "goal_weight": 170,
+    "calories_target": 2050,
+    "calories_low": 1900,
+    "calories_high": 2200,
+    "protein_target": 160,
+    "protein_low": 145,
+    "protein_high": 175,
+    "fat_min": 55,
+    "fat_target": 65,
+    "steps_goal": 8000,
+    "weekly_loss_low": 0.5,
+    "weekly_loss_high": 1.0
+  }]]
 
 Rules for this block:
 - Use the exact prefix [[COACH_PLAN_JSON and suffix ]].
@@ -281,6 +295,8 @@ Rules for this block:
 - All values are numbers (no strings), rounded sensibly.
 - Include ALL of these keys every time:
 
+  start_weight
+  goal_weight
   calories_target
   calories_low
   calories_high
@@ -498,19 +514,26 @@ async function resolveCustomerGidFromBody(body) {
   }
 }
 
-// Save simplified plan into custom.coach_plan (JSON) + mark onboarding_complete=true (boolean)
+// Save plan into:
+// - custom.coach_plan (JSON, full plan including weekly_loss_low/high, etc.)
+// - custom.start_weight (number_decimal)
+// - custom.goal_weight  (number_decimal)
+// - custom.onboarding_complete (boolean true)
 async function saveCoachPlanForCustomer(customerGid, planJson) {
   if (!customerGid || !planJson) return;
 
   const ownerId = customerGid;
 
-  const caloriesTarget = Number(planJson.calories_target) || 0;
-  const proteinTarget = Number(planJson.protein_target) || 0;
-  const fatTarget = Number(planJson.fat_target) || 0;
+  const startWeight = planJson.start_weight != null ? Number(planJson.start_weight) : 0;
+  const goalWeight  = planJson.goal_weight  != null ? Number(planJson.goal_weight)  : 0;
 
-  // Rough carb calculation from remaining calories
-  let carbs = 0;
-  if (caloriesTarget && proteinTarget && fatTarget) {
+  const caloriesTarget = Number(planJson.calories_target) || 0;
+  const proteinTarget  = Number(planJson.protein_target)  || 0;
+  const fatTarget      = Number(planJson.fat_target)      || 0;
+
+  // Rough carb calculation from remaining calories (if not already provided)
+  let carbs = Number(planJson.carbs || 0);
+  if (!carbs && caloriesTarget && proteinTarget && fatTarget) {
     const calsFromProtein = proteinTarget * 4;
     const calsFromFat = fatTarget * 9;
     const remaining = caloriesTarget - (calsFromProtein + calsFromFat);
@@ -520,9 +543,7 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
   }
 
   const coachPlan = {
-    calories: caloriesTarget,
-    protein: proteinTarget,
-    fat: fatTarget,
+    ...planJson,
     carbs
   };
 
@@ -547,30 +568,52 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
   // TYPES HERE MUST MATCH YOUR CUSTOMER METAFIELD DEFINITIONS:
   // - coach_plan: JSON
   // - onboarding_complete: Boolean (True or false)
-  const variables = {
-    metafields: [
-      {
-        ownerId,
-        namespace: "custom",
-        key: "coach_plan",
-        type: "json",
-        value: JSON.stringify(coachPlan)
-      },
-      {
-        ownerId,
-        namespace: "custom",
-        key: "onboarding_complete",
-        type: "boolean",
-        value: "true"
-      }
-    ]
-  };
+  // - start_weight: Number (Decimal)
+  // - goal_weight:  Number (Decimal)
+  const metafields = [
+    {
+      ownerId,
+      namespace: "custom",
+      key: "coach_plan",
+      type: "json",
+      value: JSON.stringify(coachPlan)
+    },
+    {
+      ownerId,
+      namespace: "custom",
+      key: "onboarding_complete",
+      type: "boolean",
+      value: "true"
+    }
+  ];
+
+  if (startWeight) {
+    metafields.push({
+      ownerId,
+      namespace: "custom",
+      key: "start_weight",
+      type: "number_decimal",
+      value: String(startWeight)
+    });
+  }
+
+  if (goalWeight) {
+    metafields.push({
+      ownerId,
+      namespace: "custom",
+      key: "goal_weight",
+      type: "number_decimal",
+      value: String(goalWeight)
+    });
+  }
+
+  const variables = { metafields };
 
   const data = await shopifyGraphQL(mutation, variables);
   const userErrors = data?.metafieldsSet?.userErrors || [];
   if (userErrors.length) {
     console.error("metafieldsSet userErrors (coach_plan):", userErrors);
-    throw new Error("Shopify userErrors when saving coach_plan");
+    throw new Error("Shopify userErrors when saving coach_plan/start/goal");
   }
 }
 
