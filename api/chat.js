@@ -10,7 +10,7 @@ const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN; // e.g. "your-sto
 const SHOPIFY_ADMIN_API_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 
 /* ============================================================
-   SYSTEM PROMPT — ONBOARDING + DAILY COACH + PLAN JSON MARKER
+   SYSTEM PROMPT — ONBOARDING + DAILY COACH + PLAN/MEAL/REVIEW JSON
    ============================================================ */
 
 const SYSTEM_PROMPT = `
@@ -411,6 +411,47 @@ Gently offer 1–2 easy substitution ideas when it makes sense:
 Keep explanations short (1–3 sentences) so you don’t overwhelm the user.
 Never show the words “JSON” or “MEAL_LOG_JSON” in the normal coaching text; that block is only for the app.
 
+======================================================
+J. DAILY REVIEW / COACH FOCUS METADATA (HIDDEN)
+======================================================
+
+Whenever you are replying to a **daily check-in** that includes at least weight plus either calories or steps (for example: “Today 186.4, 2100 calories, 9000 steps, felt okay”):
+
+1) Give your normal coaching reply in plain language:
+   - Acknowledge the day vs their plan.
+   - Highlight what went well.
+   - Give 1–2 small tweaks.
+   - End with ONE clear focus for the next 24 hours.
+
+2) At the VERY END of your reply, add a second hidden machine-readable block in EXACTLY this format:
+
+   [[DAILY_REVIEW_JSON {
+     "date": "YYYY-MM-DD",
+     "summary": "Short 1–2 sentence focus for the dashboard (plain English).",
+     "risk_color": "green" | "yellow" | "red",
+     "needs_human_review": true | false
+   }]]
+
+Rules:
+
+- Use TODAY'S date in "YYYY-MM-DD" format.
+- "summary" should be a concise, actionable focus (what they should mainly do next).
+- "risk_color":
+  - "green"  = on track, nothing concerning.
+  - "yellow" = drifting a bit, but easily fixable if they tighten up.
+  - "red"    = clearly off-plan for several days, or something seems off and needs a closer look.
+- "needs_human_review":
+  - true  = PJ should manually review this check-in soon (e.g. red flag, confusing pattern, strong emotional distress).
+  - false = routine check-in that does not require manual review right now.
+
+Do NOT mention “JSON”, “DAILY_REVIEW_JSON”, “risk_color”, or “human review” in the visible coaching text. The user should only see normal coaching language.
+
+Your #1 job with this block is to give the app a clean, short summary and a simple traffic-light risk level so the dashboard can highlight which check-ins PJ needs to look at.
+
+======================================================
+K. BIG PICTURE
+======================================================
+
 Outside of all hidden blocks, never show JSON or technical stuff to the user.
 
 Your #1 mission:
@@ -801,6 +842,43 @@ async function saveDailyLogsMetafield(customerGid, logs) {
   }
 }
 
+// NEW: upsert a DAILY TOTAL CALORIES into today's log
+async function upsertDailyTotalCalories(customerGid, calories) {
+  if (!customerGid || !calories) return;
+
+  const { logs } = await getDailyLogsMetafield(customerGid);
+  const today = new Date().toISOString().slice(0, 10);
+  const idx = logs.findIndex(entry => entry && entry.date === today);
+
+  if (idx >= 0) {
+    const existing = logs[idx] || {};
+    logs[idx] = {
+      ...existing,
+      date: today,
+      calories: calories,
+      total_calories: calories,
+      coach_focus: existing.coach_focus || "Daily calories logged from chat."
+    };
+  } else {
+    logs.push({
+      date: today,
+      weight: null,
+      steps: null,
+      meals: [],
+      mood: null,
+      struggle: null,
+      coach_focus: "Daily calories logged from chat.",
+      calories: calories,
+      total_calories: calories,
+      total_protein: null,
+      total_carbs: null,
+      total_fat: null
+    });
+  }
+
+  await saveDailyLogsMetafield(customerGid, logs);
+}
+
 // Extract one or more MEAL_LOG_JSON blocks from a reply
 function extractMealLogsFromText(text) {
   if (!text) return [];
@@ -829,6 +907,28 @@ function extractMealLogsFromText(text) {
   }
 
   return results;
+}
+
+// NEW: Extract DAILY_REVIEW_JSON block from a reply
+function extractDailyReviewFromText(text) {
+  if (!text) return null;
+  const start = text.indexOf("[[DAILY_REVIEW_JSON");
+  if (start === -1) return null;
+  const end = text.indexOf("]]", start);
+  if (end === -1) return null;
+
+  const block = text.substring(start, end + 2);
+  const jsonStart = block.indexOf("{");
+  const jsonEnd = block.lastIndexOf("}");
+  if (jsonStart === -1 || jsonEnd === -1) return null;
+
+  const jsonString = block.substring(jsonStart, jsonEnd + 1);
+  try {
+    return JSON.parse(jsonString);
+  } catch (e) {
+    console.error("Failed to parse DAILY_REVIEW_JSON:", e, jsonString);
+    return null;
+  }
 }
 
 // Upsert a single meal (with calories + macros) into TODAY'S log
@@ -927,6 +1027,55 @@ async function upsertMealLog(customerGid, meal, options = {}) {
       total_protein: protein || null,
       total_carbs: carbs || null,
       total_fat: fat || null
+    });
+  }
+
+  await saveDailyLogsMetafield(customerGid, logs);
+}
+
+// NEW: upsert DAILY REVIEW INFO into daily_logs
+async function upsertDailyReview(customerGid, review) {
+  if (!customerGid || !review) return;
+
+  const { logs } = await getDailyLogsMetafield(customerGid);
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const date = review.date && typeof review.date === "string" ? review.date : todayStr;
+
+  const idx = logs.findIndex(entry => entry && entry.date === date);
+
+  const summary = typeof review.summary === "string" && review.summary.trim()
+    ? review.summary.trim()
+    : "Keep it simple: hit your calories as best you can, move a bit, and log it honestly.";
+
+  const riskColor = review.risk_color || "green";
+  const needsHumanReview = !!review.needs_human_review;
+
+  if (idx >= 0) {
+    const existing = logs[idx] || {};
+    logs[idx] = {
+      ...existing,
+      date,
+      coach_focus: summary,
+      risk_color: riskColor,
+      needs_human_review: needsHumanReview
+    };
+  } else {
+    logs.push({
+      date,
+      weight: null,
+      steps: null,
+      meals: [],
+      mood: null,
+      struggle: null,
+      coach_focus: summary,
+      calories: null,
+      total_calories: null,
+      total_protein: null,
+      total_carbs: null,
+      total_fat: null,
+      risk_color: riskColor,
+      needs_human_review: needsHumanReview
     });
   }
 
@@ -1260,9 +1409,26 @@ export default async function handler(req, res) {
       }
     }
 
+    // === Extract daily review (coach focus) and upsert ===
+    if (customerGid) {
+      const dailyReview = extractDailyReviewFromText(rawReply);
+      if (dailyReview) {
+        debug.dailyReviewFound = dailyReview;
+        try {
+          await upsertDailyReview(customerGid, dailyReview);
+          debug.dailyReviewSavedToDailyLogs = true;
+        } catch (e) {
+          console.error("Error saving daily review from chat", e);
+          debug.dailyReviewSavedToDailyLogs = false;
+          debug.dailyReviewSaveError = String(e?.message || e);
+        }
+      }
+    }
+
     // Strip hidden blocks from visible reply
     let cleanedReply = stripCoachPlanBlock(rawReply);
     cleanedReply = cleanedReply.replace(/\[\[MEAL_LOG_JSON[\s\S]*?\]\]/g, "").trim();
+    cleanedReply = cleanedReply.replace(/\[\[DAILY_REVIEW_JSON[\s\S]*?\]\]/g, "").trim();
 
     res.status(200).json({ reply: cleanedReply, debug });
   } catch (e) {
