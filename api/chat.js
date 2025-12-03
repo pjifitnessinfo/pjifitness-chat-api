@@ -801,6 +801,47 @@ async function saveDailyLogsMetafield(customerGid, logs) {
   }
 }
 
+// Upsert today's total_calories into daily_logs (JSON array)
+async function upsertDailyTotalCalories(customerGid, totalCalories) {
+  if (!customerGid || !totalCalories) return;
+
+  const { logs } = await getDailyLogsMetafield(customerGid);
+
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD in UTC
+
+  // Find existing log for today, if any
+  const idx = logs.findIndex(entry => entry && entry.date === today);
+
+  if (idx >= 0) {
+    // Update existing log for today, but keep other fields as-is
+    const existing = logs[idx] || {};
+    logs[idx] = {
+      ...existing,
+      date: today,
+      total_calories: totalCalories,
+      calories: totalCalories,
+      coach_focus: existing.coach_focus || "Daily calories logged from chat.",
+      meals: existing.meals || []
+      // do NOT overwrite any macro totals if they exist
+    };
+  } else {
+    // Create new log object for today
+    logs.push({
+      date: today,
+      weight: null,
+      calories: totalCalories,
+      total_calories: totalCalories,
+      steps: null,
+      meals: [],
+      mood: null,
+      struggle: null,
+      coach_focus: "Daily calories logged from chat."
+    });
+  }
+
+  await saveDailyLogsMetafield(customerGid, logs);
+}
+
 // Extract one or more MEAL_LOG_JSON blocks from a reply
 function extractMealLogsFromText(text) {
   if (!text) return [];
@@ -832,8 +873,10 @@ function extractMealLogsFromText(text) {
 }
 
 // Upsert a single meal (with calories + macros) into TODAY'S log
-async function upsertMealLog(customerGid, meal) {
+async function upsertMealLog(customerGid, meal, options = {}) {
   if (!customerGid || !meal) return;
+
+  const overrideMealType = options.overrideMealType || null;
 
   const { logs } = await getDailyLogsMetafield(customerGid);
 
@@ -862,6 +905,13 @@ async function upsertMealLog(customerGid, meal) {
     // Update existing log for today
     const existing = logs[idx] || {};
     const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
+
+    // If override, remove any existing meals of that type first
+    let baseMeals = existingMeals;
+    if (overrideMealType && mealType === overrideMealType) {
+      baseMeals = existingMeals.filter(m => m.meal_type !== overrideMealType);
+    }
+
     const newMeal = {
       meal_type: mealType,
       items,
@@ -870,7 +920,7 @@ async function upsertMealLog(customerGid, meal) {
       carbs,
       fat
     };
-    const updatedMeals = existingMeals.concat([newMeal]);
+    const updatedMeals = baseMeals.concat([newMeal]);
 
     // Recompute totals from all meals for TODAY
     let sumCals = 0, sumP = 0, sumC = 0, sumF = 0;
@@ -1231,7 +1281,9 @@ export default async function handler(req, res) {
         debug.mealLogsSample = mealLogs.slice(0, 2);
         try {
           for (const meal of mealLogs) {
-            await upsertMealLog(customerGid, meal);
+            await upsertMealLog(customerGid, meal, {
+              overrideMealType: overrideMeal ? overrideMeal.meal_type : null
+            });
           }
           debug.mealLogsSavedToDailyLogs = true;
         } catch (e) {
