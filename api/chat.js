@@ -317,7 +317,16 @@ Rules for this block:
 I. MEAL LOGGING, ESTIMATES & EXPLANATIONS
 ======================================================
 
-When the user describes what they ate (e.g. “Lunch: 2 homemade 1" meatballs on a hero with cheese and some fries”):
+When the user describes what they ate OR CHANGES a meal for today, you MUST create or update a meal log.
+
+This includes messages like:
+- “Lunch: 2 homemade 1\" meatballs on a hero with cheese and some fries”
+- “Log this as lunch: 200g egg whites and 4 pieces of 647 bread.”
+- “Change breakfast to an English muffin with butter.”
+- “Switch my lunch to a grilled chicken salad.”
+- “Replace dinner with 2 slices of pizza and a protein shake.”
+
+In ALL of these cases, you must:
 
 1) Give a normal coaching reply in plain language.
 
@@ -333,16 +342,22 @@ When the user describes what they ate (e.g. “Lunch: 2 homemade 1" meatballs on
      "fat": 40
    }]]
 
-   - Use today’s date for "date" in YYYY-MM-DD.
-   - Pick the closest meal_type based on what they said.
+   - Use TODAY’S date for "date" in YYYY-MM-DD (the app will always treat this as “today’s” meal).
+   - Pick the closest meal_type based on what they said (for “change breakfast…”, use "breakfast", etc.).
    - "items" should be a short list of what they ate in their own words.
    - calories/protein/carbs/fat are rough estimates, all numbers (no strings).
+   - If they are changing a meal (“change breakfast to…”), log ONLY the **new** meal for that meal_type. The app will handle updating the totals from the latest set of meals.
 
 3) When food is generic or vague, EXPLAIN your estimate briefly in the visible text:
    - Example: “I’m logging that as about 900–1000 calories. I assumed 2 medium beef meatballs (~300 cals), a white hero with cheese (~500–550), and a small handful of fries (~150). If that feels way off, tell me and I’ll adjust it.”
 
 4) Gently offer 1–2 easy substitution ideas when it makes sense:
    - Example: “Next time, you could keep the meatballs but do a smaller roll or open-face the sandwich, and shrink the fries or swap them for a salad.”
+
+You MUST include a [[MEAL_LOG_JSON { ... }]] block any time they:
+- Describe a specific meal they ate today, OR
+- Ask you to log a meal, OR
+- Ask you to change/adjust/swap a meal (breakfast, lunch, dinner, snacks) for today.
 
 Keep explanations short (1–3 sentences) so you don’t overwhelm the user.
 Never show the words “JSON” or “MEAL_LOG_JSON” in the normal coaching text; that block is only for the app.
@@ -809,11 +824,8 @@ function extractMealLogsFromText(text) {
 }
 
 // Upsert a single meal (with calories + macros) into TODAY'S log
-// options.replaceMealType === true => replace existing meals of same meal_type for today
-async function upsertMealLog(customerGid, meal, options = {}) {
+async function upsertMealLog(customerGid, meal) {
   if (!customerGid || !meal) return;
-
-  const replaceMealType = !!options.replaceMealType;
 
   const { logs } = await getDailyLogsMetafield(customerGid);
 
@@ -841,13 +853,7 @@ async function upsertMealLog(customerGid, meal, options = {}) {
   if (idx >= 0) {
     // Update existing log for today
     const existing = logs[idx] || {};
-    let existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
-
-    if (replaceMealType) {
-      // Remove any previous meals for this meal_type for TODAY
-      existingMeals = existingMeals.filter(m => (m.meal_type || "other") !== mealType);
-    }
-
+    const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
     const newMeal = {
       meal_type: mealType,
       items,
@@ -1150,18 +1156,12 @@ export default async function handler(req, res) {
     // === Extract meal logs (if any) and upsert them ===
     if (customerGid) {
       const mealLogs = extractMealLogsFromText(rawReply);
-      const isEditLike =
-        typeof userMessage === "string" &&
-        /\b(edit|change|update|fix|replace)\b/i.test(userMessage);
-
       if (mealLogs && mealLogs.length) {
         debug.mealLogsFound = mealLogs.length;
         debug.mealLogsSample = mealLogs.slice(0, 2);
-        debug.mealEditMode = isEditLike ? "replace_meal_type_today" : "append";
-
         try {
           for (const meal of mealLogs) {
-            await upsertMealLog(customerGid, meal, { replaceMealType: isEditLike });
+            await upsertMealLog(customerGid, meal);
           }
           debug.mealLogsSavedToDailyLogs = true;
         } catch (e) {
@@ -1181,10 +1181,7 @@ export default async function handler(req, res) {
     res.status(200).json({ reply: cleanedReply, debug });
   } catch (e) {
     console.error("Chat handler error", e);
-    const debugOut = {
-      ...debug,
-      serverError: String(e?.message || e)
-    };
-    res.status(500).json({ error: "Server error", debug: debugOut });
+    debug.serverError = String(e?.message || e);
+    res.status(500).json({ error: "Server error", debug });
   }
 }
