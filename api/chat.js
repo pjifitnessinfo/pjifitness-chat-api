@@ -314,15 +314,8 @@ Rules for this block:
 - The user should only see the normal coaching message; the app will quietly read the block.
 
 ======================================================
-I. MEAL LOGGING, ESTIMATES & EXPLANATIONS  (CRITICAL)
+I. MEAL LOGGING, ESTIMATES & EXPLANATIONS
 ======================================================
-
-CRITICAL: Any time the user describes food they ate (a meal, snack, drink, etc.) — especially when they say
-things like "log this", "for lunch I had", "for dinner I had", "today I ate", or similar — you MUST:
-
-1) Give a normal coaching reply in plain language.
-2) ALSO append exactly ONE MEAL_LOG_JSON block at the VERY END of your reply.
-3) Do NOT skip the MEAL_LOG_JSON block when the user describes a meal. If they describe food, you append it.
 
 When the user describes what they ate (e.g. “Lunch: 2 homemade 1" meatballs on a hero with cheese and some fries”):
 
@@ -708,7 +701,6 @@ async function getDailyLogsMetafield(customerGid) {
 // Save daily_logs metafield back to Shopify
 async function saveDailyLogsMetafield(customerGid, logs) {
   if (!customerGid) return;
-
   const mutation = `
     mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
       metafieldsSet(metafields: $metafields) {
@@ -726,7 +718,6 @@ async function saveDailyLogsMetafield(customerGid, logs) {
       }
     }
   `;
-
   const variables = {
     metafields: [
       {
@@ -738,15 +729,13 @@ async function saveDailyLogsMetafield(customerGid, logs) {
       }
     ]
   };
-
   const data = await shopifyGraphQL(mutation, variables);
-  const userErrors = (data && data.metafieldsSet && data.metafieldsSet.userErrors) || [];
+  const userErrors = data?.metafieldsSet?.userErrors || [];
   if (userErrors.length) {
     console.error("metafieldsSet userErrors (daily_logs):", userErrors);
     throw new Error("Shopify userErrors when saving daily_logs");
   }
 }
-
 
 // Upsert today's total_calories into daily_logs (JSON array)
 async function upsertDailyTotalCalories(customerGid, totalCalories) {
@@ -820,8 +809,11 @@ function extractMealLogsFromText(text) {
 }
 
 // Upsert a single meal (with calories + macros) into TODAY'S log
-async function upsertMealLog(customerGid, meal) {
+// options.replaceMealType === true => replace existing meals of same meal_type for today
+async function upsertMealLog(customerGid, meal, options = {}) {
   if (!customerGid || !meal) return;
+
+  const replaceMealType = !!options.replaceMealType;
 
   const { logs } = await getDailyLogsMetafield(customerGid);
 
@@ -849,7 +841,13 @@ async function upsertMealLog(customerGid, meal) {
   if (idx >= 0) {
     // Update existing log for today
     const existing = logs[idx] || {};
-    const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
+    let existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
+
+    if (replaceMealType) {
+      // Remove any previous meals for this meal_type for TODAY
+      existingMeals = existingMeals.filter(m => (m.meal_type || "other") !== mealType);
+    }
+
     const newMeal = {
       meal_type: mealType,
       items,
@@ -909,6 +907,7 @@ async function upsertMealLog(customerGid, meal) {
 
   await saveDailyLogsMetafield(customerGid, logs);
 }
+
 
 export default async function handler(req, res) {
   // ---- CORS handling ----
@@ -1067,7 +1066,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: "gpt-4.1-mini",
         messages,
-        temperature: 0.2
+        temperature: 0.7
       })
     });
 
@@ -1151,12 +1150,18 @@ export default async function handler(req, res) {
     // === Extract meal logs (if any) and upsert them ===
     if (customerGid) {
       const mealLogs = extractMealLogsFromText(rawReply);
+      const isEditLike =
+        typeof userMessage === "string" &&
+        /\b(edit|change|update|fix|replace)\b/i.test(userMessage);
+
       if (mealLogs && mealLogs.length) {
         debug.mealLogsFound = mealLogs.length;
-        debug.mealLogsSample = mealLogs.slice(0, 2); // small sample in debug
+        debug.mealLogsSample = mealLogs.slice(0, 2);
+        debug.mealEditMode = isEditLike ? "replace_meal_type_today" : "append";
+
         try {
           for (const meal of mealLogs) {
-            await upsertMealLog(customerGid, meal);
+            await upsertMealLog(customerGid, meal, { replaceMealType: isEditLike });
           }
           debug.mealLogsSavedToDailyLogs = true;
         } catch (e) {
@@ -1165,7 +1170,7 @@ export default async function handler(req, res) {
           debug.mealLogsSaveError = String(e?.message || e);
         }
       } else {
-        debug.mealLogsFound = 0; // explicit 0 so we know it didn't detect any
+        debug.mealLogsFound = 0;
       }
     }
 
@@ -1176,7 +1181,10 @@ export default async function handler(req, res) {
     res.status(200).json({ reply: cleanedReply, debug });
   } catch (e) {
     console.error("Chat handler error", e);
-    debug.serverError = String(e?.message || e);
-    res.status(500).json({ error: "Server error", debug });
+    const debugOut = {
+      ...debug,
+      serverError: String(e?.message || e)
+    };
+    res.status(500).json({ error: "Server error", debug: debugOut });
   }
 }
