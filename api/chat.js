@@ -320,7 +320,7 @@ I. MEAL LOGGING, ESTIMATES & EXPLANATIONS
 Treat BOTH of these as meal logging events:
 
 1) When the user describes what they ate (for any meal), for example:
-   - “Lunch: 2 homemade 1\" meatballs on a hero with cheese and some fries”
+   - “Lunch: 2 homemade 1" meatballs on a hero with cheese and some fries”
    - “For dinner I had 6oz chicken, 1 cup rice, some veggies”
 
 2) When the user asks to CHANGE, SWAP, or MAKE a meal, for example:
@@ -347,11 +347,21 @@ In ALL of those cases, you must:
 
 This block is MANDATORY whenever the user describes a specific meal or asks to change a meal. This is not optional.
 
+Sometimes the system will send you an extra system message like:
+USER_REQUEST_OVERRIDE_MEAL: {"meal_type": "...", "items": [...], "calories": null, "protein": null, "carbs": null, "fat": null}
+
+When you see USER_REQUEST_OVERRIDE_MEAL:
+- Treat that as the NEW meal that should be logged for that meal_type TODAY.
+- You MUST output exactly ONE MEAL_LOG_JSON block that matches that override meal (using today’s date and a clear items description).
+- Estimate calories/protein/carbs/fat as usual based on the description.
+
 Rules for the MEAL_LOG_JSON block:
 
 - ALWAYS include it when:
   - The user tells you what they ate for a specific meal, OR
-  - The user asks you to change/replace a meal (“change breakfast to…”, “make dinner…”, “instead I had…”).
+  - The user asks you to change/replace a meal (“change breakfast to…”, “make dinner…”, “instead I had…”), OR
+  - You receive a USER_REQUEST_OVERRIDE_MEAL system message.
+
 - Use TODAY’S date in "YYYY-MM-DD" for "date".
 - Pick the closest meal_type:
   - If they say “breakfast”, use "breakfast".
@@ -400,7 +410,6 @@ Gently offer 1–2 easy substitution ideas when it makes sense:
 
 Keep explanations short (1–3 sentences) so you don’t overwhelm the user.
 Never show the words “JSON” or “MEAL_LOG_JSON” in the normal coaching text; that block is only for the app.
-
 
 Outside of all hidden blocks, never show JSON or technical stuff to the user.
 
@@ -792,47 +801,6 @@ async function saveDailyLogsMetafield(customerGid, logs) {
   }
 }
 
-// Upsert today's total_calories into daily_logs (JSON array)
-async function upsertDailyTotalCalories(customerGid, totalCalories) {
-  if (!customerGid || !totalCalories) return;
-
-  const { logs } = await getDailyLogsMetafield(customerGid);
-
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD in UTC
-
-  // Find existing log for today, if any
-  const idx = logs.findIndex(entry => entry && entry.date === today);
-
-  if (idx >= 0) {
-    // Update existing log for today, but keep other fields as-is
-    const existing = logs[idx] || {};
-    logs[idx] = {
-      ...existing,
-      date: today,
-      total_calories: totalCalories,
-      calories: totalCalories,
-      coach_focus: existing.coach_focus || "Daily calories logged from chat.",
-      meals: existing.meals || []
-      // do NOT overwrite any macro totals if they exist
-    };
-  } else {
-    // Create new log object for today
-    logs.push({
-      date: today,
-      weight: null,
-      calories: totalCalories,
-      total_calories: totalCalories,
-      steps: null,
-      meals: [],
-      mood: null,
-      struggle: null,
-      coach_focus: "Daily calories logged from chat."
-    });
-  }
-
-  await saveDailyLogsMetafield(customerGid, logs);
-}
-
 // Extract one or more MEAL_LOG_JSON blocks from a reply
 function extractMealLogsFromText(text) {
   if (!text) return [];
@@ -954,6 +922,54 @@ async function upsertMealLog(customerGid, meal) {
   await saveDailyLogsMetafield(customerGid, logs);
 }
 
+/* ==========================================
+   MEAL OVERRIDE DETECTOR ("change breakfast")
+   ========================================== */
+
+function detectMealOverride(userMsg) {
+  if (!userMsg || typeof userMsg !== "string") return null;
+  const text = userMsg.toLowerCase();
+
+  const mealTypes = {
+    breakfast: ["breakfast", "bfast"],
+    lunch: ["lunch"],
+    dinner: ["dinner", "supper"],
+    snacks: ["snack", "snacks", "dessert"]
+  };
+
+  for (const [mealType, triggers] of Object.entries(mealTypes)) {
+    for (const trig of triggers) {
+      if (
+        text.includes("change " + trig) ||
+        text.includes("replace " + trig) ||
+        text.includes("swap " + trig) ||
+        text.includes("edit " + trig) ||
+        text.includes("make " + trig)
+      ) {
+        // Strip the verbs + trigger to get the new description
+        let itemText = userMsg;
+        itemText = itemText.replace(/change|replace|swap|edit|make/i, "");
+        const regexTrig = new RegExp(trig, "i");
+        itemText = itemText.replace(regexTrig, "");
+        itemText = itemText.replace(/\b(to|with|for)\b/i, "");
+        itemText = itemText.trim().replace(/^[:\-–]/, "").trim();
+
+        if (itemText.length > 0) {
+          return {
+            meal_type: mealType,
+            items: [itemText],
+            calories: null,
+            protein: null,
+            carbs: null,
+            fat: null
+          };
+        }
+      }
+    }
+  }
+
+  return null;
+}
 
 export default async function handler(req, res) {
   // ---- CORS handling ----
@@ -1068,6 +1084,12 @@ export default async function handler(req, res) {
     }
   }
 
+  // Detect "change breakfast/lunch/dinner" style overrides
+  const overrideMeal = detectMealOverride(userMessage);
+  if (overrideMeal) {
+    debug.mealOverrideDetected = overrideMeal;
+  }
+
   // Build messages with full conversation context
   const messages = [
     { role: "system", content: SYSTEM_PROMPT }
@@ -1078,6 +1100,14 @@ export default async function handler(req, res) {
     messages.push({
       role: "system",
       content: `custom.onboarding_complete: ${onboardingComplete ? "true" : "false"}`
+    });
+  }
+
+  // If we detected an override meal, tell the model explicitly
+  if (overrideMeal) {
+    messages.push({
+      role: "system",
+      content: `USER_REQUEST_OVERRIDE_MEAL: ${JSON.stringify(overrideMeal)}`
     });
   }
 
