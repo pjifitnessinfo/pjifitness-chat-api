@@ -203,7 +203,7 @@ Explain:
 - Weigh every morning, after bathroom, before food/water, same time each day.
 - Expect daily ups and downs.
 - Weekly averages matter more than any single day.
-- One “spike” does NOT mean fat gain — it’s often water, carbs, salt, or digestion.
+- One “spike” does NOT mean fat gain — it’s often water, carbs, salt, hormones, soreness, digestion, timing.
 
 ======================================================
 D. HOW TO PRESENT THE FINAL PLAN
@@ -515,12 +515,11 @@ async function resolveCustomerGidFromBody(body) {
 }
 
 // Save plan into:
-// - custom.coach_plan (TEXT containing JSON)
-// - custom.plan_json  (TEXT clone, for projection card)
-// - custom.start_weight (number_decimal; value as string)
-// - custom.goal_weight  (number_decimal; value as string)
-// - custom.onboarding_complete ("true" as TEXT)
-// We do NOT send "type" so Shopify uses existing metafield definitions.
+// - custom.coach_plan (JSON, full plan including weekly_loss_low/high, etc.)
+// - custom.plan_json  (JSON clone, for projection card)
+// - custom.start_weight (number_decimal or whatever definition is)
+// - custom.goal_weight  (number_decimal or existing definition)
+// - custom.onboarding_complete (boolean/text "true")
 async function saveCoachPlanForCustomer(customerGid, planJson) {
   if (!customerGid || !planJson) return;
 
@@ -567,9 +566,10 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
     }
   `;
 
-  // IMPORTANT:
-  // We do NOT specify "type" here, so Shopify will use the existing
-  // metafield definitions you created in the Admin.
+  // TYPES HERE:
+  // - We DO NOT send type for existing metafields you already created (coach_plan, start_weight, goal_weight, onboarding_complete)
+  //   so Shopify uses the existing definition type.
+  // - We DO send type for plan_json so it can be created as JSON if missing.
   const metafields = [
     {
       ownerId,
@@ -581,6 +581,7 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
       ownerId,
       namespace: "custom",
       key: "plan_json",
+      type: "json",
       value: JSON.stringify(coachPlan)
     },
     {
@@ -615,7 +616,9 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
   const userErrors = data?.metafieldsSet?.userErrors || [];
   if (userErrors.length) {
     console.error("metafieldsSet userErrors (coach_plan):", userErrors);
-    throw new Error("Shopify userErrors when saving coach_plan/start/goal");
+    const err = new Error("Shopify userErrors when saving coach_plan/start/goal");
+    err.shopifyUserErrors = userErrors;
+    throw err;
   }
 }
 
@@ -695,6 +698,45 @@ async function getDailyLogsMetafield(customerGid) {
   }
 }
 
+// Save daily_logs metafield back to Shopify
+async function saveDailyLogsMetafield(customerGid, logs) {
+  if (!customerGid) return;
+  const mutation = `
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        metafields {
+          id
+          key
+          namespace
+          type
+          value
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+  `;
+  const variables = {
+    metafields: [
+      {
+        ownerId: customerGid,
+        namespace: "custom",
+        key: "daily_logs",
+        type: "json",
+        value: JSON.stringify(logs)
+      }
+    ]
+  };
+  const data = await shopifyGraphQL(mutation, variables);
+  const userErrors = data?.metafieldsSet?.userErrors || [];
+  if (userErrors.length) {
+    console.error("metafieldsSet userErrors (daily_logs):", userErrors);
+    throw new Error("Shopify userErrors when saving daily_logs");
+  }
+}
+
 // Upsert today's total_calories into daily_logs (JSON array)
 async function upsertDailyTotalCalories(customerGid, totalCalories) {
   if (!customerGid || !totalCalories) return;
@@ -748,7 +790,7 @@ function extractMealLogsFromText(text) {
     const end = text.indexOf("]]", start);
     if (end === -1) break;
 
-    const block = text.substring(start, end + 2);
+  const block = text.substring(start, end + 2);
     const jsonStart = block.indexOf("{");
     const jsonEnd = block.lastIndexOf("}");
     if (jsonStart !== -1 && jsonEnd !== -1) {
@@ -764,45 +806,6 @@ function extractMealLogsFromText(text) {
   }
 
   return results;
-}
-
-// Save daily_logs metafield back to Shopify
-async function saveDailyLogsMetafield(customerGid, logs) {
-  if (!customerGid) return;
-  const mutation = `
-    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
-      metafieldsSet(metafields: $metafields) {
-        metafields {
-          id
-          key
-          namespace
-          type
-          value
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }
-  `;
-  const variables = {
-    metafields: [
-      {
-        ownerId: customerGid,
-        namespace: "custom",
-        key: "daily_logs",
-        type: "json",
-        value: JSON.stringify(logs)
-      }
-    ]
-  };
-  const data = await shopifyGraphQL(mutation, variables);
-  const userErrors = data?.metafieldsSet?.userErrors || [];
-  if (userErrors.length) {
-    console.error("metafieldsSet userErrors (daily_logs):", userErrors);
-    throw new Error("Shopify userErrors when saving daily_logs");
-  }
 }
 
 // Upsert a single meal (with calories + macros) into the correct day's log
@@ -1123,10 +1126,13 @@ export default async function handler(req, res) {
           console.error("Error saving coach_plan metafield", e);
           debug.planSavedToShopify = false;
           debug.planSaveError = String(e?.message || e);
+          if (e && e.shopifyUserErrors) {
+            debug.planSaveUserErrors = e.shopifyUserErrors;
+          }
         }
       } else {
         debug.planSavedToShopify = false;
-        debug.planSavedToShopifySkippedReason = skipReason;
+        debug.planSavedSkippedReason = skipReason;
       }
     }
 
