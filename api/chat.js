@@ -515,11 +515,11 @@ async function resolveCustomerGidFromBody(body) {
 }
 
 // Save plan into:
-// - custom.coach_plan (JSON, full plan including weekly_loss_low/high, etc.)
-// - custom.plan_json  (JSON clone, for projection card)
+// - custom.coach_plan (TEXT containing JSON)
+// - custom.plan_json  (TEXT clone, for projection card)
 // - custom.start_weight (number_decimal)
 // - custom.goal_weight  (number_decimal)
-// - custom.onboarding_complete (boolean true)
+// - custom.onboarding_complete (TEXT "true")
 async function saveCoachPlanForCustomer(customerGid, planJson) {
   if (!customerGid || !planJson) return;
 
@@ -567,9 +567,9 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
   `;
 
   // TYPES HERE MUST MATCH YOUR CUSTOMER METAFIELD DEFINITIONS:
-  // - coach_plan: JSON
-  // - plan_json:  JSON
-  // - onboarding_complete: Boolean (True or false)
+  // - coach_plan: single_line_text_field
+  // - plan_json:  single_line_text_field
+  // - onboarding_complete: single_line_text_field ("true")
   // - start_weight: Number (Decimal)
   // - goal_weight:  Number (Decimal)
   const metafields = [
@@ -577,21 +577,21 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
       ownerId,
       namespace: "custom",
       key: "coach_plan",
-      type: "json",
+      type: "single_line_text_field",
       value: JSON.stringify(coachPlan)
     },
     {
       ownerId,
       namespace: "custom",
       key: "plan_json",
-      type: "json",
+      type: "single_line_text_field",
       value: JSON.stringify(coachPlan)
     },
     {
       ownerId,
       namespace: "custom",
       key: "onboarding_complete",
-      type: "boolean",
+      type: "single_line_text_field",
       value: "true"
     }
   ];
@@ -777,7 +777,7 @@ function extractMealLogsFromText(text) {
 async function saveDailyLogsMetafield(customerGid, logs) {
   if (!customerGid) return;
   const mutation = `
-    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!] {
       metafieldsSet(metafields: $metafields) {
         metafields {
           id
