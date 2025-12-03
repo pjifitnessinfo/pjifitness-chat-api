@@ -790,7 +790,7 @@ function extractMealLogsFromText(text) {
     const end = text.indexOf("]]", start);
     if (end === -1) break;
 
-  const block = text.substring(start, end + 2);
+    const block = text.substring(start, end + 2);
     const jsonStart = block.indexOf("{");
     const jsonEnd = block.lastIndexOf("}");
     if (jsonStart !== -1 && jsonEnd !== -1) {
@@ -1141,6 +1141,7 @@ export default async function handler(req, res) {
       const mealLogs = extractMealLogsFromText(rawReply);
       if (mealLogs && mealLogs.length) {
         debug.mealLogsFound = mealLogs.length;
+        debug.mealLogsSample = mealLogs.slice(0, 2); // NEW: small sample in debug
         try {
           for (const meal of mealLogs) {
             await upsertMealLog(customerGid, meal);
@@ -1151,6 +1152,8 @@ export default async function handler(req, res) {
           debug.mealLogsSavedToDailyLogs = false;
           debug.mealLogsSaveError = String(e?.message || e);
         }
+      } else {
+        debug.mealLogsFound = 0; // NEW: explicit 0 so we know it didn't detect any
       }
     }
 
