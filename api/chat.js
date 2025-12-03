@@ -937,6 +937,15 @@ async function upsertMealLog(customerGid, meal, options = {}) {
    MEAL OVERRIDE DETECTOR ("change breakfast")
    ========================================== */
 
+function normalizeMealType(raw) {
+  const t = (raw || "").toLowerCase().trim();
+  if (t === "bfast" || t === "breakfast") return "breakfast";
+  if (t === "lunch") return "lunch";
+  if (t === "dinner" || t === "supper") return "dinner";
+  if (t === "snack" || t === "snacks" || t === "snaks" || t === "dessert") return "snacks";
+  return raw || "other";
+}
+
 function detectMealOverride(userMsg) {
   if (!userMsg || typeof userMsg !== "string") return null;
   const text = userMsg.toLowerCase();
@@ -945,23 +954,14 @@ function detectMealOverride(userMsg) {
   // "change breakfast to..."
   // "change my lunch to..."
   // "swap dinner for..."
-  // "edit my snacks to..."
+  // "edit my snacks/snaks to..."
   // "make dinner 2 slices of pizza"
-  const pattern = /(change|replace|swap|edit|make)\s+(?:my\s+)?(breakfast|bfast|lunch|dinner|supper|snack|snacks|dessert)\b/i;
+  const pattern = /(change|replace|swap|edit|make)\s+(?:my\s+)?(breakfast|bfast|lunch|dinner|supper|snack|snacks|snaks|dessert)\b/i;
   const match = text.match(pattern);
   if (!match) return null;
 
   const mealWord = match[2];
-  let mealType = "other";
-  if (mealWord === "breakfast" || mealWord === "bfast") {
-    mealType = "breakfast";
-  } else if (mealWord === "lunch") {
-    mealType = "lunch";
-  } else if (mealWord === "dinner" || mealWord === "supper") {
-    mealType = "dinner";
-  } else if (mealWord === "snack" || mealWord === "snacks" || mealWord === "dessert") {
-    mealType = "snacks";
-  }
+  const mealType = normalizeMealType(mealWord);
 
   // Grab everything AFTER the matched phrase from the ORIGINAL message
   const descStart = match.index + match[0].length;
