@@ -314,8 +314,15 @@ Rules for this block:
 - The user should only see the normal coaching message; the app will quietly read the block.
 
 ======================================================
-I. MEAL LOGGING, ESTIMATES & EXPLANATIONS
+I. MEAL LOGGING, ESTIMATES & EXPLANATIONS  (CRITICAL)
 ======================================================
+
+CRITICAL: Any time the user describes food they ate (a meal, snack, drink, etc.) — especially when they say
+things like "log this", "for lunch I had", "for dinner I had", "today I ate", or similar — you MUST:
+
+1) Give a normal coaching reply in plain language.
+2) ALSO append exactly ONE MEAL_LOG_JSON block at the VERY END of your reply.
+3) Do NOT skip the MEAL_LOG_JSON block when the user describes a meal. If they describe food, you append it.
 
 When the user describes what they ate (e.g. “Lunch: 2 homemade 1" meatballs on a hero with cheese and some fries”):
 
@@ -702,7 +709,7 @@ async function getDailyLogsMetafield(customerGid) {
 async function saveDailyLogsMetafield(customerGid, logs) {
   if (!customerGid) return;
   const mutation = `
-    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!] {
       metafieldsSet(metafields: $metafields) {
         metafields {
           id
@@ -899,7 +906,6 @@ async function upsertMealLog(customerGid, meal) {
   await saveDailyLogsMetafield(customerGid, logs);
 }
 
-
 export default async function handler(req, res) {
   // ---- CORS handling ----
   if (req.method === "OPTIONS") {
@@ -1057,7 +1063,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: "gpt-4.1-mini",
         messages,
-        temperature: 0.7
+        temperature: 0.2
       })
     });
 
@@ -1143,7 +1149,7 @@ export default async function handler(req, res) {
       const mealLogs = extractMealLogsFromText(rawReply);
       if (mealLogs && mealLogs.length) {
         debug.mealLogsFound = mealLogs.length;
-        debug.mealLogsSample = mealLogs.slice(0, 2); // NEW: small sample in debug
+        debug.mealLogsSample = mealLogs.slice(0, 2); // small sample in debug
         try {
           for (const meal of mealLogs) {
             await upsertMealLog(customerGid, meal);
@@ -1155,7 +1161,7 @@ export default async function handler(req, res) {
           debug.mealLogsSaveError = String(e?.message || e);
         }
       } else {
-        debug.mealLogsFound = 0; // NEW: explicit 0 so we know it didn't detect any
+        debug.mealLogsFound = 0; // explicit 0 so we know it didn't detect any
       }
     }
 
