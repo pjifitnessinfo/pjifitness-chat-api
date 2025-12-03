@@ -411,44 +411,6 @@ Gently offer 1–2 easy substitution ideas when it makes sense:
 Keep explanations short (1–3 sentences) so you don’t overwhelm the user.
 Never show the words “JSON” or “MEAL_LOG_JSON” in the normal coaching text; that block is only for the app.
 
-======================================================
-J. RED-FLAG / RISK SCANNER (INTERNAL ONLY)
-======================================================
-
-For EVERY user message, quietly scan for risk patterns. This information is ONLY for PJ (the coach), not the user.
-
-Possible "risk_level" values:
-- "green"  → normal concerns, no safety issue
-- "yellow" → mindset / adherence risk (weekend binges, all-or-nothing thinking, motivation dips)
-- "red"    → potentially unsafe dieting, overtraining, or medical concern
-
-Possible "risk_flag" values:
-- "NONE"
-- "LOW_CALORIES"          → very low intake, starvation talk, fear of eating, extreme fasting
-- "OVERTRAINING"          → 2-a-days, hours of cardio, training through pain/injury
-- "UNREALISTIC_TIMELINE"  → expecting extreme weekly loss or crash deadlines
-- "BINGE_RESTRICT_CYCLE"  → “I binged / blew it / start over Monday” type pattern
-- "MOTIVATION_DIP"        → “I can’t do this”, “I keep failing”, “what’s the point”
-- "MEDICAL_DANGER"        → chest pain, fainting, heart issues, scary symptoms, med misuse
-- "OTHER"                 → concerning but doesn’t fit above
-
-You MUST output a tiny JSON block AFTER your normal coaching reply and after any other hidden blocks, wrapped in EXACTLY these tags:
-
-<RISK_FLAG_JSON>
-{
-  "risk_level": "green" | "yellow" | "red",
-  "risk_flag": "NONE" | "LOW_CALORIES" | "OVERTRAINING" | "UNREALISTIC_TIMELINE" | "BINGE_RESTRICT_CYCLE" | "MOTIVATION_DIP" | "MEDICAL_DANGER" | "OTHER",
-  "risk_notes": "Short explanation in 1–2 sentences, aimed at PJ the coach, not the user."
-}
-</RISK_FLAG_JSON>
-
-Rules:
-- Always send this block.
-- If nothing is wrong: risk_level = "green", risk_flag = "NONE", risk_notes = "No major concerns from this message."
-- Be honest but not dramatic.
-- Do NOT mention this JSON in the normal reply to the user.
-- The user should feel only calm, supportive coaching, never labelled as a “red flag”.
-
 Outside of all hidden blocks, never show JSON or technical stuff to the user.
 
 Your #1 mission:
@@ -537,25 +499,6 @@ function extractCoachPlanJson(text) {
   }
 }
 
-// Extract the RISK_FLAG_JSON block and parse the JSON inside
-function extractRiskFlagJson(text) {
-  if (!text) return null;
-  const startTag = "<RISK_FLAG_JSON>";
-  const endTag = "</RISK_FLAG_JSON>";
-  const start = text.indexOf(startTag);
-  if (start === -1) return null;
-  const end = text.indexOf(endTag, start);
-  if (end === -1) return null;
-
-  const inner = text.substring(start + startTag.length, end).trim();
-  try {
-    return JSON.parse(inner);
-  } catch (e) {
-    console.error("Failed to parse RISK_FLAG_JSON:", e, inner);
-    return null;
-  }
-}
-
 // Fallback: try to pull calories / protein / fat out of the text bullets
 // We only SAVE a text-based plan the first time (before onboarding_complete is true).
 function extractPlanFromText(text) {
@@ -583,12 +526,6 @@ function extractPlanFromText(text) {
 function stripCoachPlanBlock(text) {
   if (!text) return text;
   return text.replace(/\[\[COACH_PLAN_JSON[\s\S]*?\]\]/, "").trim();
-}
-
-// Strip the RISK_FLAG_JSON block from the text before sending to user
-function stripRiskFlagBlock(text) {
-  if (!text) return text;
-  return text.replace(/<RISK_FLAG_JSON>[\s\S]*?<\/RISK_FLAG_JSON>/, "").trim();
 }
 
 // Resolve a customer GID from request body (customerId or email)
@@ -864,47 +801,6 @@ async function saveDailyLogsMetafield(customerGid, logs) {
   }
 }
 
-// Upsert today's total_calories into daily_logs (JSON array)
-async function upsertDailyTotalCalories(customerGid, totalCalories) {
-  if (!customerGid || !totalCalories) return;
-
-  const { logs } = await getDailyLogsMetafield(customerGid);
-
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD in UTC
-
-  // Find existing log for today, if any
-  const idx = logs.findIndex(entry => entry && entry.date === today);
-
-  if (idx >= 0) {
-    // Update existing log for today, but keep other fields as-is
-    const existing = logs[idx] || {};
-    logs[idx] = {
-      ...existing,
-      date: today,
-      total_calories: totalCalories,
-      calories: totalCalories,
-      coach_focus: existing.coach_focus || "Daily calories logged from chat.",
-      meals: existing.meals || []
-      // do NOT overwrite any macro totals if they exist
-    };
-  } else {
-    // Create new log object for today
-    logs.push({
-      date: today,
-      weight: null,
-      calories: totalCalories,
-      total_calories: totalCalories,
-      steps: null,
-      meals: [],
-      mood: null,
-      struggle: null,
-      coach_focus: "Daily calories logged from chat."
-    });
-  }
-
-  await saveDailyLogsMetafield(customerGid, logs);
-}
-
 // Extract one or more MEAL_LOG_JSON blocks from a reply
 function extractMealLogsFromText(text) {
   if (!text) return [];
@@ -936,10 +832,10 @@ function extractMealLogsFromText(text) {
 }
 
 // Upsert a single meal (with calories + macros) into TODAY'S log
+// If options.replaceMealType is set and matches this meal_type,
+// we REMOVE any existing meals of that type for today (true override).
 async function upsertMealLog(customerGid, meal, options = {}) {
   if (!customerGid || !meal) return;
-
-  const overrideMealType = options.overrideMealType || null;
 
   const { logs } = await getDailyLogsMetafield(customerGid);
 
@@ -964,15 +860,17 @@ async function upsertMealLog(customerGid, meal, options = {}) {
     }
   }
 
+  const replaceMealType = options.replaceMealType || null;
+
   if (idx >= 0) {
     // Update existing log for today
     const existing = logs[idx] || {};
     const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
 
-    // If override, remove any existing meals of that type first
+    // If this is an override for this meal type, remove prior meals of that type
     let baseMeals = existingMeals;
-    if (overrideMealType && mealType === overrideMealType) {
-      baseMeals = existingMeals.filter(m => m.meal_type !== overrideMealType);
+    if (replaceMealType && mealType === replaceMealType) {
+      baseMeals = existingMeals.filter(m => !m || m.meal_type !== replaceMealType);
     }
 
     const newMeal = {
@@ -1035,48 +933,6 @@ async function upsertMealLog(customerGid, meal, options = {}) {
   await saveDailyLogsMetafield(customerGid, logs);
 }
 
-// Upsert risk info (risk_level, risk_flag, risk_notes) into TODAY'S log
-async function upsertRiskInfo(customerGid, risk) {
-  if (!customerGid || !risk) return;
-
-  const { logs } = await getDailyLogsMetafield(customerGid);
-
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-  const idx = logs.findIndex(entry => entry && entry.date === today);
-
-  const risk_level = risk.risk_level || "green";
-  const risk_flag = risk.risk_flag || "NONE";
-  const risk_notes = risk.risk_notes || "";
-
-  if (idx >= 0) {
-    const existing = logs[idx] || {};
-    logs[idx] = {
-      ...existing,
-      date: today,
-      risk_level,
-      risk_flag,
-      risk_notes
-    };
-  } else {
-    logs.push({
-      date: today,
-      weight: null,
-      calories: null,
-      total_calories: null,
-      steps: null,
-      meals: [],
-      mood: null,
-      struggle: null,
-      coach_focus: null,
-      risk_level,
-      risk_flag,
-      risk_notes
-    });
-  }
-
-  await saveDailyLogsMetafield(customerGid, logs);
-}
-
 /* ==========================================
    MEAL OVERRIDE DETECTOR ("change breakfast")
    ========================================== */
@@ -1085,45 +941,46 @@ function detectMealOverride(userMsg) {
   if (!userMsg || typeof userMsg !== "string") return null;
   const text = userMsg.toLowerCase();
 
-  const mealTypes = {
-    breakfast: ["breakfast", "bfast"],
-    lunch: ["lunch"],
-    dinner: ["dinner", "supper"],
-    snacks: ["snack", "snacks", "dessert"]
-  };
+  // Handles:
+  // "change breakfast to..."
+  // "change my lunch to..."
+  // "swap dinner for..."
+  // "edit my snacks to..."
+  // "make dinner 2 slices of pizza"
+  const pattern = /(change|replace|swap|edit|make)\s+(?:my\s+)?(breakfast|bfast|lunch|dinner|supper|snack|snacks|dessert)\b/i;
+  const match = text.match(pattern);
+  if (!match) return null;
 
-  for (const [mealType, triggers] of Object.entries(mealTypes)) {
-    for (const trig of triggers) {
-      if (
-        text.includes("change " + trig) ||
-        text.includes("replace " + trig) ||
-        text.includes("swap " + trig) ||
-        text.includes("edit " + trig) ||
-        text.includes("make " + trig)
-      ) {
-        // Strip the verbs + trigger to get the new description
-        let itemText = userMsg;
-        itemText = itemText.replace(/change|replace|swap|edit|make/i, "");
-        const regexTrig = new RegExp(trig, "i");
-        itemText = itemText.replace(regexTrig, "");
-        itemText = itemText.replace(/\b(to|with|for)\b/i, "");
-        itemText = itemText.trim().replace(/^[:\-–]/, "").trim();
-
-        if (itemText.length > 0) {
-          return {
-            meal_type: mealType,
-            items: [itemText],
-            calories: null,
-            protein: null,
-            carbs: null,
-            fat: null
-          };
-        }
-      }
-    }
+  const mealWord = match[2];
+  let mealType = "other";
+  if (mealWord === "breakfast" || mealWord === "bfast") {
+    mealType = "breakfast";
+  } else if (mealWord === "lunch") {
+    mealType = "lunch";
+  } else if (mealWord === "dinner" || mealWord === "supper") {
+    mealType = "dinner";
+  } else if (mealWord === "snack" || mealWord === "snacks" || mealWord === "dessert") {
+    mealType = "snacks";
   }
 
-  return null;
+  // Grab everything AFTER the matched phrase from the ORIGINAL message
+  const descStart = match.index + match[0].length;
+  let itemText = userMsg.slice(descStart);
+
+  // Strip leading "to / with / for" and punctuation
+  itemText = itemText.replace(/^\s*(to|with|for)\b/i, "");
+  itemText = itemText.trim().replace(/^[:\-–]/, "").trim();
+
+  if (!itemText || !itemText.length) return null;
+
+  return {
+    meal_type: mealType,
+    items: [itemText],
+    calories: null,
+    protein: null,
+    carbs: null,
+    fat: null
+  };
 }
 
 export default async function handler(req, res) {
@@ -1239,7 +1096,7 @@ export default async function handler(req, res) {
     }
   }
 
-  // Detect "change breakfast/lunch/dinner" style overrides
+  // Detect "change breakfast/lunch/dinner/snacks" style overrides
   const overrideMeal = detectMealOverride(userMessage);
   if (overrideMeal) {
     debug.mealOverrideDetected = overrideMeal;
@@ -1386,9 +1243,11 @@ export default async function handler(req, res) {
         debug.mealLogsSample = mealLogs.slice(0, 2);
         try {
           for (const meal of mealLogs) {
-            await upsertMealLog(customerGid, meal, {
-              overrideMealType: overrideMeal ? overrideMeal.meal_type : null
-            });
+            await upsertMealLog(
+              customerGid,
+              meal,
+              overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
+            );
           }
           debug.mealLogsSavedToDailyLogs = true;
         } catch (e) {
@@ -1401,29 +1260,9 @@ export default async function handler(req, res) {
       }
     }
 
-    // === Extract risk flag JSON (if any) and upsert it ===
-    const riskObj = extractRiskFlagJson(rawReply);
-    if (riskObj) {
-      debug.riskFlagJsonFound = true;
-      debug.riskFlagJson = riskObj;
-      if (customerGid) {
-        try {
-          await upsertRiskInfo(customerGid, riskObj);
-          debug.riskFlagSavedToDailyLogs = true;
-        } catch (e) {
-          console.error("Error saving risk info from chat", e);
-          debug.riskFlagSavedToDailyLogs = false;
-          debug.riskFlagSaveError = String(e?.message || e);
-        }
-      }
-    } else {
-      debug.riskFlagJsonFound = false;
-    }
-
     // Strip hidden blocks from visible reply
     let cleanedReply = stripCoachPlanBlock(rawReply);
     cleanedReply = cleanedReply.replace(/\[\[MEAL_LOG_JSON[\s\S]*?\]\]/g, "").trim();
-    cleanedReply = stripRiskFlagBlock(cleanedReply);
 
     res.status(200).json({ reply: cleanedReply, debug });
   } catch (e) {
