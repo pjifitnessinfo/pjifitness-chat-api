@@ -436,7 +436,7 @@ function extractCoachPlanJson(text) {
 }
 
 // Fallback: try to pull calories / protein / fat out of the text bullets
-// ONLY used while onboarding_complete is false/missing
+// We only SAVE a text-based plan the first time (before onboarding_complete is true).
 function extractPlanFromText(text) {
   if (!text) return null;
 
@@ -516,6 +516,7 @@ async function resolveCustomerGidFromBody(body) {
 
 // Save plan into:
 // - custom.coach_plan (JSON, full plan including weekly_loss_low/high, etc.)
+// - custom.plan_json  (JSON clone, for projection card)
 // - custom.start_weight (number_decimal)
 // - custom.goal_weight  (number_decimal)
 // - custom.onboarding_complete (boolean true)
@@ -567,6 +568,7 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
 
   // TYPES HERE MUST MATCH YOUR CUSTOMER METAFIELD DEFINITIONS:
   // - coach_plan: JSON
+  // - plan_json:  JSON
   // - onboarding_complete: Boolean (True or false)
   // - start_weight: Number (Decimal)
   // - goal_weight:  Number (Decimal)
@@ -575,6 +577,13 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
       ownerId,
       namespace: "custom",
       key: "coach_plan",
+      type: "json",
+      value: JSON.stringify(coachPlan)
+    },
+    {
+      ownerId,
+      namespace: "custom",
+      key: "plan_json",
       type: "json",
       value: JSON.stringify(coachPlan)
     },
@@ -1070,20 +1079,50 @@ export default async function handler(req, res) {
     debug.modelReplyTruncated = !data.choices?.[0]?.message?.content;
 
     // === Find a plan (JSON block first, then safe fallback) ===
-    let planJson = extractCoachPlanJson(rawReply);
-    debug.planBlockFound = !!planJson;
+    let planJson = null;
+    let planSource = null;
 
-    // If we didn't get the JSON block, and onboarding isn't complete yet,
-    // try the text-based fallback.
-    if (!planJson && (onboardingComplete === false || onboardingComplete === null)) {
-      planJson = extractPlanFromText(rawReply);
-      debug.planFromText = !!planJson;
+    const blockPlan = extractCoachPlanJson(rawReply);
+    debug.planBlockFound = !!blockPlan;
+    if (blockPlan) {
+      planJson = blockPlan;
+      planSource = "block";
     }
 
-    // Only save the plan when onboarding is not complete yet
+    if (!planJson) {
+      const textPlan = extractPlanFromText(rawReply);
+      debug.planFromText = !!textPlan;
+      if (textPlan) {
+        planJson = textPlan;
+        planSource = "text";
+      }
+    }
+
+    // Decide if we should save the plan to Shopify
     if (planJson) {
       debug.planJson = planJson;
-      if (customerGid && (onboardingComplete === false || onboardingComplete === null)) {
+      debug.planSource = planSource;
+
+      let shouldSave = false;
+      let skipReason = null;
+
+      if (!customerGid) {
+        shouldSave = false;
+        skipReason = "no_customer_id";
+      } else if (planSource === "block") {
+        // Always save COACH_PLAN_JSON blocks, even if onboarding_complete is already true.
+        shouldSave = true;
+      } else {
+        // Text fallback: only save when onboarding isn't complete yet.
+        if (onboardingComplete === false || onboardingComplete === null) {
+          shouldSave = true;
+        } else {
+          shouldSave = false;
+          skipReason = "onboarding_already_complete_text_plan";
+        }
+      }
+
+      if (shouldSave) {
         try {
           await saveCoachPlanForCustomer(customerGid, planJson);
           debug.planSavedToShopify = true;
@@ -1094,9 +1133,7 @@ export default async function handler(req, res) {
         }
       } else {
         debug.planSavedToShopify = false;
-        debug.planSaveSkippedReason = !customerGid
-          ? "no_customer_id"
-          : "onboarding_already_complete";
+        debug.planSaveSkippedReason = skipReason;
       }
     }
 
