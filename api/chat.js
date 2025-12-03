@@ -708,8 +708,9 @@ async function getDailyLogsMetafield(customerGid) {
 // Save daily_logs metafield back to Shopify
 async function saveDailyLogsMetafield(customerGid, logs) {
   if (!customerGid) return;
+
   const mutation = `
-    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!] {
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
       metafieldsSet(metafields: $metafields) {
         metafields {
           id
@@ -725,6 +726,7 @@ async function saveDailyLogsMetafield(customerGid, logs) {
       }
     }
   `;
+
   const variables = {
     metafields: [
       {
@@ -736,13 +738,15 @@ async function saveDailyLogsMetafield(customerGid, logs) {
       }
     ]
   };
+
   const data = await shopifyGraphQL(mutation, variables);
-  const userErrors = data?.metafieldsSet?.userErrors || [];
+  const userErrors = (data && data.metafieldsSet && data.metafieldsSet.userErrors) || [];
   if (userErrors.length) {
     console.error("metafieldsSet userErrors (daily_logs):", userErrors);
     throw new Error("Shopify userErrors when saving daily_logs");
   }
 }
+
 
 // Upsert today's total_calories into daily_logs (JSON array)
 async function upsertDailyTotalCalories(customerGid, totalCalories) {
