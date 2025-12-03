@@ -517,9 +517,10 @@ async function resolveCustomerGidFromBody(body) {
 // Save plan into:
 // - custom.coach_plan (TEXT containing JSON)
 // - custom.plan_json  (TEXT clone, for projection card)
-// - custom.start_weight (number_decimal)
-// - custom.goal_weight  (number_decimal)
-// - custom.onboarding_complete (TEXT "true")
+// - custom.start_weight (number_decimal; value as string)
+// - custom.goal_weight  (number_decimal; value as string)
+// - custom.onboarding_complete ("true" as TEXT)
+// We do NOT send "type" so Shopify uses existing metafield definitions.
 async function saveCoachPlanForCustomer(customerGid, planJson) {
   if (!customerGid || !planJson) return;
 
@@ -566,32 +567,26 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
     }
   `;
 
-  // TYPES HERE MUST MATCH YOUR CUSTOMER METAFIELD DEFINITIONS:
-  // - coach_plan: single_line_text_field
-  // - plan_json:  single_line_text_field
-  // - onboarding_complete: single_line_text_field ("true")
-  // - start_weight: Number (Decimal)
-  // - goal_weight:  Number (Decimal)
+  // IMPORTANT:
+  // We do NOT specify "type" here, so Shopify will use the existing
+  // metafield definitions you created in the Admin.
   const metafields = [
     {
       ownerId,
       namespace: "custom",
       key: "coach_plan",
-      type: "single_line_text_field",
       value: JSON.stringify(coachPlan)
     },
     {
       ownerId,
       namespace: "custom",
       key: "plan_json",
-      type: "single_line_text_field",
       value: JSON.stringify(coachPlan)
     },
     {
       ownerId,
       namespace: "custom",
       key: "onboarding_complete",
-      type: "single_line_text_field",
       value: "true"
     }
   ];
@@ -601,7 +596,6 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
       ownerId,
       namespace: "custom",
       key: "start_weight",
-      type: "number_decimal",
       value: String(startWeight)
     });
   }
@@ -611,7 +605,6 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
       ownerId,
       namespace: "custom",
       key: "goal_weight",
-      type: "number_decimal",
       value: String(goalWeight)
     });
   }
@@ -777,7 +770,7 @@ function extractMealLogsFromText(text) {
 async function saveDailyLogsMetafield(customerGid, logs) {
   if (!customerGid) return;
   const mutation = `
-    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!] {
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
       metafieldsSet(metafields: $metafields) {
         metafields {
           id
@@ -1133,7 +1126,7 @@ export default async function handler(req, res) {
         }
       } else {
         debug.planSavedToShopify = false;
-        debug.planSaveSkippedReason = skipReason;
+        debug.planSavedToShopifySkippedReason = skipReason;
       }
     }
 
