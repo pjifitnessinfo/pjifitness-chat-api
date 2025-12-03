@@ -808,14 +808,15 @@ function extractMealLogsFromText(text) {
   return results;
 }
 
-// Upsert a single meal (with calories + macros) into the correct day's log
+// Upsert a single meal (with calories + macros) into TODAY'S log
 async function upsertMealLog(customerGid, meal) {
   if (!customerGid || !meal) return;
 
   const { logs } = await getDailyLogsMetafield(customerGid);
 
-  const date = meal.date || new Date().toISOString().slice(0, 10);
-  const cleanDate = String(date).slice(0, 10);
+  // IMPORTANT: always use "today" for saving meals, ignore meal.date
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const cleanDate = today;
 
   const idx = logs.findIndex(entry => entry && entry.date === cleanDate);
 
@@ -835,7 +836,7 @@ async function upsertMealLog(customerGid, meal) {
   }
 
   if (idx >= 0) {
-    // Update existing log for that date
+    // Update existing log for today
     const existing = logs[idx] || {};
     const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
     const newMeal = {
@@ -848,7 +849,7 @@ async function upsertMealLog(customerGid, meal) {
     };
     const updatedMeals = existingMeals.concat([newMeal]);
 
-    // Recompute totals from all meals
+    // Recompute totals from all meals for TODAY
     let sumCals = 0, sumP = 0, sumC = 0, sumF = 0;
     updatedMeals.forEach(m => {
       sumCals += Number(m.calories) || 0;
@@ -869,7 +870,7 @@ async function upsertMealLog(customerGid, meal) {
       coach_focus: existing.coach_focus || "Meals logged from chat."
     };
   } else {
-    // Create new log for that date
+    // Create new log for today
     const newMeals = [{
       meal_type: mealType,
       items,
@@ -897,6 +898,7 @@ async function upsertMealLog(customerGid, meal) {
 
   await saveDailyLogsMetafield(customerGid, logs);
 }
+
 
 export default async function handler(req, res) {
   // ---- CORS handling ----
