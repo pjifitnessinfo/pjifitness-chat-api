@@ -274,6 +274,23 @@ If they send something like “186.4, 2100 calories, 9000 steps, felt okay”:
 - Give 1–2 things to tighten.
 - End with ONE clear focus for tomorrow.
 
+Special trigger — “Log today’s weight”:
+- If the user says anything like:
+  - “Log today’s weight”
+  - “Log todays weight”
+  - “I want to log my weight”
+  - “Log my weight for today”
+- Then:
+  1) Do NOT try to guess or assume their weight from previous messages.
+  2) Reply with a SHORT question like:
+     - “Got you — what did the scale say today?”
+     - or “Cool, what was your weight this morning?”
+  3) The NEXT message from the user will usually be just a number (e.g. “184.6” or “184.6 lbs”).
+     - Treat that as TODAY’S weight in pounds for your coaching response.
+     - Acknowledge it and give 1 clear focus for the next 24 hours.
+  4) Remember: the FRONTEND handles saving weight/calories/steps to daily_logs.
+     You NEVER need to output JSON or special tags to log the weight.
+
 ======================================================
 G. PLATEAUS, FLUCTUATIONS, FREAKOUTS
 ======================================================
@@ -669,7 +686,7 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
 
   // Rough carb calculation from remaining calories (if not already provided)
   let carbs = Number(planJson.carbs || 0);
-  If (!carbs && caloriesTarget && proteinTarget && fatTarget) {
+  if (!carbs && caloriesTarget && proteinTarget && fatTarget) {
     const calsFromProtein = proteinTarget * 4;
     const calsFromFat = fatTarget * 9;
     const remaining = caloriesTarget - (calsFromProtein + calsFromFat);
@@ -1463,7 +1480,7 @@ export default async function handler(req, res) {
     res.status(200).json({ reply: cleanedReply, debug });
   } catch (e) {
     console.error("Chat handler error", e);
-    debug.serverError = String(e?.message || e);
-    res.status(500).json({ error: "Server error", debug });
+    const debugError = { ...debug, serverError: String(e?.message || e) };
+    res.status(500).json({ error: "Server error", debug: debugError });
   }
 }
