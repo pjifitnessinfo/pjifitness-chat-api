@@ -692,6 +692,54 @@ function extractDailyReviewFromText(text) {
   }
 }
 
+// NEW: Try to grab calories from the coach reply text
+function parseCaloriesFromReplyText(text) {
+  if (!text || typeof text !== "string") return null;
+  const m = text.match(/(\d{2,4})\s*(?:calories|cals?|kcals?)/i);
+  if (m && m[1]) {
+    const n = Number(m[1]);
+    if (n > 0 && n < 6000) return n;
+  }
+  return null;
+}
+
+// NEW: Try to grab protein from the coach reply text
+function parseProteinFromReplyText(text) {
+  if (!text || typeof text !== "string") return null;
+  const m = text.match(/(\d{1,3})\s*(?:g|grams?)\s*protein/i);
+  if (m && m[1]) {
+    const n = Number(m[1]);
+    if (n > 0 && n < 300) return n;
+  }
+  return null;
+}
+
+// NEW: Detect simple "log this as dinner: ..." style messages from the user
+function detectSimpleMealFromUser(userMsg) {
+  if (!userMsg || typeof userMsg !== "string") return null;
+
+  // e.g. "Log this as dinner: 6oz grilled chicken, 1 cup rice, some veggies."
+  const pattern = /log\s+this\s+as\s+(breakfast|lunch|dinner|snack|snacks)\s*[:\-]?\s*(.*)$/i;
+  const m = userMsg.match(pattern);
+  if (!m) return null;
+
+  const mealType = normalizeMealType(m[1]);
+  let desc = m[2] || "";
+
+  // Clean up trailing punctuation / quotes
+  desc = desc.trim()
+    .replace(/^[“"']/g, "")
+    .replace(/[”"'.,!?]+$/g, "")
+    .trim();
+
+  if (!desc) return null;
+
+  return {
+    meal_type: mealType,
+    items: [desc]
+  };
+}
+
 // Upsert a single meal (with calories + macros) into TODAY'S log
 // If options.replaceMealType is set and matches this meal_type,
 // we REMOVE any existing meals of that type for today (true override).
@@ -1123,9 +1171,12 @@ export default async function handler(req, res) {
       }
     }
 
+    // === Extract meal logs (if any) and upsert them (with fallback) ===
     if (customerGid) {
       const mealLogs = extractMealLogsFromText(rawReply);
+
       if (mealLogs && mealLogs.length) {
+        // Normal path: model followed instructions and gave MEAL_LOG_JSON
         debug.mealLogsFound = mealLogs.length;
         debug.mealLogsSample = mealLogs.slice(0, 2);
         try {
@@ -1143,7 +1194,39 @@ export default async function handler(req, res) {
           debug.mealLogsSaveError = String(e?.message || e);
         }
       } else {
+        // No MEAL_LOG_JSON found — try a fallback if the user clearly said "log this as ..."
         debug.mealLogsFound = 0;
+
+        const simpleMeal = detectSimpleMealFromUser(userMessage);
+        if (simpleMeal) {
+          const cal = parseCaloriesFromReplyText(rawReply);
+          const prot = parseProteinFromReplyText(rawReply);
+
+          const fallbackMeal = {
+            date: new Date().toISOString().slice(0, 10), // today YYYY-MM-DD
+            meal_type: simpleMeal.meal_type,
+            items: simpleMeal.items,
+            calories: cal || 0,
+            protein: prot || 0,
+            carbs: 0,
+            fat: 0
+          };
+
+          debug.mealLogsFallbackConstructed = fallbackMeal;
+
+          try {
+            await upsertMealLog(
+              customerGid,
+              fallbackMeal,
+              overrideMeal ? { replaceMealType: fallbackMeal.meal_type } : {}
+            );
+            debug.mealLogsSavedToDailyLogs = true;
+          } catch (e) {
+            console.error("Error saving fallback meal log from chat", e);
+            debug.mealLogsSavedToDailyLogs = false;
+            debug.mealLogsSaveError = String(e?.message || e);
+          }
+        }
       }
     }
 
