@@ -1089,37 +1089,42 @@ function detectMealOverride(userMsg) {
 }
 
 export default async function handler(req, res) {
- // ===== CORS FOR PJIFITNESS =====
-const origin = req.headers.origin || "";
+  // ===== CORS FOR PJIFITNESS =====
+  const origin = req.headers.origin || "";
 
-const ALLOWED_ORIGINS = [
-  "https://www.pjifitness.com",
-  "https://pjifitness.com",
-  "https://pjifitness.myshopify.com"
-];
+  const ALLOWED_ORIGINS = [
+    "https://www.pjifitness.com",
+    "https://pjifitness.com",
+    "https://pjifitness.myshopify.com"
+  ];
 
-if (ALLOWED_ORIGINS.includes(origin)) {
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-} else {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    // browser calls
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  } else {
+    // tools like Postman/curl
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
+
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    req.headers["access-control-request-headers"] ||
+      "Content-Type, Authorization, X-Requested-With, Accept"
+  );
+
+  // Preflight
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+  // ===== END CORS =====
+
+  // 👉 keep the rest of your existing /api/chat.js code below this line
+  // ...
 }
-
-res.setHeader("Vary", "Origin");
-res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-
-res.setHeader(
-  "Access-Control-Allow-Headers",
-  req.headers["access-control-request-headers"] ||
-    "Content-Type, Authorization, X-Requested-With, Accept"
-);
-
-// Handle preflight
-if (req.method === "OPTIONS") {
-  res.status(200).end();
-  return;
-}
-// ===== END CORS =====
 
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
