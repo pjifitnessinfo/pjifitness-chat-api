@@ -1089,43 +1089,22 @@ function detectMealOverride(userMsg) {
 }
 
 export default async function handler(req, res) {
-  // ----- CORS SETUP (works for Shopify + your domain) -----
-  const origin = req.headers.origin || "";
-
-  const ALLOWED_ORIGINS = [
-    "https://pjifitness.com",
-    "https://www.pjifitness.com",
-    "https://pjifitness.myshopify.com"
-  ];
-
-  if (origin && ALLOWED_ORIGINS.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    // while testing you can leave this as "*"
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  }
-
-  // let caches / browsers know response varies by Origin
-  res.setHeader("Vary", "Origin");
-
-  // allow typical methods
+  // ===== ULTRA-SIMPLE CORS (for debugging) =====
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-
-  // VERY IMPORTANT: allow all headers Shopify / your JS might send
+  // allow whatever headers the browser asks for
+  const reqHeaders = req.headers["access-control-request-headers"];
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Requested-With, X-Shopify-Storefront-Access-Token, Accept"
+    reqHeaders || "Content-Type, Authorization, X-Requested-With, Accept"
   );
-
-  // you can keep this true even if you aren’t using credentials yet
   res.setHeader("Access-Control-Allow-Credentials", "true");
 
-  // Handle preflight
   if (req.method === "OPTIONS") {
     res.status(200).end();
     return;
   }
-  // ----- END CORS -----
+  // ===== END CORS =====
 
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
@@ -1158,17 +1137,14 @@ export default async function handler(req, res) {
     return;
   }
 
-  // Resolve customer GID (from id or email)
   const customerGid = await resolveCustomerGidFromBody(body);
   const customerNumericId = customerGid
     ? String(customerGid).replace("gid://shopify/Customer/", "")
     : null;
 
-  // --- Debug scaffold ---
   let shopifyMetafieldReadStatus = "not_attempted";
-  let onboardingComplete = null; // null = unknown / not fetched
+  let onboardingComplete = null;
 
-  // --- Read onboarding_complete metafield (if possible) ---
   if (customerGid) {
     try {
       shopifyMetafieldReadStatus = "fetching";
@@ -1184,7 +1160,6 @@ export default async function handler(req, res) {
         `,
         { id: customerGid }
       );
-
       const val = data?.customer?.metafield?.value;
       if (typeof val === "string") {
         onboardingComplete = val === "true";
@@ -1212,7 +1187,6 @@ export default async function handler(req, res) {
     model: "gpt-4.1-mini"
   };
 
-  // Parse daily total calories from message
   if (customerGid && userMessage) {
     const parsedDailyCals = parseDailyCaloriesFromMessage(userMessage);
     if (parsedDailyCals) {
@@ -1257,7 +1231,6 @@ export default async function handler(req, res) {
       if (m.role === "user") role = "user";
       else if (m.role === "coach") role = "assistant";
       else continue;
-
       messages.push({ role, content: m.text });
     }
   }
@@ -1355,7 +1328,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // === Extract meal logs (if any) and upsert them (with fallback) ===
     if (customerGid) {
       const mealLogs = extractMealLogsFromText(rawReply);
 
