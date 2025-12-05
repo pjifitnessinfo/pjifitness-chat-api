@@ -83,6 +83,39 @@ function sanitizeLog(raw) {
  * Default export – Vercel API Route
  */
 export default async function handler(req, res) {
+  // ===== CORS FOR PJIFITNESS =====
+  const origin = req.headers.origin || "";
+
+  const ALLOWED_ORIGINS = [
+    "https://www.pjifitness.com",
+    "https://pjifitness.com",
+    "https://pjifitness.myshopify.com"
+  ];
+
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    // browser calls
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  } else {
+    // tools like Postman/curl
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
+
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    req.headers["access-control-request-headers"] ||
+      "Content-Type, Authorization, X-Requested-With, Accept"
+  );
+
+  // Preflight
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+  // ===== END CORS =====
+
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).json({ error: "Method not allowed" });
