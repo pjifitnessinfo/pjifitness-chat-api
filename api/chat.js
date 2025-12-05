@@ -211,7 +211,8 @@ Explain:
 D. ONE-TIME "DIET & SCALE 101" MESSAGE AFTER PLAN
 ======================================================
 
-[... SYSTEM_PROMPT continues unchanged ...]
+[You can keep your existing long education text here if you had it before]
+
 `;
 
 // --- Helper: Shopify GraphQL client (for metafields) ---
@@ -703,6 +704,17 @@ function parseCaloriesFromReplyText(text) {
   return null;
 }
 
+// 🔥 NEW: Try to grab calories from the USER message text
+function parseCaloriesFromUserText(text) {
+  if (!text || typeof text !== "string") return null;
+  const m = text.match(/(\d{2,4})\s*(?:cal(?:ories|s|)?|kcals?)/i);
+  if (m && m[1]) {
+    const n = Number(m[1]);
+    if (n > 0 && n < 6000) return n;
+  }
+  return null;
+}
+
 // NEW: Try to grab protein from the coach reply text
 function parseProteinFromReplyText(text) {
   if (!text || typeof text !== "string") return null;
@@ -714,30 +726,89 @@ function parseProteinFromReplyText(text) {
   return null;
 }
 
-// NEW: Detect simple "log this as dinner: ..." style messages from the user
+// 🔥 NEW: Detect simple meal logging phrases from the user, like:
+// - "Log this as dinner: 6oz grilled chicken, 1 cup rice, some veggies."
+// - "I had 1 Muscle Milk shake at 160 calories"
+// - "I ate a turkey sandwich for lunch, about 450 cals"
 function detectSimpleMealFromUser(userMsg) {
   if (!userMsg || typeof userMsg !== "string") return null;
 
-  // e.g. "Log this as dinner: 6oz grilled chicken, 1 cup rice, some veggies."
-  const pattern = /log\s+this\s+as\s+(breakfast|lunch|dinner|snack|snacks)\s*[:\-]?\s*(.*)$/i;
-  const m = userMsg.match(pattern);
-  if (!m) return null;
+  const original = userMsg;
+  const text = userMsg.toLowerCase();
 
-  const mealType = normalizeMealType(m[1]);
-  let desc = m[2] || "";
+  // Pattern 1: "log this as dinner: ..."
+  let m = text.match(/log\s+this\s+as\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*[:\-]?\s*(.*)$/i);
+  if (m) {
+    const mealType = normalizeMealType(m[1]);
+    const descLower = m[2] || "";
+    const startIndex = text.indexOf(descLower);
+    let desc = descLower;
+    if (startIndex !== -1) {
+      desc = original.substring(startIndex, startIndex + descLower.length);
+    }
+    desc = (desc || "").trim()
+      .replace(/^[“"']/g, "")
+      .replace(/[”"'.,!?]+$/g, "")
+      .trim();
 
-  // Clean up trailing punctuation / quotes
-  desc = desc.trim()
-    .replace(/^[“"']/g, "")
-    .replace(/[”"'.,!?]+$/g, "")
-    .trim();
+    if (!desc) return null;
 
-  if (!desc) return null;
+    return {
+      meal_type: mealType,
+      items: [desc]
+    };
+  }
 
-  return {
-    meal_type: mealType,
-    items: [desc]
-  };
+  // Pattern 2: "I had ... for breakfast/lunch/dinner/snack"
+  m = text.match(/i\s+(?:had|ate)\s+(.*)\s+for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b/i);
+  if (m) {
+    const descLower = m[1] || "";
+    const mealTypeWord = m[2];
+    const mealType = normalizeMealType(mealTypeWord);
+
+    const startIndex = text.indexOf(descLower);
+    let desc = descLower;
+    if (startIndex !== -1) {
+      desc = original.substring(startIndex, startIndex + descLower.length);
+    }
+
+    desc = (desc || "").trim()
+      .replace(/^[“"']/g, "")
+      .replace(/[”"'.,!?]+$/g, "")
+      .trim();
+
+    if (!desc) return null;
+
+    return {
+      meal_type: mealType,
+      items: [desc]
+    };
+  }
+
+  // Pattern 3: "I had ..." (no explicit meal type, treat as snack)
+  m = text.match(/i\s+(?:had|ate)\s+(.*)$/i);
+  if (m) {
+    const descLower = m[1] || "";
+    const startIndex = text.indexOf(descLower);
+    let desc = descLower;
+    if (startIndex !== -1) {
+      desc = original.substring(startIndex, startIndex + descLower.length);
+    }
+
+    desc = (desc || "").trim()
+      .replace(/^[“"']/g, "")
+      .replace(/[”"'.,!?]+$/g, "")
+      .trim();
+
+    if (!desc) return null;
+
+    return {
+      meal_type: "snacks",
+      items: [desc]
+    };
+  }
+
+  return null;
 }
 
 // Upsert a single meal (with calories + macros) into TODAY'S log
@@ -1194,20 +1265,25 @@ export default async function handler(req, res) {
           debug.mealLogsSaveError = String(e?.message || e);
         }
       } else {
-        // No MEAL_LOG_JSON found — try a fallback if the user clearly said "log this as ..."
+        // No MEAL_LOG_JSON found — try a fallback for simple "I had..." style messages
         debug.mealLogsFound = 0;
 
         const simpleMeal = detectSimpleMealFromUser(userMessage);
         if (simpleMeal) {
-          const cal = parseCaloriesFromReplyText(rawReply);
-          const prot = parseProteinFromReplyText(rawReply);
+          // 1) Prefer calories from the USER message (e.g. "160 calories")
+          const calFromUser = parseCaloriesFromUserText(userMessage);
+          // 2) Fallback: try to pull calories from the coach reply if it repeats them
+          const calFromReply = parseCaloriesFromReplyText(rawReply);
+          const cal = calFromUser || calFromReply || 0;
+
+          const prot = parseProteinFromReplyText(rawReply) || 0;
 
           const fallbackMeal = {
             date: new Date().toISOString().slice(0, 10), // today YYYY-MM-DD
             meal_type: simpleMeal.meal_type,
             items: simpleMeal.items,
-            calories: cal || 0,
-            protein: prot || 0,
+            calories: cal,
+            protein: prot,
             carbs: 0,
             fat: 0
           };
@@ -1221,6 +1297,7 @@ export default async function handler(req, res) {
               overrideMeal ? { replaceMealType: fallbackMeal.meal_type } : {}
             );
             debug.mealLogsSavedToDailyLogs = true;
+            debug.mealLogsFound = 1; // reflect that we successfully logged a meal via fallback
           } catch (e) {
             console.error("Error saving fallback meal log from chat", e);
             debug.mealLogsSavedToDailyLogs = false;
