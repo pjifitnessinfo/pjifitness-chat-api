@@ -1089,31 +1089,30 @@ function detectMealOverride(userMsg) {
 }
 
 export default async function handler(req, res) {
-  // ===== CORS =====
+  // ===== CORS FOR PJIFITNESS =====
   const origin = req.headers.origin || "";
 
   const ALLOWED_ORIGINS = [
-    "https://pjifitness.com",
     "https://www.pjifitness.com",
+    "https://pjifitness.com",
     "https://pjifitness.myshopify.com"
   ];
 
-  if (origin && ALLOWED_ORIGINS.includes(origin)) {
-    // Echo back the real origin (allowed)
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    // for browsers with credentials, echo the real origin
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
   } else {
-    // Fallback for testing / tools (no cookies)
+    // for tools like Postman/curl
     res.setHeader("Access-Control-Allow-Origin", "*");
   }
 
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-
-  const reqHeaders = req.headers["access-control-request-headers"];
   res.setHeader(
     "Access-Control-Allow-Headers",
-    reqHeaders || "Content-Type, Authorization, X-Requested-With, Accept"
+    req.headers["access-control-request-headers"] ||
+      "Content-Type, Authorization, X-Requested-With, Accept"
   );
 
   if (req.method === "OPTIONS") {
