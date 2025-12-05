@@ -1089,17 +1089,43 @@ function detectMealOverride(userMsg) {
 }
 
 export default async function handler(req, res) {
-  // ---- CORS handling ----
-  if (req.method === "OPTIONS") {
+  // ----- CORS SETUP (works for Shopify + your domain) -----
+  const origin = req.headers.origin || "";
+
+  const ALLOWED_ORIGINS = [
+    "https://pjifitness.com",
+    "https://www.pjifitness.com",
+    "https://pjifitness.myshopify.com"
+  ];
+
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  } else {
+    // while testing you can leave this as "*"
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  }
+
+  // let caches / browsers know response varies by Origin
+  res.setHeader("Vary", "Origin");
+
+  // allow typical methods
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+
+  // VERY IMPORTANT: allow all headers Shopify / your JS might send
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With, X-Shopify-Storefront-Access-Token, Accept"
+  );
+
+  // you can keep this true even if you aren’t using credentials yet
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+
+  // Handle preflight
+  if (req.method === "OPTIONS") {
     res.status(200).end();
     return;
   }
-
-  // Allow browser calls from Shopify
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  // ----- END CORS -----
 
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
@@ -1116,7 +1142,10 @@ export default async function handler(req, res) {
     body = await parseBody(req);
   } catch (e) {
     console.error("Error parsing body", e);
-    res.status(400).json({ error: "Invalid request body", debug: { parseError: String(e?.message || e) } });
+    res.status(400).json({
+      error: "Invalid request body",
+      debug: { parseError: String(e?.message || e) }
+    });
     return;
   }
 
@@ -1158,7 +1187,7 @@ export default async function handler(req, res) {
 
       const val = data?.customer?.metafield?.value;
       if (typeof val === "string") {
-        onboardingComplete = (val === "true");
+        onboardingComplete = val === "true";
         shopifyMetafieldReadStatus = "success";
       } else {
         shopifyMetafieldReadStatus = "no_metafield";
@@ -1244,7 +1273,7 @@ export default async function handler(req, res) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${OPENAI_API_KEY}`
+        Authorization: `Bearer ${OPENAI_API_KEY}`
       },
       body: JSON.stringify({
         model: "gpt-4.1-mini",
@@ -1331,7 +1360,6 @@ export default async function handler(req, res) {
       const mealLogs = extractMealLogsFromText(rawReply);
 
       if (mealLogs && mealLogs.length) {
-        // Normal path: model followed instructions and gave MEAL_LOG_JSON
         debug.mealLogsFound = mealLogs.length;
         debug.mealLogsSample = mealLogs.slice(0, 2);
         try {
@@ -1349,21 +1377,18 @@ export default async function handler(req, res) {
           debug.mealLogsSaveError = String(e?.message || e);
         }
       } else {
-        // No MEAL_LOG_JSON found — try a fallback for simple "I had..." style messages
         debug.mealLogsFound = 0;
 
         const simpleMeal = detectSimpleMealFromUser(userMessage);
         if (simpleMeal) {
-          // 1) Prefer calories from the USER message (e.g. "160 calories")
           const calFromUser = parseCaloriesFromUserText(userMessage);
-          // 2) Fallback: try to pull calories from the coach reply if it repeats them
           const calFromReply = parseCaloriesFromReplyText(rawReply);
           const cal = calFromUser || calFromReply || 0;
 
           const prot = parseProteinFromReplyText(rawReply) || 0;
 
           const fallbackMeal = {
-            date: new Date().toISOString().slice(0, 10), // today YYYY-MM-DD
+            date: new Date().toISOString().slice(0, 10),
             meal_type: simpleMeal.meal_type,
             items: simpleMeal.items,
             calories: cal,
@@ -1381,7 +1406,7 @@ export default async function handler(req, res) {
               overrideMeal ? { replaceMealType: fallbackMeal.meal_type } : {}
             );
             debug.mealLogsSavedToDailyLogs = true;
-            debug.mealLogsFound = 1; // reflect that we successfully logged a meal via fallback
+            debug.mealLogsFound = 1;
           } catch (e) {
             console.error("Error saving fallback meal log from chat", e);
             debug.mealLogsSavedToDailyLogs = false;
