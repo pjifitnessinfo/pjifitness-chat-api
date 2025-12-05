@@ -263,7 +263,7 @@ When the user describes food and clearly wants it LOGGED (examples: “log this 
 If the user does NOT specify a meal type:
 - Treat it as "Snacks" by default.
 
-If the system message `USER_REQUEST_OVERRIDE_MEAL` is present (e.g., “change my breakfast to…”):
+If the system message \`USER_REQUEST_OVERRIDE_MEAL\` is present (e.g., “change my breakfast to…”):
 - Still output the normal VISIBLE reply + MEAL_LOG_JSON as above.
 - The backend will handle replacing the existing meal of that type.
 
@@ -1122,10 +1122,6 @@ export default async function handler(req, res) {
   }
   // ===== END CORS =====
 
-  // 👉 keep the rest of your existing /api/chat.js code below this line
-  // ...
-}
-
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -1207,6 +1203,7 @@ export default async function handler(req, res) {
     model: "gpt-4.1-mini"
   };
 
+  // DAILY TOTAL CALORIES FROM USER MESSAGE
   if (customerGid && userMessage) {
     const parsedDailyCals = parseDailyCaloriesFromMessage(userMessage);
     if (parsedDailyCals) {
@@ -1222,11 +1219,13 @@ export default async function handler(req, res) {
     }
   }
 
+  // MEAL OVERRIDE FLAG
   const overrideMeal = detectMealOverride(userMessage);
   if (overrideMeal) {
     debug.mealOverrideDetected = overrideMeal;
   }
 
+  // BUILD MESSAGES FOR OPENAI
   const messages = [{ role: "system", content: SYSTEM_PROMPT }];
 
   if (onboardingComplete !== null) {
