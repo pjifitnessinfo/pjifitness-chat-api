@@ -309,25 +309,23 @@ G. GENERAL LOGGING BEHAVIOR
 - NEVER show the MEAL_LOG_JSON or DAILY_REVIEW_JSON blocks to the user as “code”.
   They should be hidden metadata the app can read.
 `;
-`;
 
- // ======= CORS SETUP =======
+// ======= CORS SETUP =======
 const ALLOWED_ORIGINS = [
   "https://pjifitness.myshopify.com",
   "https://pjifitness.com",
-  "https://www.pjifitness.com",   // 👈 add this line
+  "https://www.pjifitness.com",
   "https://admin.shopify.com"
 ];
 
 function applyCors(req, res) {
-  const origin = req.headers.origin;
+  const origin = req.headers.origin || "";
 
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
 
   res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
