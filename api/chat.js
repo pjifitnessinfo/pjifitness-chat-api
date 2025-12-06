@@ -1102,8 +1102,14 @@ function detectMealOverride(userMsg) {
 
 export default async function handler(req, res) {
   // ----- CORS HEADERS -----
-  // Allow your Shopify / storefront to call this API
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  // If you only use this from your main site, just hard-code the origin:
+  res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
+  // If you also use https://pjifitness.com without www, you can do:
+  // const origin = req.headers.origin;
+  // if (origin === "https://www.pjifitness.com" || origin === "https://pjifitness.com") {
+  //   res.setHeader("Access-Control-Allow-Origin", origin);
+  // }
+
   res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader(
@@ -1128,7 +1134,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  // ... keep everything else exactly as you have it ...
+  // ...everything else stays exactly as you have it...
 
 
   // ... keep everything else in your handler exactly as it was ...
