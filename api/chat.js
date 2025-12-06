@@ -1101,24 +1101,9 @@ function detectMealOverride(userMsg) {
 }
 
 export default async function handler(req, res) {
-  // ===== CORS FOR PJIFITNESS =====
-  const origin = req.headers.origin || "";
-
-  const ALLOWED_ORIGINS = [
-    "https://www.pjifitness.com",
-    "https://pjifitness.com",
-    "https://pjifitness.myshopify.com"
-  ];
-
-  if (ALLOWED_ORIGINS.includes(origin)) {
-    // browser calls
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Access-Control-Allow-Credentials", "true");
-  } else {
-    // tools like Postman/curl
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  }
-
+  // ===== TEMP CORS (debug-friendly) =====
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Credentials", "false");
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader(
@@ -1127,12 +1112,12 @@ export default async function handler(req, res) {
       "Content-Type, Authorization, X-Requested-With, Accept"
   );
 
-  // Preflight
+  // Handle preflight
   if (req.method === "OPTIONS") {
     res.status(200).end();
     return;
   }
-  // ===== END CORS =====
+  // ===== END TEMP CORS =====
 
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
