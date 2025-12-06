@@ -1186,16 +1186,57 @@ export default async function handler(req, res) {
     debug.mealOverrideDetected = overrideMeal;
   }
 
+    // Figure out whether we've already sent the onboarding intro in this conversation
+  let introAlreadySent = false;
+
+  if (history.length) {
+    const recentForIntro = history.slice(-40); // look back a bit further
+    for (const m of recentForIntro) {
+      if (!m) continue;
+      const text =
+        typeof m.text === "string"
+          ? m.text
+          : typeof m.message === "string"
+          ? m.message
+          : null;
+      if (!text) continue;
+
+      const lower = text.toLowerCase();
+      if (
+        lower.includes("i’m your pjifitness coach") ||
+        lower.includes("i'm your pjifitness coach")
+      ) {
+        introAlreadySent = true;
+        break;
+      }
+    }
+  }
+
+  debug.introAlreadySent = introAlreadySent;
+
   // BUILD MESSAGES FOR OPENAI
   const messages = [{ role: "system", content: SYSTEM_PROMPT }];
 
+  // Pass onboarding_complete flag
   if (onboardingComplete !== null) {
     messages.push({
       role: "system",
-      content: `custom.onboarding_complete: ${onboardingComplete ? "true" : "false"}`
+      content: `custom.onboarding_complete: ${
+        onboardingComplete ? "true" : "false"
+      }`
     });
   }
 
+  // Tell the model not to repeat its intro once it's been sent
+  if (introAlreadySent) {
+    messages.push({
+      role: "system",
+      content:
+        "SYSTEM_FLAG: INTRO_ALREADY_SENT = true. You have already sent your onboarding intro earlier in this conversation. Do NOT repeat your intro again. Treat the user's latest message as their answer (likely their name, weight, etc.) and continue the onboarding questions from where you left off."
+    });
+  }
+
+  // Pass meal override info if present
   if (overrideMeal) {
     messages.push({
       role: "system",
@@ -1203,18 +1244,30 @@ export default async function handler(req, res) {
     });
   }
 
+  // Attach chat history (supports both .text and .message)
   if (history.length) {
     const recent = history.slice(-20);
     for (const m of recent) {
-      if (!m || typeof m.text !== "string") continue;
+      if (!m) continue;
+
+      const text =
+        typeof m.text === "string"
+          ? m.text
+          : typeof m.message === "string"
+          ? m.message
+          : null;
+      if (!text) continue;
+
       let role;
       if (m.role === "user") role = "user";
-      else if (m.role === "coach") role = "assistant";
+      else if (m.role === "coach" || m.role === "assistant") role = "assistant";
       else continue;
-      messages.push({ role, content: m.text });
+
+      messages.push({ role, content: text });
     }
   }
 
+  // Latest user message
   if (appendUserMessage && userMessage) {
     messages.push({ role: "user", content: userMessage });
   }
