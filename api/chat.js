@@ -1101,8 +1101,19 @@ function detectMealOverride(userMsg) {
 }
 
 export default async function handler(req, res) {
-  // Apply CORS headers (from the helper above)
-  applyCors(req, res);
+  // ===== Simple CORS at top of handler =====
+  const origin = req.headers.origin || "";
+
+  // Echo back whatever origin is calling (Shopify, pjifitness.com, etc.)
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    req.headers["access-control-request-headers"] ||
+      "Content-Type, Authorization, X-Requested-With, Accept"
+  );
 
   // Handle preflight request
   if (req.method === "OPTIONS") {
