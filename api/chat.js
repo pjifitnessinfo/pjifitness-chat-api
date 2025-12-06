@@ -1127,13 +1127,28 @@ function detectMealOverride(userMsg) {
 }
 
 export default async function handler(req, res) {
-  // Apply CORS headers
-  applyCors(req, res);
+  // ===== Simple CORS =====
+  const origin = req.headers.origin || "";
 
-  // Handle preflight CORS request
+  // Echo back whatever origin is calling (Shopify, pjifitness.com, www.pjifitness.com, etc.)
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Vary", "Origin");
+
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    req.headers["access-control-request-headers"] ||
+      "Content-Type, Authorization, X-Requested-With, Accept"
+  );
+
+  // Handle preflight
   if (req.method === "OPTIONS") {
-    return res.status(200).end();
+    res.status(200).end();
+    return;
   }
+
+  // ===== rest of your existing code starts here =====
 
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
@@ -1144,6 +1159,8 @@ export default async function handler(req, res) {
     res.status(500).json({ error: "Missing OPENAI_API_KEY env var" });
     return;
   }
+
+  // ... keep everything else in your handler exactly as it was ...
 
   let body;
   try {
