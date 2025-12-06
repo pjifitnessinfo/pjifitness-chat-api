@@ -632,8 +632,18 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
 
   const ownerId = customerGid;
 
-  const startWeight = planJson.start_weight != null ? Number(planJson.start_weight) : 0;
-  const goalWeight  = planJson.goal_weight  != null ? Number(planJson.goal_weight)  : 0;
+  // Map start/goal weight from planJson, with sensible fallbacks
+  const startWeight = planJson.start_weight != null
+    ? Number(planJson.start_weight)
+    : (planJson.current_weight_lbs != null
+        ? Number(planJson.current_weight_lbs)
+        : 0);
+
+  const goalWeight = planJson.goal_weight != null
+    ? Number(planJson.goal_weight)
+    : (planJson.goal_weight_lbs != null
+        ? Number(planJson.goal_weight_lbs)
+        : 0);
 
   const caloriesTarget = Number(planJson.calories_target) || 0;
   const proteinTarget  = Number(planJson.protein_target)  || 0;
@@ -652,6 +662,8 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
 
   const coachPlan = {
     ...planJson,
+    start_weight: startWeight || planJson.start_weight || null,
+    goal_weight: goalWeight || planJson.goal_weight || null,
     carbs
   };
 
