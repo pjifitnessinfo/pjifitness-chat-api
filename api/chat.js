@@ -1101,20 +1101,27 @@ function detectMealOverride(userMsg) {
 }
 
 export default async function handler(req, res) {
-  // ----- CORS HEADERS -----
-  // If you only use this from your main site, just hard-code the origin:
-  res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
-  // If you also use https://pjifitness.com without www, you can do:
-  // const origin = req.headers.origin;
-  // if (origin === "https://www.pjifitness.com" || origin === "https://pjifitness.com") {
-  //   res.setHeader("Access-Control-Allow-Origin", origin);
-  // }
+  // ===== CORS HEADERS =====
+  const origin = req.headers.origin || "";
 
+  // Only allow your real sites
+  const allowedOrigins = [
+    "https://www.pjifitness.com",
+    "https://pjifitness.com",
+    "https://pjifitness.myshopify.com"
+  ];
+
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+
+  res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Requested-With, Accept"
+    req.headers["access-control-request-headers"] ||
+      "Content-Type, Authorization, X-Requested-With, Accept"
   );
 
   // Handle preflight
@@ -1123,7 +1130,8 @@ export default async function handler(req, res) {
     return;
   }
 
-  // ----- NORMAL HANDLER STARTS HERE -----
+  // ===== NORMAL HANDLER STARTS HERE =====
+
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -1133,11 +1141,6 @@ export default async function handler(req, res) {
     res.status(500).json({ error: "Missing OPENAI_API_KEY env var" });
     return;
   }
-
-  // ...everything else stays exactly as you have it...
-
-
-  // ... keep everything else in your handler exactly as it was ...
 
   let body;
   try {
@@ -1238,7 +1241,9 @@ export default async function handler(req, res) {
   if (onboardingComplete !== null) {
     messages.push({
       role: "system",
-      content: `custom.onboarding_complete: ${onboardingComplete ? "true" : "false"}`
+      content: `custom.onboarding_complete: ${
+        onboardingComplete ? "true" : "false"
+      }`
     });
   }
 
@@ -1431,7 +1436,9 @@ export default async function handler(req, res) {
 
     let cleanedReply = stripCoachPlanBlock(rawReply);
     cleanedReply = cleanedReply.replace(/\[\[MEAL_LOG_JSON[\s\S]*?\]\]/g, "").trim();
-    cleanedReply = cleanedReply.replace(/\[\[DAILY_REVIEW_JSON[\s\S]*?\]\]/g, "").trim();
+    cleanedReply = cleanedReply
+      .replace(/\[\[DAILY_REVIEW_JSON[\s\S]*?\]\]/g, "")
+      .trim();
 
     res.status(200).json({ reply: cleanedReply, debug });
   } catch (e) {
@@ -1440,3 +1447,4 @@ export default async function handler(req, res) {
     res.status(500).json({ error: "Server error", debug: debugError });
   }
 }
+
