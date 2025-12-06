@@ -1101,6 +1101,23 @@ function detectMealOverride(userMsg) {
 }
 
 export default async function handler(req, res) {
+  // ----- CORS HEADERS -----
+  // Allow your Shopify / storefront to call this API
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With, Accept"
+  );
+
+  // Handle preflight
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  // ----- NORMAL HANDLER STARTS HERE -----
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -1110,6 +1127,9 @@ export default async function handler(req, res) {
     res.status(500).json({ error: "Missing OPENAI_API_KEY env var" });
     return;
   }
+
+  // ... keep everything else exactly as you have it ...
+
 
   // ... keep everything else in your handler exactly as it was ...
 
