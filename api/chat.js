@@ -310,23 +310,6 @@ G. GENERAL LOGGING BEHAVIOR
   They should be hidden metadata the app can read.
 `;
 
-// ======= CORS SETUP (simple + permissive) =======
-function applyCors(req, res) {
-  const origin = req.headers.origin || "*";
-
-  // Echo back whatever origin is calling (Shopify, pjifitness.com, etc.)
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Vary", "Origin");
-
-  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    req.headers["access-control-request-headers"] ||
-      "Content-Type, Authorization, X-Requested-With, Accept"
-  );
-}
-
 // --- Helper: Shopify GraphQL client (for metafields) ---
 async function shopifyGraphQL(query, variables = {}) {
 
