@@ -310,22 +310,15 @@ G. GENERAL LOGGING BEHAVIOR
   They should be hidden metadata the app can read.
 `;
 
-// ======= CORS SETUP =======
-const ALLOWED_ORIGINS = [
-  "https://pjifitness.myshopify.com",
-  "https://pjifitness.com",
-  "https://www.pjifitness.com",
-  "https://admin.shopify.com"
-];
-
+// ======= CORS SETUP (simple + permissive) =======
 function applyCors(req, res) {
-  const origin = req.headers.origin || "";
+  const origin = req.headers.origin || "*";
 
-  if (origin && ALLOWED_ORIGINS.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  }
-
+  // Echo back whatever origin is calling (Shopify, pjifitness.com, etc.)
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Vary", "Origin");
+
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
