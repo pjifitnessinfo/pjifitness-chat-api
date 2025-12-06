@@ -315,6 +315,7 @@ G. GENERAL LOGGING BEHAVIOR
 const ALLOWED_ORIGINS = [
   "https://pjifitness.myshopify.com",
   "https://pjifitness.com",
+  "https://www.pjifitness.com",   // 👈 add this line
   "https://admin.shopify.com"
 ];
 
