@@ -1101,23 +1101,26 @@ function detectMealOverride(userMsg) {
 }
 
 export default async function handler(req, res) {
-  // ===== TEMP CORS (debug-friendly) =====
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Credentials", "false");
-  res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    req.headers["access-control-request-headers"] ||
-      "Content-Type, Authorization, X-Requested-With, Accept"
-  );
+  // ===== TEMP CORS (debug-friendly but correct) =====
+const origin = req.headers.origin || "";
 
-  // Handle preflight
-  if (req.method === "OPTIONS") {
-    res.status(200).end();
-    return;
-  }
-  // ===== END TEMP CORS =====
+res.setHeader("Access-Control-Allow-Origin", origin);
+res.setHeader("Access-Control-Allow-Credentials", "true");
+res.setHeader("Vary", "Origin");
+
+res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+res.setHeader(
+  "Access-Control-Allow-Headers",
+  req.headers["access-control-request-headers"] ||
+    "Content-Type, Authorization, X-Requested-With, Accept"
+);
+
+// Preflight support
+if (req.method === "OPTIONS") {
+  res.status(200).end();
+  return;
+}
+// ===== END TEMP CORS =====
 
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
