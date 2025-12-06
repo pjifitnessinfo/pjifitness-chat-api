@@ -121,7 +121,7 @@ When all onboarding data is collected:
 1) Summarize their plan in a friendly tone.
 2) Output one hidden block:
 
-<COACH_PLAN_JSON>
+[[COACH_PLAN_JSON
 {
   "user_name": "...",
   "current_weight_lbs": ...,
@@ -136,7 +136,8 @@ When all onboarding data is collected:
   "carbs": ...,
   "notes": "Why these numbers were chosen."
 }
-</COACH_PLAN_JSON>
+]]
+
 
 3) Set debug.onboarding_complete = true.
 
