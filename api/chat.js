@@ -1499,11 +1499,15 @@ export default async function handler(req, res) {
           skipReason = "onboarding_already_complete_text_plan";
         }
       }
-
-      if (shouldSave) {
+            if (shouldSave) {
         try {
           await saveCoachPlanForCustomer(customerGid, planJson);
           debug.planSavedToShopify = true;
+
+          // 🔴 IMPORTANT – mark onboarding done for this request
+          onboardingComplete = true;
+          debug.onboardingCompleteAfterSave = true;
+
         } catch (e) {
           console.error("Error saving coach_plan metafield", e);
           debug.planSavedToShopify = false;
@@ -1517,7 +1521,6 @@ export default async function handler(req, res) {
         debug.planSavedSkippedReason = skipReason;
       }
     }
-
     if (customerGid) {
       const mealLogs = extractMealLogsFromText(rawReply);
 
