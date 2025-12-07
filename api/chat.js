@@ -514,19 +514,10 @@ function extractPlanFromText(text) {
   return plan;
 }
 
-// Strip the long onboarding intro ("Hey! I'm your PJiFitness coach...") from a reply
-// Used to prevent the intro from being sent multiple times in the same conversation.
-function stripOnboardingIntro(text) {
+// Strip the COACH_PLAN_JSON block from the text before sending to user
+function stripCoachPlanBlock(text) {
   if (!text) return text;
-
-  // Remove the paragraph that starts with "Hey! I'm your PJiFitness coach"
-  // (handles both straight and curly apostrophes)
-  return text
-    .replace(
-      /hey!\s*i[’']m your pjifitness coach[\s\S]*?(?:\n{2,}|$)/i,
-      ""
-    )
-    .trim();
+  return text.replace(/\[\[COACH_PLAN_JSON[\s\S]*?\]\]/, "").trim();
 }
 
 // Resolve a customer GID from request body (customerId or email)
@@ -1463,24 +1454,14 @@ export default async function handler(req, res) {
     }
 
     const data = await openaiRes.json();
-let rawReply =
-  data.choices?.[0]?.message?.content ||
-  "Sorry, I’m not sure what to say to that.";
+    const rawReply =
+      data.choices?.[0]?.message?.content ||
+      "Sorry, I’m not sure what to say to that.";
 
-debug.modelReplyTruncated = !data.choices?.[0]?.message?.content;
+    debug.modelReplyTruncated = !data.choices?.[0]?.message?.content;
 
-// If we've already sent the intro earlier in this conversation,
-// strip it out of this reply even if the model tries to repeat it.
-if (introAlreadySent) {
-  const before = rawReply;
-  rawReply = stripOnboardingIntro(rawReply);
-  if (before !== rawReply) {
-    debug.introStrippedFromReply = true;
-  }
-}
-
-let planJson = null;
-let planSource = null;
+    let planJson = null;
+    let planSource = null;
 
     const blockPlan = extractCoachPlanJson(rawReply);
     debug.planBlockFound = !!blockPlan;
