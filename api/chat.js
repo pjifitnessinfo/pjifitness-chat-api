@@ -1463,14 +1463,24 @@ export default async function handler(req, res) {
     }
 
     const data = await openaiRes.json();
-    const rawReply =
-      data.choices?.[0]?.message?.content ||
-      "Sorry, I’m not sure what to say to that.";
+let rawReply =
+  data.choices?.[0]?.message?.content ||
+  "Sorry, I’m not sure what to say to that.";
 
-    debug.modelReplyTruncated = !data.choices?.[0]?.message?.content;
+debug.modelReplyTruncated = !data.choices?.[0]?.message?.content;
 
-    let planJson = null;
-    let planSource = null;
+// If we've already sent the intro earlier in this conversation,
+// strip it out of this reply even if the model tries to repeat it.
+if (introAlreadySent) {
+  const before = rawReply;
+  rawReply = stripOnboardingIntro(rawReply);
+  if (before !== rawReply) {
+    debug.introStrippedFromReply = true;
+  }
+}
+
+let planJson = null;
+let planSource = null;
 
     const blockPlan = extractCoachPlanJson(rawReply);
     debug.planBlockFound = !!blockPlan;
