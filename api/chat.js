@@ -514,10 +514,19 @@ function extractPlanFromText(text) {
   return plan;
 }
 
-// Strip the COACH_PLAN_JSON block from the text before sending to user
-function stripCoachPlanBlock(text) {
+// Strip the long onboarding intro ("Hey! I'm your PJiFitness coach...") from a reply
+// Used to prevent the intro from being sent multiple times in the same conversation.
+function stripOnboardingIntro(text) {
   if (!text) return text;
-  return text.replace(/\[\[COACH_PLAN_JSON[\s\S]*?\]\]/, "").trim();
+
+  // Remove the paragraph that starts with "Hey! I'm your PJiFitness coach"
+  // (handles both straight and curly apostrophes)
+  return text
+    .replace(
+      /hey!\s*i[’']m your pjifitness coach[\s\S]*?(?:\n{2,}|$)/i,
+      ""
+    )
+    .trim();
 }
 
 // Resolve a customer GID from request body (customerId or email)
