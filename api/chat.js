@@ -639,6 +639,7 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
       ownerId,
       namespace: "custom",
       key: "coach_plan",
+      type: "json",
       value: JSON.stringify(coachPlan)
     },
     {
@@ -652,6 +653,8 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
       ownerId,
       namespace: "custom",
       key: "onboarding_complete",
+      // 🔁 if this metafield is BOOLEAN in Shopify, change type to "boolean"
+      type: "single_line_text_field",
       value: "true"
     }
   ];
@@ -661,6 +664,7 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
       ownerId,
       namespace: "custom",
       key: "start_weight",
+      type: "number_decimal",
       value: String(startWeight)
     });
   }
@@ -670,6 +674,7 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
       ownerId,
       namespace: "custom",
       key: "goal_weight",
+      type: "number_decimal",
       value: String(goalWeight)
     });
   }
