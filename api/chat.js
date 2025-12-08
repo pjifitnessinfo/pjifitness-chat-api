@@ -705,13 +705,13 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
     }
   ];
 
-  if (startWeight) {
+    if (startWeight) {
     metafields.push({
       ownerId,
       namespace: "custom",
       key: "start_weight",
-      type: "number_decimal",
-      value: String(startWeight)
+      type: "number_integer",          // ⬅️ changed
+      value: String(Math.round(startWeight))
     });
   }
 
@@ -720,8 +720,8 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
       ownerId,
       namespace: "custom",
       key: "goal_weight",
-      type: "number_decimal",
-      value: String(goalWeight)
+      type: "number_integer",          // ⬅️ changed
+      value: String(Math.round(goalWeight))
     });
   }
 
