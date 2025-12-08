@@ -676,6 +676,9 @@ async function resolveCustomerGidFromBody(body) {
 async function saveCoachPlanForCustomer(customerGid, planJson) {
   if (!customerGid || !planJson) return;
 
+  // 🔧 normalize + fill missing fat/carbs/start/goal before saving
+  planJson = finalizePlanJson(planJson) || planJson;
+
   const ownerId = customerGid;
 
   // Map start/goal weight from planJson, with sensible fallbacks
