@@ -1280,7 +1280,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  let body;
+    let body;
   try {
     body = await parseBody(req);
   } catch (e) {
@@ -1292,19 +1292,70 @@ export default async function handler(req, res) {
     return;
   }
 
+  // Basic fields from body
   const userMessage = body.message || "";
   const history = Array.isArray(body.history) ? body.history : [];
   const appendUserMessage = !!body.appendUserMessage;
+  const email = body.email || null;
 
   if (!userMessage && !history.length) {
     res.status(400).json({ error: "Missing 'message' in body" });
     return;
   }
 
-  const customerGid = await resolveCustomerGidFromBody(body);
-  const customerNumericId = customerGid
-    ? String(customerGid).replace("gid://shopify/Customer/", "")
-    : null;
+  // 🔑 Prefer explicit customerId / customerGid from the frontend
+  let customerGid = null;
+  let customerNumericId = null;
+
+  // 1) numeric ID from various possible fields
+  let rawId =
+    body.customerId ||
+    body.shopifyCustomerId ||
+    body.customer_id ||
+    body.customer_id_raw ||
+    null;
+
+  if (rawId != null) {
+    const str = String(rawId);
+    const numeric = str.replace(/[^0-9]/g, "");
+    if (numeric) {
+      customerNumericId = numeric;
+      customerGid = `gid://shopify/Customer/${numeric}`;
+    }
+  }
+
+  // 2) explicit GID if sent from frontend
+  if (!customerGid && (body.customerGid || body.customer_gid)) {
+    const rawGid = String(body.customerGid || body.customer_gid);
+    if (rawGid.startsWith("gid://shopify/Customer/")) {
+      customerGid = rawGid;
+      const numeric = rawGid.replace("gid://shopify/Customer/", "");
+      if (numeric) customerNumericId = numeric;
+    } else {
+      const numeric = rawGid.replace(/[^0-9]/g, "");
+      if (numeric) {
+        customerNumericId = numeric;
+        customerGid = `gid://shopify/Customer/${numeric}`;
+      }
+    }
+  }
+
+  // 3) FINAL FALLBACK: look up by email via Shopify GraphQL (slower)
+  if (!customerGid && email) {
+    try {
+      const resolved = await resolveCustomerGidFromBody({ email });
+      if (resolved) {
+        customerGid = resolved;
+        const numeric = String(resolved).replace(
+          "gid://shopify/Customer/",
+          ""
+        );
+        if (numeric) customerNumericId = numeric;
+      }
+    } catch (e) {
+      console.error("Error resolving customerGid from email", e);
+    }
+  }
 
   let shopifyMetafieldReadStatus = "not_attempted";
   let onboardingComplete = null;
