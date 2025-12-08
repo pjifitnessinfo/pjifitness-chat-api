@@ -1373,7 +1373,7 @@ export default async function handler(req, res) {
     debug.mealOverrideDetected = overrideMeal;
   }
 
-    // Figure out whether we've already sent the onboarding intro in this conversation
+      // Figure out whether we've already sent the onboarding intro in this conversation
   let introAlreadySent = false;
 
   if (history.length) {
@@ -1385,6 +1385,8 @@ export default async function handler(req, res) {
           ? m.text
           : typeof m.message === "string"
           ? m.message
+          : typeof m.content === "string"
+          ? m.content
           : null;
       if (!text) continue;
 
@@ -1431,7 +1433,7 @@ export default async function handler(req, res) {
     });
   }
 
-  // Attach chat history (supports both .text and .message)
+   // Attach chat history (supports .text, .message, or .content)
   if (history.length) {
     const recent = history.slice(-20);
     for (const m of recent) {
@@ -1442,6 +1444,8 @@ export default async function handler(req, res) {
           ? m.text
           : typeof m.message === "string"
           ? m.message
+          : typeof m.content === "string"
+          ? m.content
           : null;
       if (!text) continue;
 
