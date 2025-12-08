@@ -560,6 +560,57 @@ function extractPlanFromText(text) {
   };
 }
 
+// Normalize a raw plan object and fill in missing macros / weights
+function finalizePlanJson(planJson) {
+  if (!planJson) return null;
+
+  const toNum = (x) => {
+    const n = Number(x);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const caloriesTarget = toNum(planJson.calories_target || planJson.calories);
+  const proteinTarget  = toNum(planJson.protein_target || planJson.protein);
+  let   fatTarget      = toNum(planJson.fat_target || planJson.fat);
+  let   carbs          = toNum(planJson.carbs);
+
+  // If fat is missing/0, assume ~30% of calories from fat
+  if (!fatTarget && caloriesTarget) {
+    fatTarget = Math.round((caloriesTarget * 0.30) / 9);
+  }
+
+  // If carbs missing/0, fill remaining calories after protein + fat
+  if (!carbs && caloriesTarget && (proteinTarget || fatTarget)) {
+    const usedCals   = proteinTarget * 4 + fatTarget * 9;
+    const remaining  = caloriesTarget - usedCals;
+    if (remaining > 0) {
+      carbs = Math.round(remaining / 4);
+    }
+  }
+
+  const startWeight = planJson.start_weight != null
+    ? toNum(planJson.start_weight)
+    : planJson.current_weight_lbs != null
+      ? toNum(planJson.current_weight_lbs)
+      : 0;
+
+  const goalWeight = planJson.goal_weight != null
+    ? toNum(planJson.goal_weight)
+    : planJson.goal_weight_lbs != null
+      ? toNum(planJson.goal_weight_lbs)
+      : 0;
+
+  return {
+    ...planJson,
+    calories_target: caloriesTarget || null,
+    protein_target:  proteinTarget  || null,
+    fat_target:      fatTarget      || null,
+    carbs:           carbs          || null,
+    start_weight:    startWeight    || null,
+    goal_weight:     goalWeight     || null
+  };
+}
+
 // Strip the COACH_PLAN_JSON block from the text before sending to user
 function stripCoachPlanBlock(text) {
   if (!text) return text;
