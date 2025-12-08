@@ -521,22 +521,43 @@ function extractCoachPlanJson(text) {
 function extractPlanFromText(text) {
   if (!text) return null;
 
-  const calMatch = text.match(/calories[^0-9]*([0-9]{3,4})/i);
-  const proteinMatch = text.match(/protein[^0-9]*([0-9]{2,4})/i);
-  const fatMatch = text.match(/fat[s]?[^0-9]*([0-9]{1,3})/i);
+  // Try to grab the DAILY CALORIE TARGET specifically
+  // e.g. "Your daily calorie target is about 2050..."
+  const calMatch =
+    text.match(/daily calorie target[^0-9]*([0-9]{3,4})/i) ||
+    text.match(/target is about[^0-9]*([0-9]{3,4})/i) ||
+    text.match(/(\d{3,4})\s*(?:calories|cals?|kcals?)/i);
 
-  if (!calMatch && !proteinMatch && !fatMatch) return null;
+  // Protein: look for a grams number near the word "protein"
+  // e.g. "Aim for around 160g of protein per day"
+  const proteinMatch =
+    text.match(/protein[^0-9]*([0-9]{2,4})\s*g/i) ||
+    text.match(/aim for around[^0-9]*([0-9]{2,4})\s*g[^.]*protein/i);
 
-  const plan = {
-    calories_target: calMatch ? Number(calMatch[1]) : 0,
-    protein_target: proteinMatch ? Number(proteinMatch[1]) : 0,
-    fat_target: fatMatch ? Number(fatMatch[1]) : 0
-  };
+  // Fat: grams near the word "fat" or "fats"
+  // e.g. "For fats, target about 60–80g per day"
+  const fatMatch =
+    text.match(/fat[s]?[^0-9]*([0-9]{1,3})\s*g/i) ||
+    text.match(/target about[^0-9]*([0-9]{1,3})\s*g[^.]*fat/i);
 
-  if (!plan.calories_target && !plan.protein_target && !plan.fat_target) {
+  const calories = calMatch ? Number(calMatch[1]) : 0;
+  const protein  = proteinMatch ? Number(proteinMatch[1]) : 0;
+  const fat      = fatMatch ? Number(fatMatch[1]) : 0;
+
+  // 🚫 Sanity check: if calories are present but obviously wrong (< 500), ignore.
+  if (calories && calories < 500) {
     return null;
   }
-  return plan;
+
+  if (!calories && !protein && !fat) {
+    return null;
+  }
+
+  return {
+    calories_target: calories || 0,
+    protein_target: protein || 0,
+    fat_target: fat || 0
+  };
 }
 
 // Strip the COACH_PLAN_JSON block from the text before sending to user
