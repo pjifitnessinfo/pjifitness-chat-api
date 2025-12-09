@@ -1072,16 +1072,48 @@ function inferMealTypeFromReply(originalType, replyText) {
 
 // 🔥 NEW: Detect simple meal logging phrases from the user, like:
 // - "Log this as dinner: 6oz grilled chicken, 1 cup rice, some veggies."
+// - "For lunch, I had two English muffins with butter."
+// - "I had a turkey sandwich for lunch, about 450 cals"
 // - "I had 1 Muscle Milk shake at 160 calories"
-// - "I ate a turkey sandwich for lunch, about 450 cals"
 function detectSimpleMealFromUser(userMsg) {
   if (!userMsg || typeof userMsg !== "string") return null;
 
   const original = userMsg;
   const text = userMsg.toLowerCase();
 
+  // Pattern 0: "For lunch, I had ..." / "For lunch I had ..."
+  let m = text.match(
+    /for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*,?\s+i\s+(?:had|ate)\s+(.*)$/i
+  );
+  if (m) {
+    const mealTypeWord = m[1];
+    const mealType = normalizeMealType(mealTypeWord);
+    const descLower = m[2] || "";
+
+    const startIndex = text.indexOf(descLower);
+    let desc = descLower;
+    if (startIndex !== -1) {
+      desc = original.substring(startIndex, startIndex + descLower.length);
+    }
+
+    desc = (desc || "")
+      .trim()
+      .replace(/^[“"']/g, "")
+      .replace(/[”"'.,!?]+$/g, "")
+      .trim();
+
+    if (!desc) return null;
+
+    return {
+      meal_type: mealType,
+      items: [desc]
+    };
+  }
+
   // Pattern 1: "log this as dinner: ..."
-  let m = text.match(/log\s+this\s+as\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*[:\-]?\s*(.*)$/i);
+  m = text.match(
+    /log\s+this\s+as\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*[:\-]?\s*(.*)$/i
+  );
   if (m) {
     const mealType = normalizeMealType(m[1]);
     const descLower = m[2] || "";
@@ -1090,7 +1122,8 @@ function detectSimpleMealFromUser(userMsg) {
     if (startIndex !== -1) {
       desc = original.substring(startIndex, startIndex + descLower.length);
     }
-    desc = (desc || "").trim()
+    desc = (desc || "")
+      .trim()
       .replace(/^[“"']/g, "")
       .replace(/[”"'.,!?]+$/g, "")
       .trim();
@@ -1104,7 +1137,9 @@ function detectSimpleMealFromUser(userMsg) {
   }
 
   // Pattern 2: "I had ... for breakfast/lunch/dinner/snack"
-  m = text.match(/i\s+(?:had|ate)\s+(.*)\s+for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b/i);
+  m = text.match(
+    /i\s+(?:had|ate)\s+(.*)\s+for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b/i
+  );
   if (m) {
     const descLower = m[1] || "";
     const mealTypeWord = m[2];
@@ -1116,7 +1151,8 @@ function detectSimpleMealFromUser(userMsg) {
       desc = original.substring(startIndex, startIndex + descLower.length);
     }
 
-    desc = (desc || "").trim()
+    desc = (desc || "")
+      .trim()
       .replace(/^[“"']/g, "")
       .replace(/[”"'.,!?]+$/g, "")
       .trim();
@@ -1139,7 +1175,8 @@ function detectSimpleMealFromUser(userMsg) {
       desc = original.substring(startIndex, startIndex + descLower.length);
     }
 
-    desc = (desc || "").trim()
+    desc = (desc || "")
+      .trim()
       .replace(/^[“"']/g, "")
       .replace(/[”"'.,!?]+$/g, "")
       .trim();
