@@ -35,7 +35,9 @@ async function shopifyAdminFetch(query, variables = {}) {
 
   if (!res.ok || json.errors) {
     console.error("Shopify GraphQL error:", JSON.stringify(json, null, 2));
-    throw new Error("Shopify GraphQL error");
+    const err = new Error("Shopify GraphQL error");
+    err.shopifyResponse = json;
+    throw err;
   }
 
   return json.data;
