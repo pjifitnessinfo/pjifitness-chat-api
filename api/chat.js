@@ -1717,7 +1717,7 @@ export default async function handler(req, res) {
         debug.planSavedSkippedReason = skipReason;
       }
     }
-    if (customerGid) {
+        if (customerGid) {
       const mealLogs = extractMealLogsFromText(rawReply);
 
       if (mealLogs && mealLogs.length) {
@@ -1748,9 +1748,15 @@ export default async function handler(req, res) {
 
           const prot = parseProteinFromReplyText(rawReply) || 0;
 
+          // 🔥 Use coach reply ("for dinner", "Logged as dinner!") to correct meal_type
+          const finalMealType = inferMealTypeFromReply(
+            simpleMeal.meal_type,
+            rawReply
+          );
+
           const fallbackMeal = {
             date: new Date().toISOString().slice(0, 10),
-            meal_type: simpleMeal.meal_type,
+            meal_type: finalMealType,
             items: simpleMeal.items,
             calories: cal,
             protein: prot,
@@ -1764,7 +1770,7 @@ export default async function handler(req, res) {
             await upsertMealLog(
               customerGid,
               fallbackMeal,
-              overrideMeal ? { replaceMealType: fallbackMeal.meal_type } : {}
+              overrideMeal ? { replaceMealType: finalMealType } : {}
             );
             debug.mealLogsSavedToDailyLogs = true;
             debug.mealLogsFound = 1;
