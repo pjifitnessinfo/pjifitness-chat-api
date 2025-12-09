@@ -1988,7 +1988,8 @@ export default async function handler(req, res) {
       }
     }
 
-    let cleanedReply = stripCoachPlanBlock(rawReply);
+        let cleanedReply = stripCoachPlanBlock(rawReply);
+    cleanedReply = cleanedReply.replace(/\[\[DAILY_LOG_JSON[\s\S]*?\]\]/g, "").trim();
     cleanedReply = cleanedReply.replace(/\[\[MEAL_LOG_JSON[\s\S]*?\]\]/g, "").trim();
     cleanedReply = cleanedReply.replace(/\[\[DAILY_REVIEW_JSON[\s\S]*?\]\]/g, "").trim();
 
