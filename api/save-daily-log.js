@@ -190,8 +190,41 @@ const safeLog = sanitizeLog(log);
     // Keep going; we'll just treat as empty logs
   }
 
-  // 2) Append the new log (most recent at the end)
-  const updatedLogs = [...existingLogs, safeLog];
+    // 2) Merge or append the log by date
+  const dateStr = safeLog.date;
+  let updatedLogs = [...existingLogs];
+
+  // find existing log for this date
+  let foundIndex = -1;
+  for (let i = 0; i < updatedLogs.length; i++) {
+    if (updatedLogs[i].date === dateStr) {
+      foundIndex = i;
+      break;
+    }
+  }
+
+  if (foundIndex >= 0) {
+    const existing = updatedLogs[foundIndex];
+
+    // merge shallow fields (weight, calories, steps, mood, etc.)
+    const merged = {
+      ...existing,
+      ...safeLog,
+    };
+
+    // if both have meals arrays, concatenate them
+    if (Array.isArray(existing.meals) || Array.isArray(safeLog.meals)) {
+      merged.meals = [
+        ...(existing.meals || []),
+        ...(safeLog.meals || []),
+      ];
+    }
+
+    updatedLogs[foundIndex] = merged;
+  } else {
+    // no log for this date yet → append
+    updatedLogs.push(safeLog);
+  }
 
   // Optional: cap history (e.g., last 365 logs)
   const MAX_LOGS = 365;
