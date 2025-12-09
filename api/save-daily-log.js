@@ -169,7 +169,7 @@ const safeLog = sanitizeLog(log);
   let metafieldId = null;
 
   try {
-    const data = await shopifyAdminFetch(GET_LOGS_QUERY, { id: customerId });
+    const data = await shopifyAdminFetch(GET_LOGS_QUERY, { id: customerGid });
 
     const mf = data?.customer?.metafield;
     if (mf && mf.value) {
