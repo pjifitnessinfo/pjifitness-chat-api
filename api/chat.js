@@ -1057,14 +1057,15 @@ function parseProteinFromReplyText(text) {
   }
   return null;
 }
-// NEW: Use the coach reply text to refine the meal_type
+// Use the coach reply text to refine the meal_type
+// Only trust explicit "logged as X" phrases, NOT casual "for dinner?" questions.
 function inferMealTypeFromReply(originalType, replyText) {
   if (!replyText || typeof replyText !== "string") return originalType;
   const lower = replyText.toLowerCase();
 
-  if (/(logged as dinner|for dinner\b)/.test(lower)) return "dinner";
-  if (/(logged as lunch|for lunch\b)/.test(lower)) return "lunch";
-  if (/(logged as breakfast|for breakfast\b|for bfast\b)/.test(lower)) return "breakfast";
+  if (/logged as breakfast\b/.test(lower)) return "breakfast";
+  if (/logged as lunch\b/.test(lower)) return "lunch";
+  if (/logged as dinner\b/.test(lower)) return "dinner";
 
   return originalType;
 }
