@@ -226,8 +226,6 @@ const safeLog = sanitizeLog(log);
     key: "daily_logs",
     type: "json",
     value: valueString,
-    // (optional but nice) include existing metafield id if present
-    id: metafieldId || undefined,
   },
 ];
 
