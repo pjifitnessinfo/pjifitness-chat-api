@@ -1007,6 +1007,113 @@ async function upsertDailyTotalCalories(customerGid, calories) {
   await saveDailyLogsMetafield(customerGid, logs);
 }
 
+// 🔥 NEW: Extract a DAILY_LOG_JSON block from the model reply
+function extractDailyLogFromText(text) {
+  if (!text) return null;
+  const start = text.indexOf("[[DAILY_LOG_JSON");
+  if (start === -1) return null;
+  const end = text.indexOf("]]", start);
+  if (end === -1) return null;
+
+  const block = text.substring(start, end + 2);
+  const jsonStart = block.indexOf("{");
+  const jsonEnd = block.lastIndexOf("}");
+  if (jsonStart === -1 || jsonEnd === -1) return null;
+
+  const jsonString = block.substring(jsonStart, jsonEnd + 1);
+  try {
+    return JSON.parse(jsonString);
+  } catch (e) {
+    console.error("Failed to parse DAILY_LOG_JSON:", e, jsonString);
+    return null;
+  }
+}
+
+// 🔥 NEW: Upsert DAILY_LOG_JSON into daily_logs (weight / calories / steps / macros)
+async function upsertDailyLog(customerGid, dailyLog) {
+  if (!customerGid || !dailyLog) return;
+
+  const { logs } = await getDailyLogsMetafield(customerGid);
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const date =
+    (typeof dailyLog.date === "string" && dailyLog.date.trim()) || todayStr;
+
+  const idx = logs.findIndex(entry => entry && entry.date === date);
+
+  const toNumOrNull = (v) => {
+    if (v === null || v === undefined) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const weight = toNumOrNull(dailyLog.weight);
+  const calories = toNumOrNull(dailyLog.calories);
+  const protein = toNumOrNull(dailyLog.protein_g);
+  const carbs = toNumOrNull(dailyLog.carbs_g);
+  const fat = toNumOrNull(dailyLog.fat_g);
+  const steps = toNumOrNull(dailyLog.steps);
+  const notes =
+    typeof dailyLog.notes === "string" && dailyLog.notes.trim()
+      ? dailyLog.notes.trim()
+      : null;
+
+  if (idx >= 0) {
+    const existing = logs[idx] || {};
+    logs[idx] = {
+      ...existing,
+      date,
+      weight: weight !== null ? weight : existing.weight ?? null,
+      steps: steps !== null ? steps : existing.steps ?? null,
+      calories:
+        calories !== null
+          ? calories
+          : existing.calories ?? existing.total_calories ?? null,
+      total_calories:
+        calories !== null
+          ? calories
+          : existing.total_calories ?? existing.calories ?? null,
+      total_protein:
+        protein !== null
+          ? protein
+          : existing.total_protein ?? existing.protein ?? null,
+      total_carbs:
+        carbs !== null
+          ? carbs
+          : existing.total_carbs ?? existing.carbs ?? null,
+      total_fat:
+        fat !== null ? fat : existing.total_fat ?? existing.fat ?? null,
+      meals: Array.isArray(existing.meals) ? existing.meals : [],
+      mood: existing.mood ?? null,
+      struggle: existing.struggle ?? null,
+      coach_focus:
+        existing.coach_focus ||
+        notes ||
+        existing.notes ||
+        "Daily check-in logged from chat.",
+      notes: notes !== null ? notes : existing.notes ?? null
+    };
+  } else {
+    logs.push({
+      date,
+      weight,
+      steps,
+      meals: [],
+      mood: null,
+      struggle: null,
+      coach_focus: notes || "Daily check-in logged from chat.",
+      calories,
+      total_calories: calories,
+      total_protein: protein,
+      total_carbs: carbs,
+      total_fat: fat,
+      notes
+    });
+  }
+
+  await saveDailyLogsMetafield(customerGid, logs);
+}
+
 // Extract one or more MEAL_LOG_JSON blocks from a reply
 function extractMealLogsFromText(text) {
   if (!text) return [];
