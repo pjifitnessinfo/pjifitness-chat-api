@@ -1015,14 +1015,25 @@ function extractDailyReviewFromText(text) {
 }
 
 // NEW: Try to grab calories from the coach reply text
+// We pick the LARGEST calorie number (so "Total is about 1070 kcal"
+// wins over "about 100 kcal each").
 function parseCaloriesFromReplyText(text) {
   if (!text || typeof text !== "string") return null;
-  const m = text.match(/(\d{2,4})\s*(?:calories|cals?|kcals?)/i);
-  if (m && m[1]) {
-    const n = Number(m[1]);
-    if (n > 0 && n < 6000) return n;
+
+  const regex = /(\d{2,4})\s*(?:calories|cals?|kcals?)/gi;
+  let match;
+  let best = null;
+
+  while ((match = regex.exec(text)) !== null) {
+    const n = Number(match[1]);
+    if (n > 0 && n < 6000) {
+      if (best === null || n > best) {
+        best = n;
+      }
+    }
   }
-  return null;
+
+  return best;
 }
 
 // 🔥 NEW: Try to grab calories from the USER message text
