@@ -140,11 +140,14 @@ export default async function handler(req, res) {
   }
 
   const { customerId, log } = body || {};
-  if (!customerId || !log) {
-    return res.status(400).json({ error: "Missing customerId or log" });
-  }
+if (!customerId || !log) {
+  return res.status(400).json({ error: "Missing customerId or log" });
+}
 
-  const safeLog = sanitizeLog(log);
+// Shopify Admin GraphQL expects a GID, not a plain number
+const customerGid = `gid://shopify/Customer/${customerId}`;
+
+const safeLog = sanitizeLog(log);
   if (!safeLog) {
     return res.status(400).json({ error: "Invalid log payload" });
   }
