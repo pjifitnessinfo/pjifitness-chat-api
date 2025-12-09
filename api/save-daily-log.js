@@ -242,9 +242,12 @@ const safeLog = sanitizeLog(log);
       return res.status(500).json({ error: "Failed to save daily_logs", details: errors });
     }
   } catch (err) {
-    console.error("Error saving daily_logs metafield:", err);
-    return res.status(500).json({ error: "Error saving daily_logs" });
-  }
+  console.error("Error saving daily_logs metafield:", err);
+  return res.status(500).json({
+    error: "Error saving daily_logs",
+    details: err.shopifyResponse || err.message || String(err),
+  });
+}
 
   return res.status(200).json({ ok: true, log: safeLog });
 }
