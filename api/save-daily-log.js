@@ -61,7 +61,17 @@ function sanitizeLog(raw) {
     "protein",
     "carbs",
     "fat",
-    "meals", // <-- NEW: keep meals
+
+    // meals structures
+    "meals",                // e.g. { breakfast: {...}, ... }
+    "breakfast",
+    "lunch",
+    "dinner",
+    "snacks",
+    "breakfast_calories",
+    "lunch_calories",
+    "dinner_calories",
+    "snacks_calories",
   ];
 
   const clean = {};
