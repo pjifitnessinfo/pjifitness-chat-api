@@ -217,15 +217,17 @@ const safeLog = sanitizeLog(log);
     }
   `;
 
-  const metafieldsInput = [
-    {
-      ownerId: customerId,
-      namespace: "custom",
-      key: "daily_logs",
-      type: "json",
-      value: valueString,
-    },
-  ];
+ const metafieldsInput = [
+  {
+    ownerId: customerGid,
+    namespace: "custom",
+    key: "daily_logs",
+    type: "json",
+    value: valueString,
+    // (optional but nice) include existing metafield id if present
+    id: metafieldId || undefined,
+  },
+];
 
   try {
     const result = await shopifyAdminFetch(SET_LOGS_MUTATION, {
