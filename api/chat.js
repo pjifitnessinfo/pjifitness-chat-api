@@ -1166,6 +1166,99 @@ function extractDailyReviewFromText(text) {
   }
 }
 
+// NEW: Extract DAILY_LOG_JSON block from a reply
+function extractDailyLogFromText(text) {
+  if (!text) return null;
+  const start = text.indexOf("[[DAILY_LOG_JSON");
+  if (start === -1) return null;
+  const end = text.indexOf("]]", start);
+  if (end === -1) return null;
+
+  const block = text.substring(start, end + 2);
+  const jsonStart = block.indexOf("{");
+  const jsonEnd = block.lastIndexOf("}");
+  if (jsonStart === -1 || jsonEnd === -1) return null;
+
+  const jsonString = block.substring(jsonStart, jsonEnd + 1);
+  try {
+    return JSON.parse(jsonString);
+  } catch (e) {
+    console.error("Failed to parse DAILY_LOG_JSON:", e, jsonString);
+    return null;
+  }
+}
+
+// NEW: upsert DAILY_LOG_JSON into daily_logs (weight / calories / steps / macros)
+async function upsertDailyLog(customerGid, dailyLog) {
+  if (!customerGid || !dailyLog) return;
+
+  const { logs } = await getDailyLogsMetafield(customerGid);
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const date =
+    (typeof dailyLog.date === "string" && dailyLog.date.trim()) || todayStr;
+
+  let idx = logs.findIndex(entry => entry && entry.date === date);
+
+  const safeNumber = (v) =>
+    v === null || v === undefined || v === "" ? null : Number(v);
+
+  const newWeight   = safeNumber(dailyLog.weight);
+  const newCalories = safeNumber(dailyLog.calories);
+  const newProtein  = safeNumber(dailyLog.protein_g);
+  const newCarbs    = safeNumber(dailyLog.carbs_g);
+  const newFat      = safeNumber(dailyLog.fat_g);
+  const newSteps    = safeNumber(dailyLog.steps);
+  const newNotes    =
+    typeof dailyLog.notes === "string" ? dailyLog.notes.trim() : "";
+
+  if (idx >= 0) {
+    // Merge into existing log for that date
+    const existing = logs[idx] || {};
+
+    logs[idx] = {
+      ...existing,
+      date,
+      weight: newWeight != null ? newWeight : existing.weight ?? null,
+      steps: newSteps != null ? newSteps : existing.steps ?? null,
+      // calories + totals
+      calories:
+        newCalories != null ? newCalories : existing.calories ?? existing.total_calories ?? null,
+      total_calories:
+        newCalories != null ? newCalories : existing.total_calories ?? existing.calories ?? null,
+      total_protein:
+        newProtein != null ? newProtein : existing.total_protein ?? null,
+      total_carbs:
+        newCarbs != null ? newCarbs : existing.total_carbs ?? null,
+      total_fat:
+        newFat != null ? newFat : existing.total_fat ?? null,
+      coach_focus:
+        existing.coach_focus ||
+        (newNotes ? newNotes : "Daily log from chat."),
+      notes: newNotes || existing.notes || ""
+    };
+  } else {
+    // Create a brand new log for that date
+    logs.push({
+      date,
+      weight: newWeight,
+      steps: newSteps,
+      meals: [],
+      mood: null,
+      struggle: null,
+      coach_focus: newNotes || "Daily log from chat.",
+      notes: newNotes || "",
+      calories: newCalories,
+      total_calories: newCalories,
+      total_protein: newProtein,
+      total_carbs: newCarbs,
+      total_fat: newFat
+    });
+  }
+
+  await saveDailyLogsMetafield(customerGid, logs);
+}
+
 // NEW: Try to grab calories from the coach reply text
 // We pick the LARGEST calorie number (so "Total is about 1070 kcal"
 // wins over "about 100 kcal each").
