@@ -1057,6 +1057,17 @@ function parseProteinFromReplyText(text) {
   }
   return null;
 }
+// NEW: Use the coach reply text to refine the meal_type
+function inferMealTypeFromReply(originalType, replyText) {
+  if (!replyText || typeof replyText !== "string") return originalType;
+  const lower = replyText.toLowerCase();
+
+  if (/(logged as dinner|for dinner\b)/.test(lower)) return "dinner";
+  if (/(logged as lunch|for lunch\b)/.test(lower)) return "lunch";
+  if (/(logged as breakfast|for breakfast\b|for bfast\b)/.test(lower)) return "breakfast";
+
+  return originalType;
+}
 
 // 🔥 NEW: Detect simple meal logging phrases from the user, like:
 // - "Log this as dinner: 6oz grilled chicken, 1 cup rice, some veggies."
