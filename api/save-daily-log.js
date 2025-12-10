@@ -44,6 +44,58 @@ async function shopifyAdminFetch(query, variables = {}) {
 }
 
 /**
+ * Compute calories + macros from a meals array.
+ * Supports both:
+ *  - old logs:  calories, protein, carbs, fat
+ *  - photo logs: calories, protein_g, carbs_g, fat_g
+ */
+function computeTotalsFromMeals(meals) {
+  const totals = {
+    calories: 0,
+    protein: 0,
+    carbs: 0,
+    fat: 0,
+  };
+
+  if (!Array.isArray(meals)) return totals;
+
+  for (const meal of meals) {
+    const cals = Number(meal.calories || 0);
+
+    const protein = Number(
+      meal.protein != null
+        ? meal.protein
+        : meal.protein_g != null
+        ? meal.protein_g
+        : 0
+    );
+
+    const carbs = Number(
+      meal.carbs != null
+        ? meal.carbs
+        : meal.carbs_g != null
+        ? meal.carbs_g
+        : 0
+    );
+
+    const fat = Number(
+      meal.fat != null
+        ? meal.fat
+        : meal.fat_g != null
+        ? meal.fat_g
+        : 0
+    );
+
+    totals.calories += cals;
+    totals.protein += protein;
+    totals.carbs += carbs;
+    totals.fat += fat;
+  }
+
+  return totals;
+}
+
+/**
  * Sanitize the log object so only the fields we expect get stored.
  * IMPORTANT: this includes meals + macros now.
  */
@@ -65,7 +117,7 @@ function sanitizeLog(raw) {
     "fat",
 
     // meals structures
-    "meals",                // e.g. { breakfast: {...}, ... }
+    "meals", // array of meals
     "breakfast",
     "lunch",
     "dinner",
@@ -101,7 +153,7 @@ export default async function handler(req, res) {
   const ALLOWED_ORIGINS = [
     "https://www.pjifitness.com",
     "https://pjifitness.com",
-    "https://pjifitness.myshopify.com"
+    "https://pjifitness.myshopify.com",
   ];
 
   if (ALLOWED_ORIGINS.includes(origin)) {
@@ -142,14 +194,14 @@ export default async function handler(req, res) {
   }
 
   const { customerId, log } = body || {};
-if (!customerId || !log) {
-  return res.status(400).json({ error: "Missing customerId or log" });
-}
+  if (!customerId || !log) {
+    return res.status(400).json({ error: "Missing customerId or log" });
+  }
 
-// Shopify Admin GraphQL expects a GID, not a plain number
-const customerGid = `gid://shopify/Customer/${customerId}`;
+  // Shopify Admin GraphQL expects a GID, not a plain number
+  const customerGid = `gid://shopify/Customer/${customerId}`;
 
-const safeLog = sanitizeLog(log);
+  const safeLog = sanitizeLog(log);
   if (!safeLog) {
     return res.status(400).json({ error: "Invalid log payload" });
   }
@@ -168,6 +220,7 @@ const safeLog = sanitizeLog(log);
   `;
 
   let existingLogs = [];
+  // metafieldId not used currently, but kept for possible future updates
   let metafieldId = null;
 
   try {
@@ -190,7 +243,7 @@ const safeLog = sanitizeLog(log);
     // Keep going; we'll just treat as empty logs
   }
 
-    // 2) Merge or append the log by date
+  // 2) Merge or append the log by date
   const dateStr = safeLog.date;
   let updatedLogs = [...existingLogs];
 
@@ -203,6 +256,8 @@ const safeLog = sanitizeLog(log);
     }
   }
 
+  let finalLogForResponse = safeLog;
+
   if (foundIndex >= 0) {
     const existing = updatedLogs[foundIndex];
 
@@ -212,18 +267,38 @@ const safeLog = sanitizeLog(log);
       ...safeLog,
     };
 
-    // if both have meals arrays, concatenate them
+    // if either has a meals array, concatenate them
     if (Array.isArray(existing.meals) || Array.isArray(safeLog.meals)) {
-      merged.meals = [
-        ...(existing.meals || []),
-        ...(safeLog.meals || []),
-      ];
+      merged.meals = [...(existing.meals || []), ...(safeLog.meals || [])];
+    }
+
+    // 🔥 Recompute totals from ALL meals (old + photo-estimate)
+    if (Array.isArray(merged.meals)) {
+      const totals = computeTotalsFromMeals(merged.meals);
+      merged.calories = totals.calories;
+      merged.total_calories = totals.calories;
+      merged.total_protein = totals.protein;
+      merged.total_carbs = totals.carbs;
+      merged.total_fat = totals.fat;
     }
 
     updatedLogs[foundIndex] = merged;
+    finalLogForResponse = merged;
   } else {
     // no log for this date yet → append
-    updatedLogs.push(safeLog);
+    const newLog = { ...safeLog };
+
+    if (Array.isArray(newLog.meals)) {
+      const totals = computeTotalsFromMeals(newLog.meals);
+      newLog.calories = totals.calories;
+      newLog.total_calories = totals.calories;
+      newLog.total_protein = totals.protein;
+      newLog.total_carbs = totals.carbs;
+      newLog.total_fat = totals.fat;
+    }
+
+    updatedLogs.push(newLog);
+    finalLogForResponse = newLog;
   }
 
   // Optional: cap history (e.g., last 365 logs)
@@ -252,15 +327,15 @@ const safeLog = sanitizeLog(log);
     }
   `;
 
- const metafieldsInput = [
-  {
-    ownerId: customerGid,
-    namespace: "custom",
-    key: "daily_logs",
-    type: "json",
-    value: valueString,
-  },
-];
+  const metafieldsInput = [
+    {
+      ownerId: customerGid,
+      namespace: "custom",
+      key: "daily_logs",
+      type: "json",
+      value: valueString,
+    },
+  ];
 
   try {
     const result = await shopifyAdminFetch(SET_LOGS_MUTATION, {
@@ -270,15 +345,19 @@ const safeLog = sanitizeLog(log);
     const errors = result?.metafieldsSet?.userErrors || [];
     if (errors.length) {
       console.error("Shopify metafieldsSet errors:", errors);
-      return res.status(500).json({ error: "Failed to save daily_logs", details: errors });
+      return res
+        .status(500)
+        .json({ error: "Failed to save daily_logs", details: errors });
     }
   } catch (err) {
-  console.error("Error saving daily_logs metafield:", err);
-  return res.status(500).json({
-    error: "Error saving daily_logs",
-    details: err.shopifyResponse || err.message || String(err),
-  });
+    console.error("Error saving daily_logs metafield:", err);
+    return res.status(500).json({
+      error: "Error saving daily_logs",
+      details: err.shopifyResponse || err.message || String(err),
+    });
+  }
+
+  // Return the merged / final log so frontend can inspect it if needed
+  return res.status(200).json({ ok: true, log: finalLogForResponse });
 }
 
-  return res.status(200).json({ ok: true, log: safeLog });
-}
