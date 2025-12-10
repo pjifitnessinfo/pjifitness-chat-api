@@ -1,10 +1,23 @@
 // /api/meal-photo-estimate.js
-// TEMP VERSION: just confirm photo endpoint works end-to-end.
+// TEMP VERSION: confirm photo endpoint works end-to-end, with CORS enabled.
 // No OpenAI call yet — returns a simple test reply.
 
+const ALLOWED_ORIGIN = "https://www.pjifitness.com";
+
 export default async function handler(req, res) {
+  // Basic CORS headers
+  res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  // Handle preflight OPTIONS request
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+
   if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
+    res.setHeader("Allow", "POST,OPTIONS");
     return res.status(405).json({ error: "Method not allowed" });
   }
 
@@ -22,7 +35,6 @@ export default async function handler(req, res) {
       "TEST: I received your meal photo and the endpoint is working. " +
       "Next, we’ll plug in AI to estimate calories and macros from the image.";
 
-    // Optional dummy LOG_JSON just to prove the shape
     const logJson = {
       date: new Date().toISOString().slice(0, 10),
       meals: [
