@@ -25,7 +25,7 @@ async function callOpenAIVision(imageBase64DataUrl) {
           '  "date": "YYYY-MM-DD",\n' +
           '  "meals": [\n' +
           "    {\n" +
-          '      "type": "dinner",\n' +
+          '      "type": "dinner",\n' + // the model will override this based on rule 6 below
           '      "description": "string description of the meal",\n' +
           '      "calories": 0,\n' +
           '      "protein_g": 0,\n' +
@@ -36,7 +36,8 @@ async function callOpenAIVision(imageBase64DataUrl) {
           "  ]\n" +
           "}\n" +
           "]]\n" +
-          "Use TODAY'S date in YYYY-MM-DD format. Use single best-guess numbers (no ranges)."
+          "Use TODAY'S date in YYYY-MM-DD format. Use single best-guess numbers (no ranges). " +
+          "6) For \"type\", you MUST choose exactly one of: \"breakfast\", \"lunch\", \"dinner\", or \"snack\" — no other values."
       },
       {
         role: "user",
