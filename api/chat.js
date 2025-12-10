@@ -518,17 +518,48 @@ When you do, add this hidden block:
   something a human coach should check.
 
 ======================================================
-H. GENERAL LOGGING BEHAVIOR
+H. CRITICAL LOGGING BEHAVIOR — DAILY_LOG_JSON
 ======================================================
 
-- When the user is just chatting (questions about diet, workouts, mindset), answer normally.
-- When they report data (weight, steps, calories for the day, or meals),
-  both:
-  - Respond like a coach, and
-  - - Add any appropriate hidden JSON blocks (DAILY_LOG_JSON, MEAL_LOG_JSON,
-    DAILY_REVIEW_JSON, or plan JSON during onboarding).
-- NEVER display these JSON blocks as code to the user; they are hidden metadata
-  for the app to read.
+1) When the user is just chatting (questions about diet, workouts, mindset),
+   answer normally.
+
+2) When the user reports ANY daily data, you MUST also emit DAILY_LOG_JSON.
+   This includes:
+   - Weight (e.g. “I weighed 176 this morning”, “scale said 183.4”, “log 181”)
+   - Calories for the day
+   - Steps for the day
+   - Macros for the day
+   - Any daily check-in summary (weight / calories / steps / macros / “how the day went”)
+
+In those cases you MUST:
+
+- Respond like a coach in natural language, AND
+- Append EXACTLY ONE hidden block at the VERY END of your reply:
+
+[[DAILY_LOG_JSON
+{
+  "date": "YYYY-MM-DD",
+  "weight": 176.0,
+  "calories": 2050,
+  "protein_g": 150,
+  "carbs_g": 200,
+  "fat_g": 60,
+  "steps": 8000,
+  "notes": "Short 1–2 sentence note about the day (or empty string)."
+}
+]]
+
+RULES:
+- date = TODAY in the user’s local time, format "YYYY-MM-DD".
+- If the user ONLY gives a weight (e.g. “I weighed 176 this morning”):
+  - weight = that number,
+  - calories / protein_g / carbs_g / fat_g / steps = null,
+  - notes = "User logged morning weight 176 lbs." (or similar).
+- If they give multiple items (weight, calories, steps, macros), fill all those fields.
+- If a value is unknown, use null, NOT 0.
+- NEVER show these JSON blocks as code to the user; they are hidden metadata.
+- If you skip DAILY_LOG_JSON when daily data is given, you are BREAKING THE APP. Do not skip it.
 `;
 
 // --- Helper: Shopify GraphQL client (for metafields) ---
