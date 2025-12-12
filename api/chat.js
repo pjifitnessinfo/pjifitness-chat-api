@@ -2141,7 +2141,11 @@ export default async function handler(req, res) {
     cleanedReply = cleanedReply.replace(/\[\[MEAL_LOG_JSON[\s\S]*?\]\]/g, "").trim();
     cleanedReply = cleanedReply.replace(/\[\[DAILY_REVIEW_JSON[\s\S]*?\]\]/g, "").trim();
 
-    res.status(200).json({ reply: cleanedReply, debug });
+    res.status(200).json({
+  reply: cleanedReply,
+  debug,
+  free_chat_remaining: remainingAfter,
+});
   } catch (e) {
     console.error("Chat handler error", e);
     const debugError = { ...debug, serverError: String(e?.message || e) };
