@@ -1833,13 +1833,13 @@ export default async function handler(req, res) {
 
       // out of messages -> paywall (DON'T call OpenAI)
       if (remaining <= 0) {
-        return res.status(200).json({
-          reply:
-            "Your free preview is complete.\n\nStart your $5.99/week coaching plan to continue:\n\n[[PAYWALL]]",
-          free_chat_remaining: 0,
-          debug: { ...debug, free_chat_remaining: 0 },
-        });
-      }
+  return res.status(200).json({
+    reply: "[[PAYWALL]]",
+    free_chat_remaining: 0,
+    debug: { ...debug, free_chat_remaining: 0 },
+  });
+}
+
 
       // decrement then continue
       remainingAfter = remaining - 1;
