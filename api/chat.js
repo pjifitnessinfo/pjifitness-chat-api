@@ -598,6 +598,45 @@ async function shopifyGraphQL(query, variables = {}) {
   return json.data;
 }
 
+// ============================================================
+// FREE PREVIEW HELPERS (Step 2A)
+// ============================================================
+
+async function getFreeChatRemaining(customerGid) {
+  const q = `
+    query($id: ID!) {
+      customer(id: $id) {
+        metafield(namespace:"custom", key:"free_chat_remaining") { value }
+      }
+    }
+  `;
+  const json = await shopifyGraphQL(q, { id: customerGid });
+  const v = json?.customer?.metafield?.value;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+async function setFreeChatRemaining(customerGid, remaining) {
+  const m = `
+    mutation($input: MetafieldsSetInput!) {
+      metafieldsSet(metafields: [$input]) {
+        userErrors { field message }
+      }
+    }
+  `;
+  return shopifyGraphQL(m, {
+    input: {
+      ownerId: customerGid,
+      namespace: "custom",
+      key: "free_chat_remaining",
+      type: "number_integer",
+      value: String(Math.max(0, remaining))
+    }
+  });
+}
+
+
+
 // Helper: parse body safely
 async function parseBody(req) {
   return new Promise((resolve, reject) => {
