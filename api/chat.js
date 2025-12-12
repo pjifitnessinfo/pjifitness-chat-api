@@ -1803,7 +1803,7 @@ export default async function handler(req, res) {
     shopifyMetafieldReadStatus = "no_customer_id";
   }
 
-  const debug = {
+    const debug = {
     customerGid: customerGid || null,
     customerIdNumeric: customerNumericId,
     inboundMessage: userMessage,
@@ -1812,10 +1812,46 @@ export default async function handler(req, res) {
     onboarding_complete: onboardingComplete,
     shopifyMetafieldReadStatus,
     messagesCount: null,
-    model: "gpt-4.1-mini"
+    model: "gpt-4.1-mini",
   };
 
+  // ===============================
+  // FREE PREVIEW MESSAGE GATE
+  // ===============================
+  let remainingAfter = null;
+  const FREE_START = 15; // you can change this later if you want
+
+  try {
+    if (customerGid) {
+      let remaining = await getFreeChatRemaining(customerGid);
+
+      // first time: initialize
+      if (remaining === null) {
+        remaining = FREE_START;
+        await setFreeChatRemaining(customerGid, remaining);
+      }
+
+      // out of messages -> paywall (DON'T call OpenAI)
+      if (remaining <= 0) {
+        return res.status(200).json({
+          reply:
+            "Your free preview is complete.\n\nStart your $5.99/week coaching plan to continue:\n\n[[PAYWALL]]",
+          free_chat_remaining: 0,
+          debug: { ...debug, free_chat_remaining: 0 },
+        });
+      }
+
+      // decrement then continue
+      remainingAfter = remaining - 1;
+      await setFreeChatRemaining(customerGid, remainingAfter);
+    }
+  } catch (err) {
+    console.warn("Free-preview gate failed open:", err);
+    remainingAfter = null; // fail open: do NOT block chat
+  }
+
   // DAILY TOTAL CALORIES FROM USER MESSAGE
+
   if (customerGid && userMessage) {
     const parsedDailyCals = parseDailyCaloriesFromMessage(userMessage);
     if (parsedDailyCals) {
