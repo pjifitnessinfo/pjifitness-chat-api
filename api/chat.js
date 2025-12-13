@@ -1649,6 +1649,16 @@ function detectMealOverride(userMsg) {
   };
 }
 
+// ===== ADD THIS BLOCK EXACTLY HERE =====
+function todayISO() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+// ===== END ADD =====
+
 export default async function handler(req, res) {
   // ===== CORS FOR PJIFITNESS =====
   const origin = req.headers.origin || "";
