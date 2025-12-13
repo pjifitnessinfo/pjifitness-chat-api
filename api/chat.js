@@ -2069,6 +2069,9 @@ export default async function handler(req, res) {
       let mealLogs = extractMealLogsFromText(rawReply);
 
       if (mealLogs && mealLogs.length) {
+           const today = todayISO();
+  mealLogs = mealLogs.map(m => ({ ...m, date: today }));
+
         debug.mealLogsFound = mealLogs.length;
         debug.mealLogsSample = mealLogs.slice(0, 2);
         try {
