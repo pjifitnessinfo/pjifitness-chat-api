@@ -2066,7 +2066,7 @@ export default async function handler(req, res) {
       }
     }
         if (customerGid) {
-      const mealLogs = extractMealLogsFromText(rawReply);
+      let mealLogs = extractMealLogsFromText(rawReply);
 
       if (mealLogs && mealLogs.length) {
         debug.mealLogsFound = mealLogs.length;
