@@ -1485,7 +1485,7 @@ async function upsertMealLog(customerGid, meal, options = {}) {
     }
   }
 
-  const replaceMealType = options.replaceMealType || null;
+  const replaceMealType = options.replaceMealType ? normalizeMealType(options.replaceMealType) : null;
 
   if (idx >= 0) {
     // Update existing log for today
