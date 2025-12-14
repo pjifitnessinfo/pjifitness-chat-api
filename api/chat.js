@@ -1447,10 +1447,10 @@ function detectSimpleMealFromUser(userMsg) {
 
     if (!desc) return null;
 
-    return {
-      meal_type: "snacks",
-      items: [desc]
-    };
+   return {
+  meal_type: "snack",
+  items: [desc]
+};
   }
 
   return null;
