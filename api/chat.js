@@ -1076,7 +1076,9 @@ async function saveDailyLogsMetafield(customerGid, logs) {
     throw new Error(
       "Shopify userErrors when saving daily_logs: " +
         userErrors
-          .map(e => `${(e.field || []).join(".")}: ${e.message}`)
+          .map(function (e) {
+  return (e.field || []).join(".") + ": " + e.message;
+})
           .join(" | ")
     );
   }
