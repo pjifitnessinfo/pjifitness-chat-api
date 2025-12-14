@@ -1613,11 +1613,21 @@ async function upsertDailyReview(customerGid, review) {
 
 function normalizeMealType(raw) {
   const t = (raw || "").toLowerCase().trim();
+
   if (t === "bfast" || t === "breakfast") return "breakfast";
   if (t === "lunch") return "lunch";
   if (t === "dinner" || t === "supper") return "dinner";
-  if (t === "snack" || t === "snacks" || t === "snaks" || t === "dessert") return "snacks";
-  return raw || "other";
+
+  // ✅ IMPORTANT: store as singular "snack" (your UI expects snack, not snacks)
+  if (t === "snack" || t === "snacks" || t === "snaks" || t === "dessert") return "snack";
+
+  // If model sends "Snacks" / "Dinner" etc, normalize common cases:
+  if (t.includes("breakfast")) return "breakfast";
+  if (t.includes("lunch")) return "lunch";
+  if (t.includes("dinner")) return "dinner";
+  if (t.includes("snack")) return "snack";
+
+  return "snack";
 }
 
 function detectMealOverride(userMsg) {
