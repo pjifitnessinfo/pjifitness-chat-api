@@ -1345,6 +1345,36 @@ function detectSimpleMealFromUser(userMsg) {
   const original = userMsg;
   const text = userMsg.toLowerCase();
 
+     // ✅ Pattern NEW: "log snack quest protein bar" / "log lunch chicken salad"
+  // (your current patterns don't catch this)
+  let m = text.match(
+    /^log\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks|snaks|dessert)\s+(.+)$/i
+  );
+  if (m) {
+    const mealType = normalizeMealType(m[1]);
+    const descLower = m[2] || "";
+
+    const startIndex = text.indexOf(descLower.toLowerCase());
+    let desc = descLower;
+    if (startIndex !== -1) {
+      desc = original.substring(startIndex, startIndex + descLower.length);
+    }
+
+    desc = (desc || "")
+      .trim()
+      .replace(/^[“"']/g, "")
+      .replace(/[”"'.,!?]+$/g, "")
+      .trim();
+
+    if (!desc) return null;
+
+    return {
+      meal_type: mealType,
+      items: [desc]
+    };
+  }
+
+
   // Pattern 0: "For lunch, I had ..." / "For lunch I had ..."
   let m = text.match(
     /for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*,?\s+i\s+(?:had|ate)\s+(.*)$/i
