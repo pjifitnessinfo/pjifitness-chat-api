@@ -1345,36 +1345,6 @@ function detectSimpleMealFromUser(userMsg) {
   const original = userMsg;
   const text = userMsg.toLowerCase();
 
-     // ✅ Pattern NEW: "log snack quest protein bar" / "log lunch chicken salad"
-  // (your current patterns don't catch this)
-  let m = text.match(
-    /^log\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks|snaks|dessert)\s+(.+)$/i
-  );
-  if (m) {
-    const mealType = normalizeMealType(m[1]);
-    const descLower = m[2] || "";
-
-    const startIndex = text.indexOf(descLower.toLowerCase());
-    let desc = descLower;
-    if (startIndex !== -1) {
-      desc = original.substring(startIndex, startIndex + descLower.length);
-    }
-
-    desc = (desc || "")
-      .trim()
-      .replace(/^[“"']/g, "")
-      .replace(/[”"'.,!?]+$/g, "")
-      .trim();
-
-    if (!desc) return null;
-
-    return {
-      meal_type: mealType,
-      items: [desc]
-    };
-  }
-
-
   // Pattern 0: "For lunch, I had ..." / "For lunch I had ..."
   let m = text.match(
     /for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*,?\s+i\s+(?:had|ate)\s+(.*)$/i
@@ -1477,10 +1447,10 @@ function detectSimpleMealFromUser(userMsg) {
 
     if (!desc) return null;
 
-   return {
-  meal_type: "snack",
-  items: [desc]
-};
+    return {
+      meal_type: "snacks",
+      items: [desc]
+    };
   }
 
   return null;
@@ -1505,7 +1475,7 @@ async function upsertMealLog(customerGid, meal, options = {}) {
   const protein = Number(meal.protein) || 0;
   const carbs = Number(meal.carbs) || 0;
   const fat = Number(meal.fat) || 0;
-  const mealType = normalizeMealType(meal.meal_type || meal.type || "snack");
+  const mealType = meal.meal_type || "other";
   let items = meal.items;
   if (!Array.isArray(items)) {
     if (typeof items === "string" && items.trim()) {
@@ -1515,7 +1485,7 @@ async function upsertMealLog(customerGid, meal, options = {}) {
     }
   }
 
-  const replaceMealType = options.replaceMealType ? normalizeMealType(options.replaceMealType) : null;
+  const replaceMealType = options.replaceMealType || null;
 
   if (idx >= 0) {
     // Update existing log for today
@@ -1643,21 +1613,11 @@ async function upsertDailyReview(customerGid, review) {
 
 function normalizeMealType(raw) {
   const t = (raw || "").toLowerCase().trim();
-
   if (t === "bfast" || t === "breakfast") return "breakfast";
   if (t === "lunch") return "lunch";
   if (t === "dinner" || t === "supper") return "dinner";
-
-  // ✅ IMPORTANT: store as singular "snack" (your UI expects snack, not snacks)
-  if (t === "snack" || t === "snacks" || t === "snaks" || t === "dessert") return "snack";
-
-  // If model sends "Snacks" / "Dinner" etc, normalize common cases:
-  if (t.includes("breakfast")) return "breakfast";
-  if (t.includes("lunch")) return "lunch";
-  if (t.includes("dinner")) return "dinner";
-  if (t.includes("snack")) return "snack";
-
-  return "snack";
+  if (t === "snack" || t === "snacks" || t === "snaks" || t === "dessert") return "snacks";
+  return raw || "other";
 }
 
 function detectMealOverride(userMsg) {
@@ -2191,4 +2151,4 @@ export default async function handler(req, res) {
     const debugError = { ...debug, serverError: String(e?.message || e) };
     res.status(500).json({ error: "Server error", debug: debugError });
   }
-}
+  }
