@@ -1649,16 +1649,6 @@ function detectMealOverride(userMsg) {
   };
 }
 
-// ===== ADD THIS BLOCK EXACTLY HERE =====
-function todayISO() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-// ===== END ADD =====
-
 export default async function handler(req, res) {
   // ===== CORS FOR PJIFITNESS =====
   const origin = req.headers.origin || "";
@@ -2066,12 +2056,9 @@ export default async function handler(req, res) {
       }
     }
         if (customerGid) {
-      let mealLogs = extractMealLogsFromText(rawReply);
+      const mealLogs = extractMealLogsFromText(rawReply);
 
       if (mealLogs && mealLogs.length) {
-           const today = todayISO();
-  mealLogs = mealLogs.map(m => ({ ...m, date: today }));
-
         debug.mealLogsFound = mealLogs.length;
         debug.mealLogsSample = mealLogs.slice(0, 2);
         try {
