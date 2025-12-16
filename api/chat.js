@@ -2272,6 +2272,7 @@ debug.rawReplyTail = rawReply.slice(-600);
   if (coachReview) {
     debug.coachReviewFound = coachReview;
     try {
+       coachReview.date = new Date().toISOString().slice(0, 10);
       await upsertCoachReview(customerGid, coachReview);
       debug.coachReviewSavedToDailyLogs = true;
     } catch (e) {
