@@ -1659,6 +1659,64 @@ async function upsertDailyReview(customerGid, review) {
   await saveDailyLogsMetafield(customerGid, logs);
 }
 
+// NEW: upsert COACH REVIEW into daily_logs (running day summary)
+async function upsertCoachReview(customerGid, coachReview) {
+  if (!customerGid || !coachReview) return;
+
+  const { logs } = await getDailyLogsMetafield(customerGid);
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const date =
+    (typeof coachReview.date === "string" && coachReview.date.trim())
+      ? coachReview.date.trim()
+      : todayStr;
+
+  const idx = logs.findIndex(entry => entry && entry.date === date);
+
+  const safeArr = (v) => Array.isArray(v) ? v : [];
+  const safeStr = (v) => (typeof v === "string" ? v.trim() : "");
+
+  const payload = {
+    coach_review: {
+      date,
+      summary: safeStr(coachReview.summary),
+      wins: safeArr(coachReview.wins),
+      opportunities: safeArr(coachReview.opportunities),
+      struggles: safeArr(coachReview.struggles),
+      next_focus: safeStr(coachReview.next_focus),
+      food_pattern: safeStr(coachReview.food_pattern),
+      mindset_pattern: safeStr(coachReview.mindset_pattern)
+    }
+  };
+
+  if (idx >= 0) {
+    const existing = logs[idx] || {};
+    logs[idx] = {
+      ...existing,
+      date,
+      ...payload
+    };
+  } else {
+    logs.push({
+      date,
+      weight: null,
+      steps: null,
+      meals: [],
+      mood: null,
+      struggle: null,
+      coach_focus: null,
+      calories: null,
+      total_calories: null,
+      total_protein: null,
+      total_carbs: null,
+      total_fat: null,
+      ...payload
+    });
+  }
+
+  await saveDailyLogsMetafield(customerGid, logs);
+}
+
 /* ==========================================
    MEAL OVERRIDE DETECTOR ("change breakfast")
    ========================================== */
