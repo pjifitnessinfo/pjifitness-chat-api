@@ -2016,6 +2016,17 @@ export default async function handler(req, res) {
   // BUILD MESSAGES FOR OPENAI
   const messages = [{ role: "system", content: SYSTEM_PROMPT }];
 
+   const todayStr = new Date().toISOString().slice(0, 10);
+
+messages.push({
+  role: "system",
+  content:
+    `TODAY_DATE: ${todayStr}. ` +
+    `Use this exact date in all JSON blocks: ` +
+    `DAILY_LOG_JSON, MEAL_LOG_JSON, DAILY_REVIEW_JSON, COACH_REVIEW_JSON. ` +
+    `Do NOT output any other date.`
+});
+
   // Pass onboarding_complete flag (default to false if missing)
 messages.push({
   role: "system",
