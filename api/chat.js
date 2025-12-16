@@ -2120,6 +2120,24 @@ debug.messagesCount = messages.length; // (optional: keep if you want it accurat
       data.choices?.[0]?.message?.content ||
       "Sorry, I’m not sure what to say to that.";
 
+     // ===============================
+// DAILY_LOG_JSON -> save to daily_logs
+// ===============================
+if (customerGid) {
+  const dailyLog = extractDailyLogFromText(rawReply);
+  if (dailyLog) {
+    debug.dailyLogFound = dailyLog;
+    try {
+      await upsertDailyLog(customerGid, dailyLog);
+      debug.dailyLogSavedToDailyLogs = true;
+    } catch (e) {
+      console.error("Error saving DAILY_LOG_JSON to daily_logs", e);
+      debug.dailyLogSavedToDailyLogs = false;
+      debug.dailyLogSaveError = String(e?.message || e);
+    }
+  }
+}
+
      debug.rawReplyHasCoachReview = rawReply.includes("[[COACH_REVIEW_JSON");
 debug.rawReplyTail = rawReply.slice(-600);
 
