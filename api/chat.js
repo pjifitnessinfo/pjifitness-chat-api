@@ -2188,6 +2188,21 @@ export default async function handler(req, res) {
       }
     }
 
+     if (customerGid) {
+  const coachReview = extractCoachReviewFromText(rawReply);
+  if (coachReview) {
+    debug.coachReviewFound = coachReview;
+    try {
+      await upsertCoachReview(customerGid, coachReview);
+      debug.coachReviewSavedToDailyLogs = true;
+    } catch (e) {
+      console.error("Error saving coach review from chat", e);
+      debug.coachReviewSavedToDailyLogs = false;
+      debug.coachReviewSaveError = String(e?.message || e);
+    }
+  }
+}
+     
         let cleanedReply = stripCoachPlanBlock(rawReply);
     cleanedReply = cleanedReply.replace(/\[\[DAILY_LOG_JSON[\s\S]*?\]\]/g, "").trim();
     cleanedReply = cleanedReply.replace(/\[\[MEAL_LOG_JSON[\s\S]*?\]\]/g, "").trim();
