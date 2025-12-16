@@ -1958,15 +1958,13 @@ export default async function handler(req, res) {
   // BUILD MESSAGES FOR OPENAI
   const messages = [{ role: "system", content: SYSTEM_PROMPT }];
 
-  // Pass onboarding_complete flag
-  if (onboardingComplete !== null) {
-    messages.push({
-      role: "system",
-      content: `custom.onboarding_complete: ${
-        onboardingComplete ? "true" : "false"
-      }`
-    });
-  }
+  // Pass onboarding_complete flag (default to false if missing)
+messages.push({
+  role: "system",
+  content: `custom.onboarding_complete: ${
+    onboardingComplete === true ? "true" : "false"
+  }`
+});
 
   // Tell the model not to repeat its intro once it's been sent
   if (introAlreadySent) {
