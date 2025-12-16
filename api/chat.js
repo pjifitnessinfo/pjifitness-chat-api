@@ -2051,6 +2051,9 @@ debug.messagesCount = messages.length; // (optional: keep if you want it accurat
       data.choices?.[0]?.message?.content ||
       "Sorry, I’m not sure what to say to that.";
 
+     debug.rawReplyHasCoachReview = rawReply.includes("[[COACH_REVIEW_JSON");
+debug.rawReplyTail = rawReply.slice(-600);
+
     debug.modelReplyTruncated = !data.choices?.[0]?.message?.content;
 
     let planJson = null;
