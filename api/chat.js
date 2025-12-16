@@ -2015,6 +2015,15 @@ messages.push({
 
   debug.messagesCount = messages.length;
 
+   // HARD ENFORCEMENT: force COACH_REVIEW_JSON to always be present
+messages.push({
+  role: "system",
+  content:
+    "CRITICAL: You MUST end your response with exactly one [[COACH_REVIEW_JSON {..} ]] block. If you do not include it, the app will treat your response as invalid. Output it even if you have little info (use empty arrays and generic summary)."
+});
+
+debug.messagesCount = messages.length; // (optional: keep if you want it accurate)
+
   try {
     const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
