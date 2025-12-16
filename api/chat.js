@@ -1308,6 +1308,28 @@ function extractDailyReviewFromText(text) {
   }
 }
 
+// NEW: Extract COACH_REVIEW_JSON block from a reply
+function extractCoachReviewFromText(text) {
+  if (!text) return null;
+  const start = text.indexOf("[[COACH_REVIEW_JSON");
+  if (start === -1) return null;
+  const end = text.indexOf("]]", start);
+  if (end === -1) return null;
+
+  const block = text.substring(start, end + 2);
+  const jsonStart = block.indexOf("{");
+  const jsonEnd = block.lastIndexOf("}");
+  if (jsonStart === -1 || jsonEnd === -1) return null;
+
+  const jsonString = block.substring(jsonStart, jsonEnd + 1);
+  try {
+    return JSON.parse(jsonString);
+  } catch (e) {
+    console.error("Failed to parse COACH_REVIEW_JSON:", e, jsonString);
+    return null;
+  }
+}
+
 // NEW: Try to grab calories from the coach reply text
 // We pick the LARGEST calorie number (so "Total is about 1070 kcal"
 // wins over "about 100 kcal each").
