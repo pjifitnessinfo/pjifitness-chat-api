@@ -1372,7 +1372,7 @@ async function upsertMealLog(customerGid, meal, options = {}, dateKey) {
   const protein = Number(meal.protein) || 0;
   const carbs = Number(meal.carbs) || 0;
   const fat = Number(meal.fat) || 0;
-  const mealType = meal.meal_type || "other";
+  const mealType = normalizeMealType(meal.meal_type || "other");
 
   let items = meal.items;
   if (!Array.isArray(items)) {
