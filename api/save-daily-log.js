@@ -5,6 +5,22 @@ const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
 
 /**
+ * ✅ Option B Core Fix Helpers
+ * - clientDate: prefer user's local date sent from the browser
+ * - fallback: server-local YYYY-MM-DD (NOT UTC)
+ */
+function isYMD(s) {
+  return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+function localYMD() {
+  const d = new Date();
+  const off = d.getTimezoneOffset(); // minutes
+  const local = new Date(d.getTime() - off * 60000);
+  return local.toISOString().slice(0, 10);
+}
+
+/**
  * Helper: call Shopify Admin GraphQL
  */
 async function shopifyAdminFetch(query, variables = {}) {
@@ -97,9 +113,9 @@ function computeTotalsFromMeals(meals) {
 
 /**
  * Sanitize the log object so only the fields we expect get stored.
- * IMPORTANT: this includes meals + macros now.
+ * ✅ UPDATED: forces date to dateKey (clientDate or server-local fallback)
  */
-function sanitizeLog(raw) {
+function sanitizeLog(raw, dateKey) {
   if (!raw || typeof raw !== "object") return null;
 
   const SAFE_FIELDS = [
@@ -116,8 +132,17 @@ function sanitizeLog(raw) {
     "carbs",
     "fat",
 
+    // ✅ Keep totals if your UI uses them (safe to include)
+    "total_protein",
+    "total_carbs",
+    "total_fat",
+
+    // ✅ Optional fields you already appear to use in UI (safe to include)
+    "coach_review",
+    "notes",
+
     // meals structures
-    "meals", // array of meals
+    "meals",
     "breakfast",
     "lunch",
     "dinner",
@@ -135,10 +160,8 @@ function sanitizeLog(raw) {
     }
   }
 
-  // Ensure date exists + is ISO (YYYY-MM-DD)
-  if (!clean.date) {
-    clean.date = new Date().toISOString().slice(0, 10);
-  }
+  // ✅ Core fix: force final dateKey, never UTC
+  clean.date = isYMD(dateKey) ? dateKey : localYMD();
 
   return clean;
 }
@@ -157,11 +180,9 @@ export default async function handler(req, res) {
   ];
 
   if (ALLOWED_ORIGINS.includes(origin)) {
-    // browser calls
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
   } else {
-    // tools like Postman/curl
     res.setHeader("Access-Control-Allow-Origin", "*");
   }
 
@@ -173,7 +194,6 @@ export default async function handler(req, res) {
       "Content-Type, Authorization, X-Requested-With, Accept"
   );
 
-  // Preflight
   if (req.method === "OPTIONS") {
     res.status(200).end();
     return;
@@ -193,15 +213,18 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Invalid JSON body" });
   }
 
-  const { customerId, log } = body || {};
+  const { customerId, log, clientDate } = body || {};
   if (!customerId || !log) {
     return res.status(400).json({ error: "Missing customerId or log" });
   }
 
+  // ✅ Core Fix: choose the date key once, use everywhere
+  const dateKey = isYMD(clientDate) ? clientDate : localYMD();
+
   // Shopify Admin GraphQL expects a GID, not a plain number
   const customerGid = `gid://shopify/Customer/${customerId}`;
 
-  const safeLog = sanitizeLog(log);
+  const safeLog = sanitizeLog(log, dateKey);
   if (!safeLog) {
     return res.status(400).json({ error: "Invalid log payload" });
   }
@@ -220,7 +243,6 @@ export default async function handler(req, res) {
   `;
 
   let existingLogs = [];
-  // metafieldId not used currently, but kept for possible future updates
   let metafieldId = null;
 
   try {
@@ -240,17 +262,15 @@ export default async function handler(req, res) {
     }
   } catch (err) {
     console.error("Error fetching existing daily_logs:", err);
-    // Keep going; we'll just treat as empty logs
   }
 
   // 2) Merge or append the log by date
-  const dateStr = safeLog.date;
+  const dateStr = safeLog.date; // ✅ will be dateKey
   let updatedLogs = [...existingLogs];
 
-  // find existing log for this date
   let foundIndex = -1;
   for (let i = 0; i < updatedLogs.length; i++) {
-    if (updatedLogs[i].date === dateStr) {
+    if (updatedLogs[i]?.date === dateStr) {
       foundIndex = i;
       break;
     }
@@ -261,18 +281,16 @@ export default async function handler(req, res) {
   if (foundIndex >= 0) {
     const existing = updatedLogs[foundIndex];
 
-    // merge shallow fields (weight, calories, steps, mood, etc.)
     const merged = {
       ...existing,
       ...safeLog,
+      date: dateStr, // ✅ force again for safety
     };
 
-    // if either has a meals array, concatenate them
     if (Array.isArray(existing.meals) || Array.isArray(safeLog.meals)) {
       merged.meals = [...(existing.meals || []), ...(safeLog.meals || [])];
     }
 
-    // 🔥 Recompute totals from ALL meals (old + photo-estimate)
     if (Array.isArray(merged.meals)) {
       const totals = computeTotalsFromMeals(merged.meals);
       merged.calories = totals.calories;
@@ -285,8 +303,7 @@ export default async function handler(req, res) {
     updatedLogs[foundIndex] = merged;
     finalLogForResponse = merged;
   } else {
-    // no log for this date yet → append
-    const newLog = { ...safeLog };
+    const newLog = { ...safeLog, date: dateStr };
 
     if (Array.isArray(newLog.meals)) {
       const totals = computeTotalsFromMeals(newLog.meals);
@@ -301,7 +318,7 @@ export default async function handler(req, res) {
     finalLogForResponse = newLog;
   }
 
-  // Optional: cap history (e.g., last 365 logs)
+  // Optional: cap history
   const MAX_LOGS = 365;
   const trimmedLogs =
     updatedLogs.length > MAX_LOGS
@@ -357,7 +374,6 @@ export default async function handler(req, res) {
     });
   }
 
-  // Return the merged / final log so frontend can inspect it if needed
+  // Return the merged / final log
   return res.status(200).json({ ok: true, log: finalLogForResponse });
 }
-
