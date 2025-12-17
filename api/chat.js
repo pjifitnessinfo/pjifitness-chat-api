@@ -2008,14 +2008,14 @@ export default async function handler(req, res) {
         debug.mealLogsSample = mealLogs.slice(0, 2);
         try {
           for (const meal of mealLogs) {
-            await upsertMealLog(
-              customerGid,
-              meal,
-              dateKey,
-              overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {},
-              dateKey
-            );
-          }
+  await upsertMealLog(
+    customerGid,
+    meal,
+    dateKey,
+    overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
+  );
+}
+
           debug.mealLogsSavedToDailyLogs = true;
         } catch (e) {
           console.error("Error saving meal logs from chat", e);
