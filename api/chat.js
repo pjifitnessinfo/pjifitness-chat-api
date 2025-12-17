@@ -2011,6 +2011,7 @@ export default async function handler(req, res) {
             await upsertMealLog(
               customerGid,
               meal,
+              dateKey,
               overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {},
               dateKey
             );
@@ -2050,6 +2051,7 @@ export default async function handler(req, res) {
             await upsertMealLog(
               customerGid,
               fallbackMeal,
+              dateKey,
               overrideMeal ? { replaceMealType: finalMealType } : {},
               dateKey
             );
