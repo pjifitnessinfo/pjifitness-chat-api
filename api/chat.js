@@ -1951,14 +1951,8 @@ export default async function handler(req, res) {
       planSource = "block";
     }
 
-    if (!planJson) {
-      const textPlan = extractPlanFromText(rawReply);
-      debug.planFromText = !!textPlan;
-      if (textPlan) {
-        planJson = textPlan;
-        planSource = "text";
-      }
-    }
+    // ✅ SAFETY: never derive/save plan from normal text
+debug.planFromText = false;
 
     if (planJson) {
       debug.planJson = planJson;
