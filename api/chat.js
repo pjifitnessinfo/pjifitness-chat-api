@@ -593,6 +593,26 @@ RULES:
 - If you skip DAILY_LOG_JSON when daily data is given, you are BREAKING THE APP. Do not skip it.
 `;
 
+/* ============================
+   PJ PLAN VALIDATOR
+   ============================ */
+function pjPlanIsValid(plan){
+  if (!plan || typeof plan !== "object") return false;
+
+  const cal = Number(plan.calories_target ?? plan.calories);
+  const startW = Number(plan.start_weight);
+  const goalW  = Number(plan.goal_weight);
+  const protein = Number(plan.protein_target ?? plan.protein);
+
+  if (!Number.isFinite(cal) || cal < 1000) return false;
+  if (!Number.isFinite(startW) || startW <= 0) return false;
+  if (!Number.isFinite(goalW)  || goalW  <= 0) return false;
+  if (!Number.isFinite(protein) || protein < 50) return false;
+
+  return true;
+}
+
+
 // --- Helper: Shopify GraphQL client (for metafields) ---
 async function shopifyGraphQL(query, variables = {}) {
   if (!SHOPIFY_STORE_DOMAIN || !SHOPIFY_ADMIN_API_ACCESS_TOKEN) {
