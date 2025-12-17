@@ -1360,18 +1360,21 @@ function detectSimpleMealFromUser(userMsg) {
 }
 
 // ✅ FIXED: force meals to save to dateKey (client-local day), not server UTC
-async function upsertMealLog(customerGid, meal, options = {}, dateKey) {
-  if (!customerGid || !meal || !dateKey) return;
+async function upsertMealLog(customerGid, meal, dateKey, options = {}) {
+  if (!customerGid || !meal) return;
+
+  // ✅ validate dateKey or fall back safely
+  const cleanDate = isYMD(dateKey) ? dateKey : localYMD();
 
   const { logs } = await getDailyLogsMetafield(customerGid);
-
-  const cleanDate = dateKey;
   const idx = logs.findIndex(entry => entry && entry.date === cleanDate);
 
+  // Normalize macros
   const cals = Number(meal.calories) || 0;
   const protein = Number(meal.protein) || 0;
   const carbs = Number(meal.carbs) || 0;
   const fat = Number(meal.fat) || 0;
+
   const mealType = normalizeMealType(meal.meal_type || "other");
 
   let items = meal.items;
@@ -1386,14 +1389,16 @@ async function upsertMealLog(customerGid, meal, options = {}, dateKey) {
     const existing = logs[idx] || {};
     const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
 
+    // If override for this meal type, remove prior meals of that type
     let baseMeals = existingMeals;
     if (replaceMealType && mealType === replaceMealType) {
-      baseMeals = existingMeals.filter(m => !m || m.meal_type !== replaceMealType);
+      baseMeals = existingMeals.filter(m => !m || normalizeMealType(m.meal_type) !== replaceMealType);
     }
 
     const newMeal = { meal_type: mealType, items, calories: cals, protein, carbs, fat };
     const updatedMeals = baseMeals.concat([newMeal]);
 
+    // Recompute totals from all meals for THIS day
     let sumCals = 0, sumP = 0, sumC = 0, sumF = 0;
     updatedMeals.forEach(m => {
       sumCals += Number(m.calories) || 0;
@@ -1406,11 +1411,11 @@ async function upsertMealLog(customerGid, meal, options = {}, dateKey) {
       ...existing,
       date: cleanDate,
       meals: updatedMeals,
-      total_calories: sumCals || existing.total_calories || existing.calories || null,
-      calories: sumCals || existing.calories || null,
-      total_protein: sumP || existing.total_protein || existing.protein || null,
-      total_carbs: sumC || existing.total_carbs || existing.carbs || null,
-      total_fat: sumF || existing.total_fat || existing.fat || null,
+      total_calories: sumCals,
+      calories: sumCals,
+      total_protein: sumP,
+      total_carbs: sumC,
+      total_fat: sumF,
       coach_focus: existing.coach_focus || "Meals logged from chat."
     };
   } else {
