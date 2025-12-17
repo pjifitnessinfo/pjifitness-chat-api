@@ -1760,6 +1760,17 @@ function detectMealOverride(userMsg) {
   };
 }
 
+function isYMD(s) {
+  return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+function localYMD() {
+  const d = new Date();
+  const off = d.getTimezoneOffset();
+  const local = new Date(d.getTime() - off * 60000);
+  return local.toISOString().slice(0, 10);
+}
+
 export default async function handler(req, res) {
   // ===== CORS FOR PJIFITNESS =====
   const origin = req.headers.origin || "";
