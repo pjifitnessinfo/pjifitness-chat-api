@@ -1827,6 +1827,13 @@ export default async function handler(req, res) {
     return;
   }
 
+   // ===============================
+// PJ DATE SOURCE OF TRUTH
+// ===============================
+const clientDate = body?.clientDate;
+const dateKey = isYMD(clientDate) ? clientDate : localYMD();
+
+
   // Basic fields from body
   const userMessage = body.message || "";
   const history = Array.isArray(body.history) ? body.history : [];
