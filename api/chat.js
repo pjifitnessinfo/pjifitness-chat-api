@@ -2035,7 +2035,7 @@ const dateKey = isYMD(clientDate) ? clientDate : localYMD();
   // BUILD MESSAGES FOR OPENAI
   const messages = [{ role: "system", content: SYSTEM_PROMPT }];
 
-   const todayStr = new Date().toISOString().slice(0, 10);
+   const todayStr = dateKey; // ✅ use client-local date
 
 messages.push({
   role: "system",
@@ -2045,6 +2045,7 @@ messages.push({
     `DAILY_LOG_JSON, MEAL_LOG_JSON, DAILY_REVIEW_JSON, COACH_REVIEW_JSON. ` +
     `Do NOT output any other date.`
 });
+
 
   // Pass onboarding_complete flag (default to false if missing)
 messages.push({
