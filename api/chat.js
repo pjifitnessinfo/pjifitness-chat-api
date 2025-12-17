@@ -666,8 +666,6 @@ async function setFreeChatRemaining(customerGid, remaining) {
   });
 }
 
-
-
 // Helper: parse body safely
 async function parseBody(req) {
   return new Promise((resolve, reject) => {
@@ -719,25 +717,18 @@ function extractCoachPlanJson(text) {
 }
 
 // Fallback: try to pull calories / protein / fat out of the text bullets
-// We only SAVE a text-based plan the first time (before onboarding_complete is true).
 function extractPlanFromText(text) {
   if (!text) return null;
 
-  // Try to grab the DAILY CALORIE TARGET specifically
-  // e.g. "Your daily calorie target is about 2050..."
   const calMatch =
     text.match(/daily calorie target[^0-9]*([0-9]{3,4})/i) ||
     text.match(/target is about[^0-9]*([0-9]{3,4})/i) ||
     text.match(/(\d{3,4})\s*(?:calories|cals?|kcals?)/i);
 
-  // Protein: look for a grams number near the word "protein"
-  // e.g. "Aim for around 160g of protein per day"
   const proteinMatch =
     text.match(/protein[^0-9]*([0-9]{2,4})\s*g/i) ||
     text.match(/aim for around[^0-9]*([0-9]{2,4})\s*g[^.]*protein/i);
 
-  // Fat: grams near the word "fat" or "fats"
-  // e.g. "For fats, target about 60–80g per day"
   const fatMatch =
     text.match(/fat[s]?[^0-9]*([0-9]{1,3})\s*g/i) ||
     text.match(/target about[^0-9]*([0-9]{1,3})\s*g[^.]*fat/i);
@@ -746,14 +737,8 @@ function extractPlanFromText(text) {
   const protein  = proteinMatch ? Number(proteinMatch[1]) : 0;
   const fat      = fatMatch ? Number(fatMatch[1]) : 0;
 
-  // 🚫 Sanity check: if calories are present but obviously wrong (< 500), ignore.
-  if (calories && calories < 500) {
-    return null;
-  }
-
-  if (!calories && !protein && !fat) {
-    return null;
-  }
+  if (calories && calories < 500) return null;
+  if (!calories && !protein && !fat) return null;
 
   return {
     calories_target: calories || 0,
@@ -762,7 +747,6 @@ function extractPlanFromText(text) {
   };
 }
 
-// Normalize a raw plan object and fill in missing macros / weights
 function finalizePlanJson(planJson) {
   if (!planJson) return null;
 
@@ -776,18 +760,14 @@ function finalizePlanJson(planJson) {
   let   fatTarget      = toNum(planJson.fat_target || planJson.fat);
   let   carbs          = toNum(planJson.carbs);
 
-  // If fat is missing/0, assume ~30% of calories from fat
   if (!fatTarget && caloriesTarget) {
     fatTarget = Math.round((caloriesTarget * 0.30) / 9);
   }
 
-  // If carbs missing/0, fill remaining calories after protein + fat
   if (!carbs && caloriesTarget && (proteinTarget || fatTarget)) {
     const usedCals   = proteinTarget * 4 + fatTarget * 9;
     const remaining  = caloriesTarget - usedCals;
-    if (remaining > 0) {
-      carbs = Math.round(remaining / 4);
-    }
+    if (remaining > 0) carbs = Math.round(remaining / 4);
   }
 
   const startWeight = planJson.start_weight != null
@@ -813,15 +793,12 @@ function finalizePlanJson(planJson) {
   };
 }
 
-// Strip the COACH_PLAN_JSON block from the text before sending to user
 function stripCoachPlanBlock(text) {
   if (!text) return text;
   return text.replace(/\[\[COACH_PLAN_JSON[\s\S]*?\]\]/, "").trim();
 }
 
-// Resolve a customer GID from request body (customerId or email)
 async function resolveCustomerGidFromBody(body) {
-  // Try various id fields first
   let rawId =
     body.customerId ||
     body.shopifyCustomerId ||
@@ -831,16 +808,11 @@ async function resolveCustomerGidFromBody(body) {
 
   if (rawId) {
     const str = String(rawId);
-    if (str.startsWith("gid://shopify/Customer/")) {
-      return str;
-    }
+    if (str.startsWith("gid://shopify/Customer/")) return str;
     const numeric = str.replace(/[^0-9]/g, "");
-    if (numeric) {
-      return `gid://shopify/Customer/${numeric}`;
-    }
+    if (numeric) return `gid://shopify/Customer/${numeric}`;
   }
 
-  // Fallback: try email lookup
   const email = body.email;
   if (!email) return null;
 
@@ -850,10 +822,7 @@ async function resolveCustomerGidFromBody(body) {
       query FindCustomerByEmail($query: String!) {
         customers(first: 1, query: $query) {
           edges {
-            node {
-              id
-              email
-            }
+            node { id email }
           }
         }
       }
@@ -869,46 +838,29 @@ async function resolveCustomerGidFromBody(body) {
   }
 }
 
-// Save plan into:
-// - custom.coach_plan (JSON, full plan including weekly_loss_low/high, etc.)
-// - custom.plan_json  (JSON clone, for projection card)
-// - custom.start_weight (number_decimal or whatever definition is)
-// - custom.goal_weight  (number_decimal or existing definition)
-// - custom.onboarding_complete (boolean/text "true")
 async function saveCoachPlanForCustomer(customerGid, planJson) {
   if (!customerGid || !planJson) return;
 
-  // 🔧 normalize + fill missing fat/carbs/start/goal before saving
   planJson = finalizePlanJson(planJson) || planJson;
 
   const ownerId = customerGid;
 
-  // Map start/goal weight from planJson, with sensible fallbacks
   const startWeight = planJson.start_weight != null
     ? Number(planJson.start_weight)
-    : (planJson.current_weight_lbs != null
-        ? Number(planJson.current_weight_lbs)
-        : 0);
+    : (planJson.current_weight_lbs != null ? Number(planJson.current_weight_lbs) : 0);
 
   const goalWeight = planJson.goal_weight != null
     ? Number(planJson.goal_weight)
-    : (planJson.goal_weight_lbs != null
-        ? Number(planJson.goal_weight_lbs)
-        : 0);
+    : (planJson.goal_weight_lbs != null ? Number(planJson.goal_weight_lbs) : 0);
 
   const caloriesTarget = Number(planJson.calories_target) || 0;
   const proteinTarget  = Number(planJson.protein_target)  || 0;
   const fatTarget      = Number(planJson.fat_target)      || 0;
 
-  // Rough carb calculation from remaining calories (if not already provided)
   let carbs = Number(planJson.carbs || 0);
   if (!carbs && caloriesTarget && proteinTarget && fatTarget) {
-    const calsFromProtein = proteinTarget * 4;
-    const calsFromFat = fatTarget * 9;
-    const remaining = caloriesTarget - (calsFromProtein + calsFromFat);
-    if (remaining > 0) {
-      carbs = Math.round(remaining / 4);
-    }
+    const remaining = caloriesTarget - (proteinTarget * 4 + fatTarget * 9);
+    if (remaining > 0) carbs = Math.round(remaining / 4);
   }
 
   const coachPlan = {
@@ -921,17 +873,8 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
   const mutation = `
     mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
       metafieldsSet(metafields: $metafields) {
-        metafields {
-          id
-          key
-          namespace
-          type
-          value
-        }
-        userErrors {
-          field
-          message
-        }
+        metafields { id key namespace type value }
+        userErrors { field message }
       }
     }
   `;
@@ -955,18 +898,17 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
       ownerId,
       namespace: "custom",
       key: "onboarding_complete",
-      // 🔁 if this metafield is BOOLEAN in Shopify, change type to "boolean"
       type: "single_line_text_field",
       value: "true"
     }
   ];
 
-    if (startWeight) {
+  if (startWeight) {
     metafields.push({
       ownerId,
       namespace: "custom",
       key: "start_weight",
-      type: "number_integer",          // ⬅️ changed
+      type: "number_integer",
       value: String(Math.round(startWeight))
     });
   }
@@ -976,14 +918,12 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
       ownerId,
       namespace: "custom",
       key: "goal_weight",
-      type: "number_integer",          // ⬅️ changed
+      type: "number_integer",
       value: String(Math.round(goalWeight))
     });
   }
 
-  const variables = { metafields };
-
-  const data = await shopifyGraphQL(mutation, variables);
+  const data = await shopifyGraphQL(mutation, { metafields });
   const userErrors = data?.metafieldsSet?.userErrors || [];
   if (userErrors.length) {
     console.error("metafieldsSet userErrors (coach_plan):", userErrors);
@@ -997,16 +937,10 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
    DAILY LOG HELPERS (CALORIES + MEALS/MACROS)
    ================================================== */
 
-// Parse messages like:
-//  - "log today as 1850 calories"
-//  - "today was about 2200 cals"
-//  - "I was around 2000 calories today"
-// We ONLY treat these as **daily totals** (not per meal).
 function parseDailyCaloriesFromMessage(msg) {
   if (!msg || typeof msg !== "string") return null;
   const text = msg.toLowerCase();
 
-  // Require some "day" context so we don't confuse a single meal with the whole day
   const mentionsDay =
     text.includes("today") ||
     text.includes("for the day") ||
@@ -1014,27 +948,22 @@ function parseDailyCaloriesFromMessage(msg) {
     text.includes("all day") ||
     text.includes("the day");
 
-  // Pattern 1: "log today as 1850" (with or without "calories")
   let m = text.match(/log\s+(?:today|the day)\s+as\s+(\d{3,4})/i);
   if (m && m[1]) {
     const n = Number(m[1]);
     if (n >= 500 && n <= 6000) return n;
   }
 
-  // Pattern 2: "today was about 2200 calories", "2000 cals today", etc.
   if (mentionsDay) {
-    // Look for "#### calories/cals" somewhere in a message that talks about today/the day
     m = text.match(/(\d{3,4})\s*(?:calories|cals?|kcals?)/i);
     if (m && m[1]) {
       const n = Number(m[1]);
       if (n >= 500 && n <= 6000) return n;
     }
   }
-
   return null;
 }
 
-// Read existing daily_logs metafield for a customer
 async function getDailyLogsMetafield(customerGid) {
   if (!customerGid) return { logs: [], metafieldId: null };
 
@@ -1042,10 +971,7 @@ async function getDailyLogsMetafield(customerGid) {
     `
     query GetDailyLogs($id: ID!) {
       customer(id: $id) {
-        metafield(namespace: "custom", key: "daily_logs") {
-          id
-          value
-        }
+        metafield(namespace: "custom", key: "daily_logs") { id value }
       }
     }
     `,
@@ -1053,15 +979,11 @@ async function getDailyLogsMetafield(customerGid) {
   );
 
   const mf = data?.customer?.metafield;
-  if (!mf || !mf.value) {
-    return { logs: [], metafieldId: null };
-  }
+  if (!mf || !mf.value) return { logs: [], metafieldId: null };
 
   try {
     const parsed = JSON.parse(mf.value);
-    if (Array.isArray(parsed)) {
-      return { logs: parsed, metafieldId: mf.id || null };
-    }
+    if (Array.isArray(parsed)) return { logs: parsed, metafieldId: mf.id || null };
     return { logs: [], metafieldId: mf.id || null };
   } catch (e) {
     console.error("Error parsing daily_logs metafield JSON", e, mf.value);
@@ -1069,23 +991,13 @@ async function getDailyLogsMetafield(customerGid) {
   }
 }
 
-// Save daily_logs metafield back to Shopify
 async function saveDailyLogsMetafield(customerGid, logs) {
   if (!customerGid) return;
   const mutation = `
     mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
       metafieldsSet(metafields: $metafields) {
-        metafields {
-          id
-          key
-          namespace
-          type
-          value
-        }
-        userErrors {
-          field
-          message
-        }
+        metafields { id key namespace type value }
+        userErrors { field message }
       }
     }
   `;
@@ -1106,33 +1018,30 @@ async function saveDailyLogsMetafield(customerGid, logs) {
     console.error("metafieldsSet userErrors (daily_logs):", userErrors);
     throw new Error(
       "Shopify userErrors when saving daily_logs: " +
-        userErrors
-          .map(e => `${(e.field || []).join(".")}: ${e.message}`)
-          .join(" | ")
+        userErrors.map(e => `${(e.field || []).join(".")}: ${e.message}`).join(" | ")
     );
   }
 }
 
-// NEW: upsert a DAILY TOTAL CALORIES into today's log
-async function upsertDailyTotalCalories(customerGid, calories) {
-  if (!customerGid || !calories) return;
+// ✅ FIXED: use dateKey (client-local) — NOT server UTC day
+async function upsertDailyTotalCalories(customerGid, calories, dateKey) {
+  if (!customerGid || !calories || !dateKey) return;
 
   const { logs } = await getDailyLogsMetafield(customerGid);
-  const today = new Date().toISOString().slice(0, 10);
-  const idx = logs.findIndex(entry => entry && entry.date === today);
+  const idx = logs.findIndex(entry => entry && entry.date === dateKey);
 
   if (idx >= 0) {
     const existing = logs[idx] || {};
     logs[idx] = {
       ...existing,
-      date: today,
+      date: dateKey,
       calories: calories,
       total_calories: calories,
       coach_focus: existing.coach_focus || "Daily calories logged from chat."
     };
   } else {
     logs.push({
-      date: today,
+      date: dateKey,
       weight: null,
       steps: null,
       meals: [],
@@ -1150,7 +1059,6 @@ async function upsertDailyTotalCalories(customerGid, calories) {
   await saveDailyLogsMetafield(customerGid, logs);
 }
 
-// 🔥 NEW: Extract a DAILY_LOG_JSON block from the model reply
 function extractDailyLogFromText(text) {
   if (!text) return null;
   const start = text.indexOf("[[DAILY_LOG_JSON");
@@ -1172,15 +1080,16 @@ function extractDailyLogFromText(text) {
   }
 }
 
-// 🔥 NEW: Upsert DAILY_LOG_JSON into daily_logs (weight / calories / steps / macros)
-async function upsertDailyLog(customerGid, dailyLog) {
-  if (!customerGid || !dailyLog) return;
+// ✅ FIXED: default date to dateKey, not server UTC
+async function upsertDailyLog(customerGid, dailyLog, dateKey) {
+  if (!customerGid || !dailyLog || !dateKey) return;
 
   const { logs } = await getDailyLogsMetafield(customerGid);
 
-  const todayStr = new Date().toISOString().slice(0, 10);
   const date =
-    (typeof dailyLog.date === "string" && dailyLog.date.trim()) || todayStr;
+    (typeof dailyLog.date === "string" && dailyLog.date.trim())
+      ? dailyLog.date.trim()
+      : dateKey;
 
   const idx = logs.findIndex(entry => entry && entry.date === date);
 
@@ -1209,31 +1118,20 @@ async function upsertDailyLog(customerGid, dailyLog) {
       weight: weight !== null ? weight : existing.weight ?? null,
       steps: steps !== null ? steps : existing.steps ?? null,
       calories:
-        calories !== null
-          ? calories
-          : existing.calories ?? existing.total_calories ?? null,
+        calories !== null ? calories : existing.calories ?? existing.total_calories ?? null,
       total_calories:
-        calories !== null
-          ? calories
-          : existing.total_calories ?? existing.calories ?? null,
+        calories !== null ? calories : existing.total_calories ?? existing.calories ?? null,
       total_protein:
-        protein !== null
-          ? protein
-          : existing.total_protein ?? existing.protein ?? null,
+        protein !== null ? protein : existing.total_protein ?? existing.protein ?? null,
       total_carbs:
-        carbs !== null
-          ? carbs
-          : existing.total_carbs ?? existing.carbs ?? null,
+        carbs !== null ? carbs : existing.total_carbs ?? existing.carbs ?? null,
       total_fat:
         fat !== null ? fat : existing.total_fat ?? existing.fat ?? null,
       meals: Array.isArray(existing.meals) ? existing.meals : [],
       mood: existing.mood ?? null,
       struggle: existing.struggle ?? null,
       coach_focus:
-        existing.coach_focus ||
-        notes ||
-        existing.notes ||
-        "Daily check-in logged from chat.",
+        existing.coach_focus || notes || existing.notes || "Daily check-in logged from chat.",
       notes: notes !== null ? notes : existing.notes ?? null
     };
   } else {
@@ -1257,7 +1155,6 @@ async function upsertDailyLog(customerGid, dailyLog) {
   await saveDailyLogsMetafield(customerGid, logs);
 }
 
-// Extract one or more MEAL_LOG_JSON blocks from a reply
 function extractMealLogsFromText(text) {
   if (!text) return [];
   const results = [];
@@ -1275,8 +1172,7 @@ function extractMealLogsFromText(text) {
     if (jsonStart !== -1 && jsonEnd !== -1) {
       const jsonString = block.substring(jsonStart, jsonEnd + 1);
       try {
-        const obj = JSON.parse(jsonString);
-        results.push(obj);
+        results.push(JSON.parse(jsonString));
       } catch (e) {
         console.error("Failed to parse MEAL_LOG_JSON:", e, jsonString);
       }
@@ -1287,7 +1183,6 @@ function extractMealLogsFromText(text) {
   return results;
 }
 
-// NEW: Extract DAILY_REVIEW_JSON block from a reply
 function extractDailyReviewFromText(text) {
   if (!text) return null;
   const start = text.indexOf("[[DAILY_REVIEW_JSON");
@@ -1309,7 +1204,6 @@ function extractDailyReviewFromText(text) {
   }
 }
 
-// NEW: Extract COACH_REVIEW_JSON block from a reply
 function extractCoachReviewFromText(text) {
   if (!text) return null;
   const start = text.indexOf("[[COACH_REVIEW_JSON");
@@ -1331,9 +1225,6 @@ function extractCoachReviewFromText(text) {
   }
 }
 
-// NEW: Try to grab calories from the coach reply text
-// We pick the LARGEST calorie number (so "Total is about 1070 kcal"
-// wins over "about 100 kcal each").
 function parseCaloriesFromReplyText(text) {
   if (!text || typeof text !== "string") return null;
 
@@ -1344,16 +1235,12 @@ function parseCaloriesFromReplyText(text) {
   while ((match = regex.exec(text)) !== null) {
     const n = Number(match[1]);
     if (n > 0 && n < 6000) {
-      if (best === null || n > best) {
-        best = n;
-      }
+      if (best === null || n > best) best = n;
     }
   }
-
   return best;
 }
 
-// 🔥 NEW: Try to grab calories from the USER message text
 function parseCaloriesFromUserText(text) {
   if (!text || typeof text !== "string") return null;
   const m = text.match(/(\d{2,4})\s*(?:cal(?:ories|s|)?|kcals?)/i);
@@ -1364,7 +1251,6 @@ function parseCaloriesFromUserText(text) {
   return null;
 }
 
-// NEW: Try to grab protein from the coach reply text
 function parseProteinFromReplyText(text) {
   if (!text || typeof text !== "string") return null;
   const m = text.match(/(\d{1,3})\s*(?:g|grams?)\s*protein/i);
@@ -1374,8 +1260,7 @@ function parseProteinFromReplyText(text) {
   }
   return null;
 }
-// Use the coach reply text to refine the meal_type
-// Only trust explicit "logged as X" phrases, NOT casual "for dinner?" questions.
+
 function inferMealTypeFromReply(originalType, replyText) {
   if (!replyText || typeof replyText !== "string") return originalType;
   const lower = replyText.toLowerCase();
@@ -1387,31 +1272,21 @@ function inferMealTypeFromReply(originalType, replyText) {
   return originalType;
 }
 
-// 🔥 NEW: Detect simple meal logging phrases from the user, like:
-// - "Log this as dinner: 6oz grilled chicken, 1 cup rice, some veggies."
-// - "For lunch, I had two English muffins with butter."
-// - "I had a turkey sandwich for lunch, about 450 cals"
-// - "I had 1 Muscle Milk shake at 160 calories"
 function detectSimpleMealFromUser(userMsg) {
   if (!userMsg || typeof userMsg !== "string") return null;
 
   const original = userMsg;
   const text = userMsg.toLowerCase();
 
-  // Pattern 0: "For lunch, I had ..." / "For lunch I had ..."
   let m = text.match(
     /for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*,?\s+i\s+(?:had|ate)\s+(.*)$/i
   );
   if (m) {
-    const mealTypeWord = m[1];
-    const mealType = normalizeMealType(mealTypeWord);
+    const mealType = normalizeMealType(m[1]);
     const descLower = m[2] || "";
-
     const startIndex = text.indexOf(descLower);
     let desc = descLower;
-    if (startIndex !== -1) {
-      desc = original.substring(startIndex, startIndex + descLower.length);
-    }
+    if (startIndex !== -1) desc = original.substring(startIndex, startIndex + descLower.length);
 
     desc = (desc || "")
       .trim()
@@ -1420,14 +1295,9 @@ function detectSimpleMealFromUser(userMsg) {
       .trim();
 
     if (!desc) return null;
-
-    return {
-      meal_type: mealType,
-      items: [desc]
-    };
+    return { meal_type: mealType, items: [desc] };
   }
 
-  // Pattern 1: "log this as dinner: ..."
   m = text.match(
     /log\s+this\s+as\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*[:\-]?\s*(.*)$/i
   );
@@ -1436,9 +1306,8 @@ function detectSimpleMealFromUser(userMsg) {
     const descLower = m[2] || "";
     const startIndex = text.indexOf(descLower);
     let desc = descLower;
-    if (startIndex !== -1) {
-      desc = original.substring(startIndex, startIndex + descLower.length);
-    }
+    if (startIndex !== -1) desc = original.substring(startIndex, startIndex + descLower.length);
+
     desc = (desc || "")
       .trim()
       .replace(/^[“"']/g, "")
@@ -1446,27 +1315,19 @@ function detectSimpleMealFromUser(userMsg) {
       .trim();
 
     if (!desc) return null;
-
-    return {
-      meal_type: mealType,
-      items: [desc]
-    };
+    return { meal_type: mealType, items: [desc] };
   }
 
-  // Pattern 2: "I had ... for breakfast/lunch/dinner/snack"
   m = text.match(
     /i\s+(?:had|ate)\s+(.*)\s+for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b/i
   );
   if (m) {
     const descLower = m[1] || "";
-    const mealTypeWord = m[2];
-    const mealType = normalizeMealType(mealTypeWord);
+    const mealType = normalizeMealType(m[2]);
 
     const startIndex = text.indexOf(descLower);
     let desc = descLower;
-    if (startIndex !== -1) {
-      desc = original.substring(startIndex, startIndex + descLower.length);
-    }
+    if (startIndex !== -1) desc = original.substring(startIndex, startIndex + descLower.length);
 
     desc = (desc || "")
       .trim()
@@ -1475,22 +1336,15 @@ function detectSimpleMealFromUser(userMsg) {
       .trim();
 
     if (!desc) return null;
-
-    return {
-      meal_type: mealType,
-      items: [desc]
-    };
+    return { meal_type: mealType, items: [desc] };
   }
 
-  // Pattern 3: "I had ..." (no explicit meal type, treat as snack)
   m = text.match(/i\s+(?:had|ate)\s+(.*)$/i);
   if (m) {
     const descLower = m[1] || "";
     const startIndex = text.indexOf(descLower);
     let desc = descLower;
-    if (startIndex !== -1) {
-      desc = original.substring(startIndex, startIndex + descLower.length);
-    }
+    if (startIndex !== -1) desc = original.substring(startIndex, startIndex + descLower.length);
 
     desc = (desc || "")
       .trim()
@@ -1499,69 +1353,47 @@ function detectSimpleMealFromUser(userMsg) {
       .trim();
 
     if (!desc) return null;
-
-    return {
-      meal_type: "snacks",
-      items: [desc]
-    };
+    return { meal_type: "snacks", items: [desc] };
   }
 
   return null;
 }
 
-// Upsert a single meal (with calories + macros) into TODAY'S log
-// If options.replaceMealType is set and matches this meal_type,
-// we REMOVE any existing meals of that type for today (true override).
-async function upsertMealLog(customerGid, meal, options = {}) {
-  if (!customerGid || !meal) return;
+// ✅ FIXED: force meals to save to dateKey (client-local day), not server UTC
+async function upsertMealLog(customerGid, meal, options = {}, dateKey) {
+  if (!customerGid || !meal || !dateKey) return;
 
   const { logs } = await getDailyLogsMetafield(customerGid);
 
-  // IMPORTANT: always use "today" for saving meals, ignore meal.date
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-  const cleanDate = today;
-
+  const cleanDate = dateKey;
   const idx = logs.findIndex(entry => entry && entry.date === cleanDate);
 
-  // Normalize macros
   const cals = Number(meal.calories) || 0;
   const protein = Number(meal.protein) || 0;
   const carbs = Number(meal.carbs) || 0;
   const fat = Number(meal.fat) || 0;
   const mealType = meal.meal_type || "other";
+
   let items = meal.items;
   if (!Array.isArray(items)) {
-    if (typeof items === "string" && items.trim()) {
-      items = [items.trim()];
-    } else {
-      items = [];
-    }
+    if (typeof items === "string" && items.trim()) items = [items.trim()];
+    else items = [];
   }
 
   const replaceMealType = options.replaceMealType || null;
 
   if (idx >= 0) {
-    // Update existing log for today
     const existing = logs[idx] || {};
     const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
 
-    // If this is an override for this meal type, remove prior meals of that type
     let baseMeals = existingMeals;
     if (replaceMealType && mealType === replaceMealType) {
       baseMeals = existingMeals.filter(m => !m || m.meal_type !== replaceMealType);
     }
 
-    const newMeal = {
-      meal_type: mealType,
-      items,
-      calories: cals,
-      protein,
-      carbs,
-      fat
-    };
+    const newMeal = { meal_type: mealType, items, calories: cals, protein, carbs, fat };
     const updatedMeals = baseMeals.concat([newMeal]);
 
-    // Recompute totals from all meals for TODAY
     let sumCals = 0, sumP = 0, sumC = 0, sumF = 0;
     updatedMeals.forEach(m => {
       sumCals += Number(m.calories) || 0;
@@ -1582,15 +1414,7 @@ async function upsertMealLog(customerGid, meal, options = {}) {
       coach_focus: existing.coach_focus || "Meals logged from chat."
     };
   } else {
-    // Create new log for today
-    const newMeals = [{
-      meal_type: mealType,
-      items,
-      calories: cals,
-      protein,
-      carbs,
-      fat
-    }];
+    const newMeals = [{ meal_type: mealType, items, calories: cals, protein, carbs, fat }];
 
     logs.push({
       date: cleanDate,
@@ -1611,20 +1435,23 @@ async function upsertMealLog(customerGid, meal, options = {}) {
   await saveDailyLogsMetafield(customerGid, logs);
 }
 
-// NEW: upsert DAILY REVIEW INFO into daily_logs
-async function upsertDailyReview(customerGid, review) {
-  if (!customerGid || !review) return;
+// ✅ FIXED: use dateKey
+async function upsertDailyReview(customerGid, review, dateKey) {
+  if (!customerGid || !review || !dateKey) return;
 
   const { logs } = await getDailyLogsMetafield(customerGid);
 
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const date = review.date && typeof review.date === "string" ? review.date : todayStr;
+  const date =
+    (review.date && typeof review.date === "string" && review.date.trim())
+      ? review.date.trim()
+      : dateKey;
 
   const idx = logs.findIndex(entry => entry && entry.date === date);
 
-  const summary = typeof review.summary === "string" && review.summary.trim()
-    ? review.summary.trim()
-    : "Keep it simple: hit your calories as best you can, move a bit, and log it honestly.";
+  const summary =
+    typeof review.summary === "string" && review.summary.trim()
+      ? review.summary.trim()
+      : "Keep it simple: hit your calories as best you can, move a bit, and log it honestly.";
 
   const riskColor = review.risk_color || "green";
   const needsHumanReview = !!review.needs_human_review;
@@ -1660,17 +1487,16 @@ async function upsertDailyReview(customerGid, review) {
   await saveDailyLogsMetafield(customerGid, logs);
 }
 
-// NEW: upsert COACH REVIEW into daily_logs (running day summary)
-async function upsertCoachReview(customerGid, coachReview) {
-  if (!customerGid || !coachReview) return;
+// ✅ FIXED: use dateKey (never server UTC)
+async function upsertCoachReview(customerGid, coachReview, dateKey) {
+  if (!customerGid || !coachReview || !dateKey) return;
 
   const { logs } = await getDailyLogsMetafield(customerGid);
 
-  const todayStr = new Date().toISOString().slice(0, 10);
   const date =
     (typeof coachReview.date === "string" && coachReview.date.trim())
       ? coachReview.date.trim()
-      : todayStr;
+      : dateKey;
 
   const idx = logs.findIndex(entry => entry && entry.date === date);
 
@@ -1692,11 +1518,7 @@ async function upsertCoachReview(customerGid, coachReview) {
 
   if (idx >= 0) {
     const existing = logs[idx] || {};
-    logs[idx] = {
-      ...existing,
-      date,
-      ...payload
-    };
+    logs[idx] = { ...existing, date, ...payload };
   } else {
     logs.push({
       date,
@@ -1739,8 +1561,7 @@ function detectMealOverride(userMsg) {
   const match = text.match(pattern);
   if (!match) return null;
 
-  const mealWord = match[2];
-  const mealType = normalizeMealType(mealWord);
+  const mealType = normalizeMealType(match[2]);
 
   const descStart = match.index + match[0].length;
   let itemText = userMsg.slice(descStart);
@@ -1764,6 +1585,7 @@ function isYMD(s) {
   return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
 }
 
+// NOTE: keep this as fallback only; we prefer clientDate always
 function localYMD() {
   const d = new Date();
   const off = d.getTimezoneOffset();
@@ -1782,11 +1604,9 @@ export default async function handler(req, res) {
   ];
 
   if (ALLOWED_ORIGINS.includes(origin)) {
-    // browser calls
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
   } else {
-    // tools like Postman/curl
     res.setHeader("Access-Control-Allow-Origin", "*");
   }
 
@@ -1798,7 +1618,6 @@ export default async function handler(req, res) {
       "Content-Type, Authorization, X-Requested-With, Accept"
   );
 
-  // Preflight
   if (req.method === "OPTIONS") {
     res.status(200).end();
     return;
@@ -1815,7 +1634,7 @@ export default async function handler(req, res) {
     return;
   }
 
-    let body;
+  let body;
   try {
     body = await parseBody(req);
   } catch (e) {
@@ -1827,14 +1646,12 @@ export default async function handler(req, res) {
     return;
   }
 
-   // ===============================
-// PJ DATE SOURCE OF TRUTH
-// ===============================
-const clientDate = body?.clientDate;
-const dateKey = isYMD(clientDate) ? clientDate : localYMD();
+  // ===============================
+  // ✅ PJ DATE SOURCE OF TRUTH (CLIENT LOCAL DATE)
+  // ===============================
+  const clientDate = body?.clientDate;
+  const dateKey = isYMD(clientDate) ? clientDate : localYMD();
 
-
-  // Basic fields from body
   const userMessage = body.message || "";
   const history = Array.isArray(body.history) ? body.history : [];
   const appendUserMessage = !!body.appendUserMessage;
@@ -1845,11 +1662,9 @@ const dateKey = isYMD(clientDate) ? clientDate : localYMD();
     return;
   }
 
-  // 🔑 Prefer explicit customerId / customerGid from the frontend
   let customerGid = null;
   let customerNumericId = null;
 
-  // 1) numeric ID from various possible fields
   let rawId =
     body.customerId ||
     body.shopifyCustomerId ||
@@ -1866,7 +1681,6 @@ const dateKey = isYMD(clientDate) ? clientDate : localYMD();
     }
   }
 
-  // 2) explicit GID if sent from frontend
   if (!customerGid && (body.customerGid || body.customer_gid)) {
     const rawGid = String(body.customerGid || body.customer_gid);
     if (rawGid.startsWith("gid://shopify/Customer/")) {
@@ -1882,16 +1696,12 @@ const dateKey = isYMD(clientDate) ? clientDate : localYMD();
     }
   }
 
-  // 3) FINAL FALLBACK: look up by email via Shopify GraphQL (slower)
   if (!customerGid && email) {
     try {
       const resolved = await resolveCustomerGidFromBody({ email });
       if (resolved) {
         customerGid = resolved;
-        const numeric = String(resolved).replace(
-          "gid://shopify/Customer/",
-          ""
-        );
+        const numeric = String(resolved).replace("gid://shopify/Customer/", "");
         if (numeric) customerNumericId = numeric;
       }
     } catch (e) {
@@ -1909,9 +1719,7 @@ const dateKey = isYMD(clientDate) ? clientDate : localYMD();
         `
         query GetCustomerOnboarding($id: ID!) {
           customer(id: $id) {
-            metafield(namespace: "custom", key: "onboarding_complete") {
-              value
-            }
+            metafield(namespace: "custom", key: "onboarding_complete") { value }
           }
         }
         `,
@@ -1932,7 +1740,7 @@ const dateKey = isYMD(clientDate) ? clientDate : localYMD();
     shopifyMetafieldReadStatus = "no_customer_id";
   }
 
-    const debug = {
+  const debug = {
     customerGid: customerGid || null,
     customerIdNumeric: customerNumericId,
     inboundMessage: userMessage,
@@ -1940,6 +1748,8 @@ const dateKey = isYMD(clientDate) ? clientDate : localYMD();
     appendUserMessage,
     onboarding_complete: onboardingComplete,
     shopifyMetafieldReadStatus,
+    dateKey,                 // ✅ helpful for debugging the UTC issue
+    clientDate: clientDate || null,
     messagesCount: null,
     model: "gpt-4.1-mini",
   };
@@ -1948,45 +1758,40 @@ const dateKey = isYMD(clientDate) ? clientDate : localYMD();
   // FREE PREVIEW MESSAGE GATE
   // ===============================
   let remainingAfter = null;
-  const FREE_START = 15; // you can change this later if you want
+  const FREE_START = 15;
 
   try {
     if (customerGid) {
       let remaining = await getFreeChatRemaining(customerGid);
 
-      // first time: initialize
       if (remaining === null) {
         remaining = FREE_START;
         await setFreeChatRemaining(customerGid, remaining);
       }
 
-      // out of messages -> paywall (DON'T call OpenAI)
       if (remaining <= 0) {
-  return res.status(200).json({
-    reply: "[[PAYWALL]]",
-    free_chat_remaining: 0,
-    debug: { ...debug, free_chat_remaining: 0 },
-  });
-}
+        return res.status(200).json({
+          reply: "[[PAYWALL]]",
+          free_chat_remaining: 0,
+          debug: { ...debug, free_chat_remaining: 0 },
+        });
+      }
 
-
-      // decrement then continue
       remainingAfter = remaining - 1;
       await setFreeChatRemaining(customerGid, remainingAfter);
     }
   } catch (err) {
     console.warn("Free-preview gate failed open:", err);
-    remainingAfter = null; // fail open: do NOT block chat
+    remainingAfter = null;
   }
 
   // DAILY TOTAL CALORIES FROM USER MESSAGE
-
   if (customerGid && userMessage) {
     const parsedDailyCals = parseDailyCaloriesFromMessage(userMessage);
     if (parsedDailyCals) {
       debug.parsedDailyCalories = parsedDailyCals;
       try {
-        await upsertDailyTotalCalories(customerGid, parsedDailyCals);
+        await upsertDailyTotalCalories(customerGid, parsedDailyCals, dateKey); // ✅ dateKey
         debug.dailyCaloriesSavedToDailyLogs = true;
       } catch (e) {
         console.error("Error saving daily total calories from chat", e);
@@ -1996,66 +1801,46 @@ const dateKey = isYMD(clientDate) ? clientDate : localYMD();
     }
   }
 
-  // MEAL OVERRIDE FLAG
   const overrideMeal = detectMealOverride(userMessage);
-  if (overrideMeal) {
-    debug.mealOverrideDetected = overrideMeal;
-  }
+  if (overrideMeal) debug.mealOverrideDetected = overrideMeal;
 
-      // Figure out whether we've already sent the onboarding intro in this conversation
   let introAlreadySent = false;
-
   if (history.length) {
-    const recentForIntro = history.slice(-40); // look back a bit further
+    const recentForIntro = history.slice(-40);
     for (const m of recentForIntro) {
       if (!m) continue;
       const text =
-        typeof m.text === "string"
-          ? m.text
-          : typeof m.message === "string"
-          ? m.message
-          : typeof m.content === "string"
-          ? m.content
-          : null;
+        typeof m.text === "string" ? m.text :
+        typeof m.message === "string" ? m.message :
+        typeof m.content === "string" ? m.content : null;
       if (!text) continue;
 
       const lower = text.toLowerCase();
-      if (
-        lower.includes("i’m your pjifitness coach") ||
-        lower.includes("i'm your pjifitness coach")
-      ) {
+      if (lower.includes("i’m your pjifitness coach") || lower.includes("i'm your pjifitness coach")) {
         introAlreadySent = true;
         break;
       }
     }
   }
-
   debug.introAlreadySent = introAlreadySent;
 
   // BUILD MESSAGES FOR OPENAI
   const messages = [{ role: "system", content: SYSTEM_PROMPT }];
 
-   const todayStr = dateKey; // ✅ use client-local date
+  messages.push({
+    role: "system",
+    content:
+      `TODAY_DATE: ${dateKey}. ` +
+      `Use this exact date in all JSON blocks: ` +
+      `DAILY_LOG_JSON, MEAL_LOG_JSON, DAILY_REVIEW_JSON, COACH_REVIEW_JSON. ` +
+      `Do NOT output any other date.`
+  });
 
-messages.push({
-  role: "system",
-  content:
-    `TODAY_DATE: ${todayStr}. ` +
-    `Use this exact date in all JSON blocks: ` +
-    `DAILY_LOG_JSON, MEAL_LOG_JSON, DAILY_REVIEW_JSON, COACH_REVIEW_JSON. ` +
-    `Do NOT output any other date.`
-});
+  messages.push({
+    role: "system",
+    content: `custom.onboarding_complete: ${onboardingComplete === true ? "true" : "false"}`
+  });
 
-
-  // Pass onboarding_complete flag (default to false if missing)
-messages.push({
-  role: "system",
-  content: `custom.onboarding_complete: ${
-    onboardingComplete === true ? "true" : "false"
-  }`
-});
-
-  // Tell the model not to repeat its intro once it's been sent
   if (introAlreadySent) {
     messages.push({
       role: "system",
@@ -2064,7 +1849,6 @@ messages.push({
     });
   }
 
-  // Pass meal override info if present
   if (overrideMeal) {
     messages.push({
       role: "system",
@@ -2072,20 +1856,14 @@ messages.push({
     });
   }
 
-   // Attach chat history (supports .text, .message, or .content)
   if (history.length) {
     const recent = history.slice(-20);
     for (const m of recent) {
       if (!m) continue;
-
       const text =
-        typeof m.text === "string"
-          ? m.text
-          : typeof m.message === "string"
-          ? m.message
-          : typeof m.content === "string"
-          ? m.content
-          : null;
+        typeof m.text === "string" ? m.text :
+        typeof m.message === "string" ? m.message :
+        typeof m.content === "string" ? m.content : null;
       if (!text) continue;
 
       let role;
@@ -2097,21 +1875,19 @@ messages.push({
     }
   }
 
-  // Latest user message
   if (appendUserMessage && userMessage) {
     messages.push({ role: "user", content: userMessage });
   }
 
   debug.messagesCount = messages.length;
 
-   // HARD ENFORCEMENT: force COACH_REVIEW_JSON to always be present
-messages.push({
-  role: "system",
-  content:
-    "CRITICAL: You MUST end your response with exactly one [[COACH_REVIEW_JSON {..} ]] block. If you do not include it, the app will treat your response as invalid. Output it even if you have little info (use empty arrays and generic summary)."
-});
+  messages.push({
+    role: "system",
+    content:
+      "CRITICAL: You MUST end your response with exactly one [[COACH_REVIEW_JSON {..} ]] block. If you do not include it, the app will treat your response as invalid. Output it even if you have little info (use empty arrays and generic summary)."
+  });
 
-debug.messagesCount = messages.length; // (optional: keep if you want it accurate)
+  debug.messagesCount = messages.length;
 
   try {
     const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -2140,27 +1916,24 @@ debug.messagesCount = messages.length; // (optional: keep if you want it accurat
       data.choices?.[0]?.message?.content ||
       "Sorry, I’m not sure what to say to that.";
 
-     // ===============================
-// DAILY_LOG_JSON -> save to daily_logs
-// ===============================
-if (customerGid) {
-  const dailyLog = extractDailyLogFromText(rawReply);
-  if (dailyLog) {
-    debug.dailyLogFound = dailyLog;
-    try {
-      await upsertDailyLog(customerGid, dailyLog);
-      debug.dailyLogSavedToDailyLogs = true;
-    } catch (e) {
-      console.error("Error saving DAILY_LOG_JSON to daily_logs", e);
-      debug.dailyLogSavedToDailyLogs = false;
-      debug.dailyLogSaveError = String(e?.message || e);
+    // DAILY_LOG_JSON -> save to daily_logs (✅ dateKey)
+    if (customerGid) {
+      const dailyLog = extractDailyLogFromText(rawReply);
+      if (dailyLog) {
+        debug.dailyLogFound = dailyLog;
+        try {
+          await upsertDailyLog(customerGid, dailyLog, dateKey);
+          debug.dailyLogSavedToDailyLogs = true;
+        } catch (e) {
+          console.error("Error saving DAILY_LOG_JSON to daily_logs", e);
+          debug.dailyLogSavedToDailyLogs = false;
+          debug.dailyLogSaveError = String(e?.message || e);
+        }
+      }
     }
-  }
-}
 
-     debug.rawReplyHasCoachReview = rawReply.includes("[[COACH_REVIEW_JSON");
-debug.rawReplyTail = rawReply.slice(-600);
-
+    debug.rawReplyHasCoachReview = rawReply.includes("[[COACH_REVIEW_JSON");
+    debug.rawReplyTail = rawReply.slice(-600);
     debug.modelReplyTruncated = !data.choices?.[0]?.message?.content;
 
     let planJson = null;
@@ -2202,29 +1975,27 @@ debug.rawReplyTail = rawReply.slice(-600);
           skipReason = "onboarding_already_complete_text_plan";
         }
       }
-            if (shouldSave) {
+
+      if (shouldSave) {
         try {
           await saveCoachPlanForCustomer(customerGid, planJson);
           debug.planSavedToShopify = true;
-
-          // 🔴 IMPORTANT – mark onboarding done for this request
           onboardingComplete = true;
           debug.onboardingCompleteAfterSave = true;
-
         } catch (e) {
           console.error("Error saving coach_plan metafield", e);
           debug.planSavedToShopify = false;
           debug.planSaveError = String(e?.message || e);
-          if (e && e.shopifyUserErrors) {
-            debug.planSaveUserErrors = e.shopifyUserErrors;
-          }
+          if (e && e.shopifyUserErrors) debug.planSaveUserErrors = e.shopifyUserErrors;
         }
       } else {
         debug.planSavedToShopify = false;
         debug.planSavedSkippedReason = skipReason;
       }
     }
-        if (customerGid) {
+
+    // MEAL LOGS (✅ dateKey everywhere)
+    if (customerGid) {
       const mealLogs = extractMealLogsFromText(rawReply);
 
       if (mealLogs && mealLogs.length) {
@@ -2235,7 +2006,8 @@ debug.rawReplyTail = rawReply.slice(-600);
             await upsertMealLog(
               customerGid,
               meal,
-              overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
+              overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {},
+              dateKey
             );
           }
           debug.mealLogsSavedToDailyLogs = true;
@@ -2255,14 +2027,10 @@ debug.rawReplyTail = rawReply.slice(-600);
 
           const prot = parseProteinFromReplyText(rawReply) || 0;
 
-          // 🔥 Use coach reply ("for dinner", "Logged as dinner!") to correct meal_type
-          const finalMealType = inferMealTypeFromReply(
-            simpleMeal.meal_type,
-            rawReply
-          );
+          const finalMealType = inferMealTypeFromReply(simpleMeal.meal_type, rawReply);
 
           const fallbackMeal = {
-            date: new Date().toISOString().slice(0, 10),
+            date: dateKey,              // ✅ FIXED
             meal_type: finalMealType,
             items: simpleMeal.items,
             calories: cal,
@@ -2277,7 +2045,8 @@ debug.rawReplyTail = rawReply.slice(-600);
             await upsertMealLog(
               customerGid,
               fallbackMeal,
-              overrideMeal ? { replaceMealType: finalMealType } : {}
+              overrideMeal ? { replaceMealType: finalMealType } : {},
+              dateKey
             );
             debug.mealLogsSavedToDailyLogs = true;
             debug.mealLogsFound = 1;
@@ -2290,12 +2059,13 @@ debug.rawReplyTail = rawReply.slice(-600);
       }
     }
 
+    // DAILY_REVIEW_JSON (✅ dateKey)
     if (customerGid) {
       const dailyReview = extractDailyReviewFromText(rawReply);
       if (dailyReview) {
         debug.dailyReviewFound = dailyReview;
         try {
-          await upsertDailyReview(customerGid, dailyReview);
+          await upsertDailyReview(customerGid, dailyReview, dateKey);
           debug.dailyReviewSavedToDailyLogs = true;
         } catch (e) {
           console.error("Error saving daily review from chat", e);
@@ -2305,36 +2075,37 @@ debug.rawReplyTail = rawReply.slice(-600);
       }
     }
 
-     if (customerGid) {
-  const coachReview = extractCoachReviewFromText(rawReply);
-  if (coachReview) {
-    debug.coachReviewFound = coachReview;
-    try {
-       coachReview.date = new Date().toISOString().slice(0, 10);
-      await upsertCoachReview(customerGid, coachReview);
-      debug.coachReviewSavedToDailyLogs = true;
-    } catch (e) {
-      console.error("Error saving coach review from chat", e);
-      debug.coachReviewSavedToDailyLogs = false;
-      debug.coachReviewSaveError = String(e?.message || e);
+    // COACH_REVIEW_JSON (✅ dateKey; DO NOT overwrite date with UTC)
+    if (customerGid) {
+      const coachReview = extractCoachReviewFromText(rawReply);
+      if (coachReview) {
+        debug.coachReviewFound = coachReview;
+        try {
+          coachReview.date = dateKey; // ✅ FIXED (was UTC)
+          await upsertCoachReview(customerGid, coachReview, dateKey);
+          debug.coachReviewSavedToDailyLogs = true;
+        } catch (e) {
+          console.error("Error saving coach review from chat", e);
+          debug.coachReviewSavedToDailyLogs = false;
+          debug.coachReviewSaveError = String(e?.message || e);
+        }
+      }
     }
-  }
-}
-     
-        let cleanedReply = stripCoachPlanBlock(rawReply);
+
+    let cleanedReply = stripCoachPlanBlock(rawReply);
     cleanedReply = cleanedReply.replace(/\[\[DAILY_LOG_JSON[\s\S]*?\]\]/g, "").trim();
     cleanedReply = cleanedReply.replace(/\[\[MEAL_LOG_JSON[\s\S]*?\]\]/g, "").trim();
     cleanedReply = cleanedReply.replace(/\[\[DAILY_REVIEW_JSON[\s\S]*?\]\]/g, "").trim();
-     cleanedReply = cleanedReply.replace(/\[\[COACH_REVIEW_JSON[\s\S]*?\]\]/g, "").trim();
+    cleanedReply = cleanedReply.replace(/\[\[COACH_REVIEW_JSON[\s\S]*?\]\]/g, "").trim();
 
     res.status(200).json({
-  reply: cleanedReply,
-  debug,
-  free_chat_remaining: remainingAfter,
-});
+      reply: cleanedReply,
+      debug,
+      free_chat_remaining: remainingAfter,
+    });
   } catch (e) {
     console.error("Chat handler error", e);
     const debugError = { ...debug, serverError: String(e?.message || e) };
     res.status(500).json({ error: "Server error", debug: debugError });
   }
-  }
+}
