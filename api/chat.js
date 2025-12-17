@@ -2049,12 +2049,11 @@ export default async function handler(req, res) {
 
           try {
             await upsertMealLog(
-              customerGid,
-              fallbackMeal,
-              dateKey,
-              overrideMeal ? { replaceMealType: finalMealType } : {},
-              dateKey
-            );
+  customerGid,
+  fallbackMeal,
+  dateKey,
+  overrideMeal ? { replaceMealType: finalMealType } : {}
+);
             debug.mealLogsSavedToDailyLogs = true;
             debug.mealLogsFound = 1;
           } catch (e) {
