@@ -1594,8 +1594,7 @@ async function upsertCoachReview(customerGid, coachReview, dateKey) {
   const existing = logs[idx] || {};
   const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
   logs[idx] = { ...existing, date, meals: existingMeals, ...payload };
-}
-  } else {
+} else {
     logs.push({
       date,
       weight: null,
