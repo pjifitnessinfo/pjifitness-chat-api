@@ -1591,8 +1591,10 @@ async function upsertCoachReview(customerGid, coachReview, dateKey) {
   };
 
   if (idx >= 0) {
-    const existing = logs[idx] || {};
-    logs[idx] = { ...existing, date, ...payload };
+  const existing = logs[idx] || {};
+  const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
+  logs[idx] = { ...existing, date, meals: existingMeals, ...payload };
+}
   } else {
     logs.push({
       date,
