@@ -2115,53 +2115,54 @@ debug.planFromText = false;
       }
 
       if (shouldSave) {
-        try {
-          await saveCoachPlanForCustomer(customerGid, planJson);
-          debug.planSavedToShopify = true;
-          onboardingComplete = true;
-          debug.onboardingCompleteAfterSave = true;
-           // ==================================================
-// ✅ ONBOARDING FINALIZATION
-// Write TODAY'S weight = CURRENT onboarding weight
-// ==================================================
-if (customerGid && onboardingComplete === true && planJson?.current_weight_lbs) {
   try {
-    const currentW = Number(planJson.current_weight_lbs);
+    await saveCoachPlanForCustomer(customerGid, planJson);
+    debug.planSavedToShopify = true;
+    onboardingComplete = true;
+    debug.onboardingCompleteAfterSave = true;
 
-    if (Number.isFinite(currentW) && currentW > 0) {
-      await upsertDailyLog(
-        customerGid,
-        {
-          date: dateKey,
-          weight: currentW,
-          calories: null,
-          protein_g: null,
-          carbs_g: null,
-          fat_g: null,
-          steps: null,
-          notes: "Initial weight from onboarding."
-        },
-        dateKey
-      );
+    // ==================================================
+    // ✅ ONBOARDING FINALIZATION
+    // Write TODAY'S weight = CURRENT onboarding weight
+    // ==================================================
+    if (customerGid && onboardingComplete === true && planJson?.current_weight_lbs) {
+      try {
+        const currentW = Number(planJson.current_weight_lbs);
 
-      debug.onboardingInitialWeightWritten = currentW;
-    }
-  } catch (e) {
-    console.error("Failed to write onboarding initial daily weight", e);
-    debug.onboardingInitialWeightError = String(e?.message || e);
-  }
-}
+        if (Number.isFinite(currentW) && currentW > 0) {
+          await upsertDailyLog(
+            customerGid,
+            {
+              date: dateKey,
+              weight: currentW,
+              calories: null,
+              protein_g: null,
+              carbs_g: null,
+              fat_g: null,
+              steps: null,
+              notes: "Initial weight from onboarding."
+            },
+            dateKey
+          );
 
-        } catch (e) {
-          console.error("Error saving coach_plan metafield", e);
-          debug.planSavedToShopify = false;
-          debug.planSaveError = String(e?.message || e);
-          if (e && e.shopifyUserErrors) debug.planSaveUserErrors = e.shopifyUserErrors;
+          debug.onboardingInitialWeightWritten = currentW;
         }
-      } else {
-        debug.planSavedToShopify = false;
-        debug.planSavedSkippedReason = skipReason;
+      } catch (e) {
+        console.error("Failed to write onboarding initial daily weight", e);
+        debug.onboardingInitialWeightError = String(e?.message || e);
       }
+    }
+
+  } catch (e) {
+    console.error("Error saving coach_plan metafield", e);
+    debug.planSavedToShopify = false;
+    debug.planSaveError = String(e?.message || e);
+    if (e && e.shopifyUserErrors) debug.planSaveUserErrors = e.shopifyUserErrors;
+  }
+} else {
+  debug.planSavedToShopify = false;
+  debug.planSavedSkippedReason = skipReason;
+}
     }
 
     // MEAL LOGS (✅ dateKey everywhere)
