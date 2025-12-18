@@ -2125,7 +2125,14 @@ debug.planFromText = false;
     // ✅ ONBOARDING FINALIZATION
     // Write TODAY'S weight = CURRENT onboarding weight
     // ==================================================
-    if (customerGid && onboardingComplete === true && planJson?.current_weight_lbs) {
+    const cw =
+  planJson?.current_weight_lbs ??
+  planJson?.current_weight ??
+  planJson?.start_weight_lbs ??
+  planJson?.start_weight;
+
+if (customerGid && onboardingComplete === true && cw != null) {
+
       try {
         const currentW = Number(planJson.current_weight_lbs);
 
