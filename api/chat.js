@@ -1695,9 +1695,17 @@ export default async function handler(req, res) {
   );
 
   if (req.method === "OPTIONS") {
-    res.status(200).end();
-    return;
-  }
+  res.setHeader("Access-Control-Allow-Origin", origin || "*");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    req.headers["access-control-request-headers"] ||
+      "Content-Type, Authorization, X-Requested-With, Accept"
+  );
+  res.status(200).end();
+  return;
+}
   // ===== END CORS =====
 
   if (req.method !== "POST") {
