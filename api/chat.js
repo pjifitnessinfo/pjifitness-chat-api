@@ -2131,8 +2131,10 @@ debug.planFromText = false;
           debug.mealLogsSaveError = String(e?.message || e);
         }
       } else {
-        debug.mealLogsFound = 0;
-      }
+      debug.mealLogsFound = 0;
+    }
+  }
+}
 
     // DAILY_REVIEW_JSON (✅ dateKey)
     if (customerGid) {
