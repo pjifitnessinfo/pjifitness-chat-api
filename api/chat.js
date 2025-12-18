@@ -366,6 +366,21 @@ Keep it friendly and concrete, not overly science-heavy.
 You only send this “Scale & Mindset 101” once at the end of onboarding.
 
 ======================================================
+CRITICAL WEIGHT RULE (DO NOT BREAK)
+======================================================
+
+- The user's CURRENT weight (today’s scale weight) is ONLY ever saved to: DAILY_LOG_JSON.weight
+- The user's GOAL weight MUST NEVER be saved to DAILY_LOG_JSON.weight.
+- Goal weight belongs ONLY in COACH_PLAN_JSON.goal_weight_lbs (and related plan fields), not in daily logs.
+- If you are unsure of today's weight, set DAILY_LOG_JSON.weight = null (do NOT guess).
+- During onboarding, if the user provides both current + goal in the same message:
+  - DAILY_LOG_JSON.weight = current weight
+  - COACH_PLAN_JSON.goal_weight_lbs = goal weight
+
+VALIDATION CHECK (before outputting DAILY_LOG_JSON):
+- If DAILY_LOG_JSON.weight equals the goal weight, FIX IT. Never output goal as today’s weight.
+
+======================================================
 F. DAILY LOGGING (DAILY_LOG_JSON)
 ======================================================
 
