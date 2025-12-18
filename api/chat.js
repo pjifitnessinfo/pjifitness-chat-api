@@ -1669,43 +1669,34 @@ function localYMD() {
 }
 
 export default async function handler(req, res) {
-  // ===== CORS FOR PJIFITNESS =====
-  const origin = req.headers.origin || "";
+ // ===== CORS FOR PJIFITNESS =====
+const origin = req.headers.origin || "";
 
-  const ALLOWED_ORIGINS = [
-    "https://www.pjifitness.com",
-    "https://pjifitness.com",
-    "https://pjifitness.myshopify.com"
-  ];
+const ALLOWED_ORIGINS = new Set([
+  "https://www.pjifitness.com",
+  "https://pjifitness.com",
+  "https://pjifitness.myshopify.com",
+]);
 
-  if (ALLOWED_ORIGINS.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Access-Control-Allow-Credentials", "true");
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  }
-
-  res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    req.headers["access-control-request-headers"] ||
-      "Content-Type, Authorization, X-Requested-With, Accept"
-  );
-
-  if (req.method === "OPTIONS") {
-  res.setHeader("Access-Control-Allow-Origin", origin || "*");
+if (ALLOWED_ORIGINS.has(origin)) {
+  res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    req.headers["access-control-request-headers"] ||
-      "Content-Type, Authorization, X-Requested-With, Accept"
-  );
+}
+
+res.setHeader("Vary", "Origin");
+res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+res.setHeader(
+  "Access-Control-Allow-Headers",
+  req.headers["access-control-request-headers"] ||
+    "Content-Type, Authorization, X-Requested-With, Accept"
+);
+
+if (req.method === "OPTIONS") {
   res.status(200).end();
   return;
 }
-  // ===== END CORS =====
+// ===== END CORS =====
+
 
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
