@@ -2134,7 +2134,6 @@ debug.planFromText = false;
       debug.mealLogsFound = 0;
     }
   }
-}
 
     // DAILY_REVIEW_JSON (✅ dateKey)
     if (customerGid) {
