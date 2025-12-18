@@ -914,6 +914,61 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
 
   const ownerId = customerGid;
 
+     // ================================
+  // ✅ LOCK EXISTING START/GOAL (SERVER-SIDE SAFETY)
+  // Prevent any onboarding re-run / buggy path from overwriting start_weight or goal_weight
+  // ================================
+  let existingPlan = null;
+  try {
+    const existingData = await shopifyGraphQL(
+      `
+      query GetExistingPlan($id: ID!) {
+        customer(id: $id) {
+          metafield(namespace:"custom", key:"coach_plan") { value }
+        }
+      }
+      `,
+      { id: ownerId }
+    );
+
+    const v = existingData?.customer?.metafield?.value;
+    if (v) {
+      try { existingPlan = JSON.parse(v); } catch(e) { existingPlan = null; }
+    }
+  } catch (e) {
+    console.warn("[LOCK] Failed to fetch existing coach_plan (continuing):", e?.message || e);
+    existingPlan = null;
+  }
+
+  const normalizeNum = (x) => {
+    const n = Number(x);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const existingStart =
+    normalizeNum(existingPlan?.start_weight_lbs) ??
+    normalizeNum(existingPlan?.start_weight) ??
+    null;
+
+  const existingGoal =
+    normalizeNum(existingPlan?.goal_weight_lbs) ??
+    normalizeNum(existingPlan?.goal_weight) ??
+    null;
+
+  // Apply locks directly onto planJson so the rest of this function stays consistent
+  if (existingStart) {
+    planJson.start_weight = existingStart;
+    planJson.start_weight_lbs = existingStart;
+  }
+  if (existingGoal) {
+    planJson.goal_weight = existingGoal;
+    planJson.goal_weight_lbs = existingGoal;
+  }
+  // ================================
+  // ✅ END LOCK
+  // ================================
+
+
   const startWeight = planJson.start_weight != null
     ? Number(planJson.start_weight)
     : (planJson.current_weight_lbs != null ? Number(planJson.current_weight_lbs) : 0);
