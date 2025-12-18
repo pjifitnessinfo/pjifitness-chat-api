@@ -2120,6 +2120,38 @@ debug.planFromText = false;
           debug.planSavedToShopify = true;
           onboardingComplete = true;
           debug.onboardingCompleteAfterSave = true;
+           // ==================================================
+// ✅ ONBOARDING FINALIZATION
+// Write TODAY'S weight = CURRENT onboarding weight
+// ==================================================
+if (customerGid && onboardingComplete === true && planJson?.current_weight_lbs) {
+  try {
+    const currentW = Number(planJson.current_weight_lbs);
+
+    if (Number.isFinite(currentW) && currentW > 0) {
+      await upsertDailyLog(
+        customerGid,
+        {
+          date: dateKey,
+          weight: currentW,
+          calories: null,
+          protein_g: null,
+          carbs_g: null,
+          fat_g: null,
+          steps: null,
+          notes: "Initial weight from onboarding."
+        },
+        dateKey
+      );
+
+      debug.onboardingInitialWeightWritten = currentW;
+    }
+  } catch (e) {
+    console.error("Failed to write onboarding initial daily weight", e);
+    debug.onboardingInitialWeightError = String(e?.message || e);
+  }
+}
+
         } catch (e) {
           console.error("Error saving coach_plan metafield", e);
           debug.planSavedToShopify = false;
