@@ -2074,6 +2074,7 @@ debug.planFromText = false;
     // MEAL LOGS (✅ dateKey everywhere)
     if (customerGid) {
       const mealLogs = extractMealLogsFromText(rawReply);
+       console.log("[PJ DEBUG] extractMealLogsFromText:", mealLogs);
 
       if (mealLogs && mealLogs.length) {
         debug.mealLogsFound = mealLogs.length;
