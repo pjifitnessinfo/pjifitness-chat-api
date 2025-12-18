@@ -2134,7 +2134,8 @@ debug.planFromText = false;
 if (customerGid && onboardingComplete === true && cw != null) {
 
       try {
-        const currentW = Number(planJson.current_weight_lbs);
+        const currentW = Number(cw);
+
 
         if (Number.isFinite(currentW) && currentW > 0) {
           await upsertDailyLog(
