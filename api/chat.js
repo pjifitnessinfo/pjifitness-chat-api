@@ -2095,48 +2095,44 @@ debug.planFromText = false;
           debug.mealLogsSavedToDailyLogs = false;
           debug.mealLogsSaveError = String(e?.message || e);
         }
-      } else {
-        debug.mealLogsFound = 0;
+            } else if (detectSimpleMealFromUser(userMessage)) {
+        debug.mealLogsFound = 1;
+        debug.mealLogsFallbackUsed = true;
 
         const simpleMeal = detectSimpleMealFromUser(userMessage);
-        if (simpleMeal) {
-          const calFromUser = parseCaloriesFromUserText(userMessage);
-          const calFromReply = parseCaloriesFromReplyText(rawReply);
-          const cal = calFromUser || calFromReply || 0;
+        const calFromUser = parseCaloriesFromUserText(userMessage);
+        const calFromReply = parseCaloriesFromReplyText(rawReply);
+        const cal = calFromUser || calFromReply || 0;
 
-          const prot = parseProteinFromReplyText(rawReply) || 0;
+        const prot = parseProteinFromReplyText(rawReply) || 0;
+        const finalMealType = inferMealTypeFromReply(simpleMeal.meal_type, rawReply);
 
-          const finalMealType = inferMealTypeFromReply(simpleMeal.meal_type, rawReply);
+        const fallbackMeal = {
+          date: dateKey,
+          meal_type: finalMealType,
+          items: simpleMeal.items,
+          calories: cal,
+          protein: prot,
+          carbs: 0,
+          fat: 0
+        };
 
-          const fallbackMeal = {
-            date: dateKey,              // ✅ FIXED
-            meal_type: finalMealType,
-            items: simpleMeal.items,
-            calories: cal,
-            protein: prot,
-            carbs: 0,
-            fat: 0
-          };
-
-          debug.mealLogsFallbackConstructed = fallbackMeal;
-
-          try {
-            await upsertMealLog(
-  customerGid,
-  fallbackMeal,
-  dateKey,
-  overrideMeal ? { replaceMealType: finalMealType } : {}
-);
-            debug.mealLogsSavedToDailyLogs = true;
-            debug.mealLogsFound = 1;
-          } catch (e) {
-            console.error("Error saving fallback meal log from chat", e);
-            debug.mealLogsSavedToDailyLogs = false;
-            debug.mealLogsSaveError = String(e?.message || e);
-          }
+        try {
+          await upsertMealLog(
+            customerGid,
+            fallbackMeal,
+            dateKey,
+            overrideMeal ? { replaceMealType: finalMealType } : {}
+          );
+          debug.mealLogsSavedToDailyLogs = true;
+        } catch (e) {
+          console.error("Error saving fallback meal log from chat", e);
+          debug.mealLogsSavedToDailyLogs = false;
+          debug.mealLogsSaveError = String(e?.message || e);
         }
+      } else {
+        debug.mealLogsFound = 0;
       }
-    }
 
     // DAILY_REVIEW_JSON (✅ dateKey)
     if (customerGid) {
