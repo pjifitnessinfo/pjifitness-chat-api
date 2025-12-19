@@ -1877,19 +1877,16 @@ if (req.method === "OPTIONS") {
     try {
       shopifyMetafieldReadStatus = "fetching";
       const data = await shopifyGraphQL(
-  `
-  query GetCustomerOnboarding($id: ID!) {
-    customer(id: $id) {
-      tags
-      metafield(namespace: "custom", key: "onboarding_complete") { value }
-    }
-  }
-  `,
-  { id: customerGid }
-);
-
-const customerTags = data?.customer?.tags || []; // ✅ now available for the gate
-const val = data?.customer?.metafield?.value;
+        `
+        query GetCustomerOnboarding($id: ID!) {
+          customer(id: $id) {
+            metafield(namespace: "custom", key: "onboarding_complete") { value }
+          }
+        }
+        `,
+        { id: customerGid }
+      );
+      const val = data?.customer?.metafield?.value;
       if (typeof val === "string") {
         onboardingComplete = val === "true";
         shopifyMetafieldReadStatus = "success";
@@ -1919,20 +1916,13 @@ const val = data?.customer?.metafield?.value;
   };
 
   // ===============================
-// FREE PREVIEW MESSAGE GATE
-// ===============================
-let remainingAfter = null;
-const FREE_START = 15;
+  // FREE PREVIEW MESSAGE GATE
+  // ===============================
+  let remainingAfter = null;
+  const FREE_START = 15;
 
-try {
-  if (customerGid) {
-    const isSubscriber =
-      Array.isArray(customerTags) && customerTags.includes("pj_subscriber");
-
-    // ✅ PAID USERS: unlimited chat, skip gate entirely
-    if (isSubscriber) {
-      remainingAfter = 999999;
-    } else {
+  try {
+    if (customerGid) {
       let remaining = await getFreeChatRemaining(customerGid);
 
       if (remaining === null) {
@@ -1951,11 +1941,10 @@ try {
       remainingAfter = remaining - 1;
       await setFreeChatRemaining(customerGid, remainingAfter);
     }
+  } catch (err) {
+    console.warn("Free-preview gate failed open:", err);
+    remainingAfter = null;
   }
-} catch (err) {
-  console.warn("Free-preview gate failed open:", err);
-  remainingAfter = null;
-}
 
   // DAILY TOTAL CALORIES FROM USER MESSAGE
   if (customerGid && userMessage) {
