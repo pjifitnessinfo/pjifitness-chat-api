@@ -1919,13 +1919,20 @@ const val = data?.customer?.metafield?.value;
   };
 
   // ===============================
-  // FREE PREVIEW MESSAGE GATE
-  // ===============================
-  let remainingAfter = null;
-  const FREE_START = 15;
+// FREE PREVIEW MESSAGE GATE
+// ===============================
+let remainingAfter = null;
+const FREE_START = 15;
 
-  try {
-    if (customerGid) {
+try {
+  if (customerGid) {
+    const isSubscriber =
+      Array.isArray(customerTags) && customerTags.includes("pj_subscriber");
+
+    // ✅ PAID USERS: unlimited chat, skip gate entirely
+    if (isSubscriber) {
+      remainingAfter = 999999;
+    } else {
       let remaining = await getFreeChatRemaining(customerGid);
 
       if (remaining === null) {
@@ -1944,10 +1951,11 @@ const val = data?.customer?.metafield?.value;
       remainingAfter = remaining - 1;
       await setFreeChatRemaining(customerGid, remainingAfter);
     }
-  } catch (err) {
-    console.warn("Free-preview gate failed open:", err);
-    remainingAfter = null;
   }
+} catch (err) {
+  console.warn("Free-preview gate failed open:", err);
+  remainingAfter = null;
+}
 
   // DAILY TOTAL CALORIES FROM USER MESSAGE
   if (customerGid && userMessage) {
