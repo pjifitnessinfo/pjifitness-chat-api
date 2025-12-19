@@ -1478,6 +1478,23 @@ function detectSimpleMealFromUser(userMsg) {
     return { meal_type: mealType, items: [desc] };
   }
 
+     // ✅ NEW: "chicken and rice for dinner" (no "I had/ate")
+  m = text.match(/^(.*)\s+for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b/i);
+  if (m) {
+    const mealType = normalizeMealType(m[2]);
+    let desc = m[1];
+
+    desc = (desc || "")
+      .trim()
+      .replace(/^[“"']/g, "")
+      .replace(/[”"'.,!?]+$/g, "")
+      .trim();
+
+    if (!desc) return null;
+    return { meal_type: mealType, items: [desc] };
+  }
+
+
   m = text.match(/i\s+(?:had|ate)\s+(.*)$/i);
   if (m) {
     const descLower = m[1] || "";
