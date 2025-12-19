@@ -1877,16 +1877,19 @@ if (req.method === "OPTIONS") {
     try {
       shopifyMetafieldReadStatus = "fetching";
       const data = await shopifyGraphQL(
-        `
-        query GetCustomerOnboarding($id: ID!) {
-          customer(id: $id) {
-            metafield(namespace: "custom", key: "onboarding_complete") { value }
-          }
-        }
-        `,
-        { id: customerGid }
-      );
-      const val = data?.customer?.metafield?.value;
+  `
+  query GetCustomerOnboarding($id: ID!) {
+    customer(id: $id) {
+      tags
+      metafield(namespace: "custom", key: "onboarding_complete") { value }
+    }
+  }
+  `,
+  { id: customerGid }
+);
+
+const customerTags = data?.customer?.tags || []; // ✅ now available for the gate
+const val = data?.customer?.metafield?.value;
       if (typeof val === "string") {
         onboardingComplete = val === "true";
         shopifyMetafieldReadStatus = "success";
