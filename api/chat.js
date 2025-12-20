@@ -1915,14 +1915,22 @@ if (req.method === "OPTIONS") {
     model: "gpt-4.1-mini",
   };
 
-  // ===============================
-  // FREE PREVIEW MESSAGE GATE
-  // ===============================
-  let remainingAfter = null;
-  const FREE_START = 15;
+ // ===============================
+// FREE PREVIEW MESSAGE GATE
+// ===============================
+let remainingAfter = null;
+const FREE_START = 15;
 
-  try {
-    if (customerGid) {
+// ✅ trust frontend flag (we’ll send it in Step 2)
+const isSubscriber = req.body?.isSubscriber === true;
+
+try {
+  if (customerGid) {
+
+    // ✅ Subscribers: never gate, never decrement
+    if (isSubscriber) {
+      remainingAfter = 999999;
+    } else {
       let remaining = await getFreeChatRemaining(customerGid);
 
       if (remaining === null) {
@@ -1934,17 +1942,19 @@ if (req.method === "OPTIONS") {
         return res.status(200).json({
           reply: "[[PAYWALL]]",
           free_chat_remaining: 0,
-          debug: { ...debug, free_chat_remaining: 0 },
+          debug: { ...debug, free_chat_remaining: 0, isSubscriber },
         });
       }
 
       remainingAfter = remaining - 1;
       await setFreeChatRemaining(customerGid, remainingAfter);
     }
-  } catch (err) {
-    console.warn("Free-preview gate failed open:", err);
-    remainingAfter = null;
   }
+} catch (err) {
+  console.warn("Free-preview gate failed open:", err);
+  remainingAfter = null;
+}
+
 
   // DAILY TOTAL CALORIES FROM USER MESSAGE
   if (customerGid && userMessage) {
