@@ -1,31 +1,24 @@
 // /api/generate-workouts.js
 //
-// PJiFitness - Generate a workout plan (V1)
-// - SAFE BY DEFAULT: in Preview environments it never saves anything.
+// PJiFitness - Generate NEXT workout prescription (V1)
 // - Returns JSON: { workout, debug }
+// - Workout includes exact per-set WEIGHTS + REPS for progressive overload
 //
-// Expects POST JSON body:
+// Expects POST JSON body (same as before), but last_workout is strongly recommended:
 // {
-//   "goal": "fat_loss|muscle_gain|strength|general_fitness" (optional),
-//   "experience": "beginner|intermediate|advanced" (optional),
-//   "session_type": "upper|lower|push|pull|legs|full_body|back_bi|chest_tri|shoulders|arms" (optional),
-//   "equipment": ["dumbbells","barbell","cables","machines","pullup_bar"] (optional),
-//   "time_minutes": 45 (optional),
-//   "notes": "any extra context" (optional),
-//   "last_workout": { ... } (optional),
-//   "history": [ ... ] (optional),
-//   "save": false (optional, ignored in preview)
+//   goal, experience, session_type, equipment, time_minutes, notes,
+//   last_workout: { date, split, workout_name, exercises:[{name, sets:[{w,r,done}]}] },
+//   history: [...]
 // }
-//
-// You can call from Shopify with: fetch('/api/generate-workouts', ...)
 
 export default async function handler(req, res) {
   // -----------------------------
-  // CORS (optional but helpful)
+  // CORS (match your chat endpoint behavior)
   // -----------------------------
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept");
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Use POST" });
@@ -37,7 +30,6 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY env var" });
     }
 
-    // Vercel env: "production" | "preview" | "development"
     const VERCEL_ENV = process.env.VERCEL_ENV || "unknown";
     const IS_PROD = VERCEL_ENV === "production";
     debug.vercelEnv = VERCEL_ENV;
@@ -47,36 +39,48 @@ export default async function handler(req, res) {
     // Parse incoming payload
     // -----------------------------
     const body = req.body || {};
-    const goal = (body.goal || "general_fitness").toString();
+    const goal = (body.goal || "muscle_gain").toString();
     const experience = (body.experience || "intermediate").toString();
     const sessionType = (body.session_type || "full_body").toString();
     const equipment = Array.isArray(body.equipment) ? body.equipment : [];
-    const timeMinutes = Number.isFinite(Number(body.time_minutes)) ? Number(body.time_minutes) : 45;
+    const timeMinutes = Number.isFinite(Number(body.time_minutes)) ? Number(body.time_minutes) : 60;
     const notes = (body.notes || "").toString();
 
     const lastWorkout = body.last_workout || null;
     const history = Array.isArray(body.history) ? body.history : [];
 
-    // "save" is allowed only in production AND only if you later implement saving logic.
-    const wantsSave = !!body.save;
-    const allowSave = IS_PROD && wantsSave;
-    debug.wantsSave = wantsSave;
-    debug.allowSave = allowSave;
+    debug.goal = goal;
+    debug.experience = experience;
+    debug.sessionType = sessionType;
+    debug.timeMinutes = timeMinutes;
+    debug.hasLastWorkout = !!lastWorkout;
+
+    // Require last_workout for real overload prescriptions (best V1 behavior)
+    if (!lastWorkout || !Array.isArray(lastWorkout.exercises)) {
+      return res.status(400).json({
+        error: "Missing last_workout with exercises[]. Needed to prescribe weights/reps for progressive overload.",
+        debug
+      });
+    }
 
     // -----------------------------
     // Build OpenAI prompt
     // -----------------------------
-    // We force the model to return STRICT JSON only (no markdown).
+    // IMPORTANT: This schema returns per-set prescriptions.
     const system = `
 You are PJiFitness "Workout Coach".
 Return ONLY valid JSON. No markdown, no backticks, no commentary.
 
-You generate a single workout session that is:
-- Safe and realistic for the user's experience level.
-- Uses available equipment.
-- Fits within the time limit.
-- Includes progressive overload guidance for next time.
-- Includes a short "coach_focus" message (1-3 bullets) based on their last workout and trends.
+You are generating the user's NEXT workout session using progressive overload.
+
+You MUST prescribe exact WEIGHT (lbs) and REPS for EACH SET for EACH EXERCISE.
+
+Progressive overload rules:
+- Use the last workout (completed sets) as the baseline.
+- If the user hit the top end of a rep range with good performance, increase weight 2.5–10 lbs next time.
+- If reps were low / near failure / form likely broke down, keep weight similar and increase reps slightly OR reduce weight slightly.
+- Keep workouts realistic: 4–8 exercises, mostly 6–12 reps for hypertrophy, with sensible rest times.
+- Keep the session type consistent with the request (or last workout split).
 
 IMPORTANT JSON SCHEMA:
 {
@@ -88,48 +92,44 @@ IMPORTANT JSON SCHEMA:
     {
       "name": "string",
       "category": "compound|accessory|core|conditioning",
-      "sets": number,
-      "reps": "string (e.g. 8-10)",
+      "sets": [
+        { "w": number, "r": number },
+        ...
+      ],
       "rest_seconds": number,
-      "tempo": "string (optional)",
-      "rpe": "string (optional)",
-      "notes": "string (optional)",
-      "alternatives": ["string", ...] (optional)
+      "notes": "string (optional)"
     }
   ],
   "finisher": "string (optional)",
   "cooldown": ["string", ...],
   "coach_focus": ["string", ...],
-  "next_time_adjustments": [
-    {
-      "exercise": "string",
-      "adjustment": "string"
-    }
-  ],
   "safety_notes": ["string", ...]
 }
+
+Do NOT include extra keys.
+Weights are in pounds. Reps are integers.
 `;
 
     const user = `
-User goal: ${goal}
+Goal: ${goal}
 Experience: ${experience}
-Session type requested: ${sessionType}
+Session type: ${sessionType}
 Time limit (minutes): ${timeMinutes}
-Equipment available: ${equipment.length ? equipment.join(", ") : "unspecified / typical gym"}
-
+Equipment: ${equipment.length ? equipment.join(", ") : "typical gym"}
 Extra notes: ${notes || "(none)"}
 
-Last workout (if provided): ${lastWorkout ? JSON.stringify(lastWorkout) : "(none)"}
-Recent workout history (if provided): ${history.length ? JSON.stringify(history.slice(-6)) : "(none)"}
+Last workout (completed sets only):
+${JSON.stringify(lastWorkout, null, 2)}
 
-Generate the workout session JSON now.
+Recent history (optional):
+${history.length ? JSON.stringify(history.slice(-4), null, 2) : "(none)"}
+
+Generate the NEXT workout JSON now.
 `;
 
     // -----------------------------
-    // Call OpenAI (Responses API style)
+    // Call OpenAI (Responses API)
     // -----------------------------
-    // Note: This uses the newer /v1/responses endpoint and asks for JSON output.
-    // If your project uses a different model name, you can swap it below.
     const model = process.env.OPENAI_WORKOUT_MODEL || "gpt-4.1-mini";
     debug.model = model;
 
@@ -145,9 +145,9 @@ Generate the workout session JSON now.
           { role: "system", content: system },
           { role: "user", content: user }
         ],
-        // Ask for JSON-only output
         text: { format: { type: "json_object" } },
-        max_output_tokens: 1200
+        max_output_tokens: 1400,
+        temperature: 0.4
       })
     });
 
@@ -160,8 +160,6 @@ Generate the workout session JSON now.
 
     const data = await oaiResp.json();
 
-    // Extract text from the response object
-    // Responses API can return output_text in different shapes; this is a robust fallback.
     const outputText =
       data?.output_text ||
       data?.output?.[0]?.content?.find?.(c => c?.type === "output_text")?.text ||
@@ -177,27 +175,12 @@ Generate the workout session JSON now.
     try {
       workout = JSON.parse(outputText);
     } catch (e) {
-      // Sometimes the model returns JSON-like text; capture for debugging.
       debug.parseError = String(e);
       debug.outputPreview = outputText.slice(0, 2000);
       return res.status(500).json({ error: "Model returned invalid JSON", debug });
     }
 
-    // -----------------------------
-    // Minimal validation / cleanup
-    // -----------------------------
     workout = normalizeWorkout(workout, { sessionType, timeMinutes });
-
-    // -----------------------------
-    // Saving (stub) - OFF in preview
-    // -----------------------------
-    if (allowSave) {
-      // Put your "save workout history" logic here later.
-      // For V1, I recommend you keep saving OFF until the UI is stable.
-      debug.save = "skipped (not implemented)";
-    } else {
-      debug.save = IS_PROD ? "off" : "preview_no_save";
-    }
 
     return res.status(200).json({ workout, debug });
   } catch (err) {
@@ -214,27 +197,46 @@ Generate the workout session JSON now.
 function normalizeWorkout(workout, { sessionType, timeMinutes }) {
   const w = (workout && typeof workout === "object") ? workout : {};
 
-  if (!w.title) w.title = "Workout Session";
+  if (!w.title) w.title = "Next Workout";
   if (!w.session_type) w.session_type = sessionType || "full_body";
-  if (!Number.isFinite(Number(w.duration_minutes))) w.duration_minutes = timeMinutes || 45;
+  if (!Number.isFinite(Number(w.duration_minutes))) w.duration_minutes = timeMinutes || 60;
 
   if (!Array.isArray(w.warmup)) w.warmup = [];
   if (!Array.isArray(w.exercises)) w.exercises = [];
   if (!Array.isArray(w.cooldown)) w.cooldown = [];
   if (!Array.isArray(w.coach_focus)) w.coach_focus = [];
-  if (!Array.isArray(w.next_time_adjustments)) w.next_time_adjustments = [];
   if (!Array.isArray(w.safety_notes)) w.safety_notes = [];
 
-  // Ensure each exercise has basic fields
   w.exercises = w.exercises
     .filter(Boolean)
+    .slice(0, 10)
     .map(ex => {
       const e = (ex && typeof ex === "object") ? ex : {};
       if (!e.name) e.name = "Exercise";
       if (!e.category) e.category = "accessory";
-      if (!Number.isFinite(Number(e.sets))) e.sets = 3;
-      if (!e.reps) e.reps = "8-12";
       if (!Number.isFinite(Number(e.rest_seconds))) e.rest_seconds = 90;
+
+      // Ensure sets is array of {w,r}
+      if (!Array.isArray(e.sets)) e.sets = [];
+      e.sets = e.sets
+        .filter(Boolean)
+        .slice(0, 6)
+        .map(s => {
+          const ss = (s && typeof s === "object") ? s : {};
+          const wNum = Number(ss.w);
+          const rNum = Number(ss.r);
+          return {
+            w: Number.isFinite(wNum) ? wNum : 0,
+            r: Number.isFinite(rNum) ? rNum : 8
+          };
+        })
+        .filter(s => s.w > 0 && s.r > 0);
+
+      // If model forgot sets, put a safe default
+      if (!e.sets.length) {
+        e.sets = [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }];
+      }
+
       return e;
     });
 
