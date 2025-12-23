@@ -2,33 +2,20 @@
 //
 // PJiFitness - Generate NEXT workout prescription (V1)
 // - Returns JSON: { workout, debug }
-// - Workout includes exact per-set WEIGHTS + REPS for progressive overload
+// - Workout includes exact per-set WEIGHTS + REPS
 //
-// Expects POST JSON body:
-// {
-//   goal, experience, session_type, equipment, time_minutes, notes,
-//   last_workout: {
-//     date, split, workout_name,
-//     exercises:[{name, sets:[{w,r,done}]}]
-//   },
-//   history: [...]
-// }
+// Requires POST with last_workout for real prescriptions.
 
 export default async function handler(req, res) {
   // -----------------------------
-  // ✅ CORS MUST BE SET FIRST (before any early returns)
+  // CORS (set FIRST)
   // -----------------------------
   const origin = req.headers.origin || "";
-
-  // Allow your live site + optional myshopify previews
   const allowlist = new Set([
     "https://www.pjifitness.com",
     "https://pjifitness.com"
-    // If you test from theme preview and see CORS again, add:
-    // "https://YOUR-STORE.myshopify.com"
+    // add myshopify preview origin here if you ever need it
   ]);
-
-  // If origin is in allowlist, echo it back. Otherwise default to main site.
   const allowOrigin = allowlist.has(origin) ? origin : "https://www.pjifitness.com";
 
   res.setHeader("Access-Control-Allow-Origin", allowOrigin);
@@ -42,9 +29,7 @@ export default async function handler(req, res) {
 
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // -----------------------------
-  // ✅ PING + SMOKE TEST (DEPLOY VERIFICATION)
-  // -----------------------------
+  // PING
   if (req.method === "GET") {
     return res.status(200).json({
       ok: true,
@@ -54,6 +39,7 @@ export default async function handler(req, res) {
     });
   }
 
+  // SMOKE
   if (req.method === "POST" && req.headers["x-pj-smoke"] === "1") {
     return res.status(200).json({ ok: true, smoke: true, ts: Date.now() });
   }
@@ -62,21 +48,14 @@ export default async function handler(req, res) {
 
   const debug = {};
   try {
-    console.log("generate-workouts hit", new Date().toISOString());
-
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
     debug.hasOpenAIKey = !!OPENAI_API_KEY;
-
     if (!OPENAI_API_KEY) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY env var", debug });
     }
 
-    const VERCEL_ENV = process.env.VERCEL_ENV || "unknown";
-    debug.vercelEnv = VERCEL_ENV;
+    debug.vercelEnv = process.env.VERCEL_ENV || "unknown";
 
-    // -----------------------------
-    // Parse incoming payload
-    // -----------------------------
     const body = req.body || {};
     const goal = (body.goal || "muscle_gain").toString();
     const experience = (body.experience || "intermediate").toString();
@@ -84,7 +63,6 @@ export default async function handler(req, res) {
     const equipment = Array.isArray(body.equipment) ? body.equipment : [];
     const timeMinutes = Number.isFinite(Number(body.time_minutes)) ? Number(body.time_minutes) : 60;
     const notes = (body.notes || "").toString();
-
     const lastWorkout = body.last_workout || null;
     const history = Array.isArray(body.history) ? body.history : [];
 
@@ -94,88 +72,71 @@ export default async function handler(req, res) {
     debug.timeMinutes = timeMinutes;
     debug.hasLastWorkout = !!lastWorkout;
 
-    // Require last_workout for real overload prescriptions
     if (!lastWorkout || !Array.isArray(lastWorkout.exercises)) {
       return res.status(400).json({
-        error:
-          "Missing last_workout with exercises[]. Needed to prescribe weights/reps for progressive overload.",
+        error: "Missing last_workout with exercises[]. Needed to prescribe weights/reps.",
         debug
       });
     }
 
+    // ✅ reduce payload size (faster / cheaper / less likely to time out)
+    const compactLast = compactWorkout(lastWorkout);
+    const compactHist = history.slice(-2).map(compactWorkout);
+
     // -----------------------------
-    // Build OpenAI prompt
+    // OpenAI prompt (faster & stricter)
     // -----------------------------
     const system = `
-You are PJiFitness "Workout Coach".
-Return ONLY valid JSON. No markdown, no backticks, no commentary.
+You are PJiFitness Workout Coach.
+Return ONLY valid JSON (no markdown).
 
-You are generating the user's NEXT workout session using progressive overload.
+Goal: produce the user's NEXT workout using progressive overload.
+You MUST prescribe exact weight (lbs) and reps for EACH SET.
 
-You MUST prescribe exact WEIGHT (lbs) and REPS for EACH SET for EACH EXERCISE.
+RULES:
+- Base on last workout performance. Use reps-first progression.
+- If last set reps dropped (fatigue), keep weight same and target +1 rep on earlier sets, or keep reps and add small weight only if performance was strong.
+- Upper increments: +2.5 to +5 lbs. Lower: +5 to +10 lbs.
+- Keep it realistic: 4–7 exercises.
 
-Progressive overload rules:
-- Use the last workout (completed sets) as the baseline.
-- Prefer adding reps first within a rep range. When top reps are achieved with good performance, increase weight next time.
-- Typical increments: upper body +2.5 to +5 lbs; lower body +5 to +10 lbs (unless last set was near failure).
-- If user underperformed (reps dropped, likely form breakdown), keep weight similar and prescribe a smaller rep target OR reduce weight slightly.
-- Keep it realistic: 4–8 exercises. Mostly 6–12 reps for hypertrophy. Sensible rest times.
-
-IMPORTANT JSON SCHEMA (STRICT):
+STRICT JSON schema (no extra keys):
 {
   "title": "string",
   "session_type": "string",
   "duration_minutes": number,
-  "warmup": ["string", ...],
   "exercises": [
-    {
-      "name": "string",
-      "category": "compound|accessory|core|conditioning",
-      "sets": [
-        { "w": number, "r": number },
-        ...
-      ],
-      "rest_seconds": number,
-      "notes": "string (optional)"
-    }
+    { "name": "string", "sets": [ { "w": number, "r": number } ], "rest_seconds": number, "notes": "string" }
   ],
-  "finisher": "string (optional)",
-  "cooldown": ["string", ...],
-  "coach_focus": ["string", ...],
-  "safety_notes": ["string", ...]
+  "coach_focus": ["string"],
+  "safety_notes": ["string"]
 }
-
-Do NOT include extra keys.
-Weights are in pounds. Reps are integers.
 `;
 
     const user = `
 Goal: ${goal}
 Experience: ${experience}
 Session type: ${sessionType}
-Time limit (minutes): ${timeMinutes}
+Time (min): ${timeMinutes}
 Equipment: ${equipment.length ? equipment.join(", ") : "typical gym"}
-Extra notes: ${notes || "(none)"}
+Notes: ${notes || "(none)"}
 
-Last workout (as provided):
-${JSON.stringify(lastWorkout, null, 2)}
+Last workout (completed sets):
+${JSON.stringify(compactLast)}
 
-Recent history (optional):
-${history.length ? JSON.stringify(history.slice(-4), null, 2) : "(none)"}
+Recent history:
+${compactHist.length ? JSON.stringify(compactHist) : "(none)"}
 
-Task:
-Generate the NEXT workout JSON now.
-- Use the same split focus as last workout if relevant.
-- Prescribe exact per-set weights+reps that represent realistic progressive overload.
+Return NEXT workout JSON now.
 `;
 
     // -----------------------------
-    // Call OpenAI (Responses API) WITH TIMEOUT
+    // Call OpenAI (increase timeout)
     // -----------------------------
     const model = process.env.OPENAI_WORKOUT_MODEL || "gpt-4.1-mini";
     debug.model = model;
 
     const started = Date.now();
+    debug.step = "before_openai";
 
     const oaiResp = await fetchWithTimeout(
       "https://api.openai.com/v1/responses",
@@ -192,19 +153,21 @@ Generate the NEXT workout JSON now.
             { role: "user", content: user }
           ],
           text: { format: { type: "json_object" } },
-          max_output_tokens: 1600,
-          temperature: 0.4
+          // ✅ keep tokens smaller so it returns faster
+          max_output_tokens: 1100,
+          temperature: 0.3
         })
       },
-      12000
+      28000 // ✅ 28s timeout (fixes your 12s abort)
     );
 
     debug.openai_ms = Date.now() - started;
+    debug.step = "after_openai";
 
     if (!oaiResp.ok) {
       const errText = await oaiResp.text();
       debug.openaiStatus = oaiResp.status;
-      debug.openaiError = errText?.slice(0, 5000);
+      debug.openaiError = errText?.slice(0, 2000);
       return res.status(500).json({ error: "OpenAI request failed", debug });
     }
 
@@ -213,12 +176,10 @@ Generate the NEXT workout JSON now.
     const outputText =
       data?.output_text ||
       data?.output?.[0]?.content?.find?.(c => c?.type === "output_text")?.text ||
-      data?.output?.map?.(o => (o?.content || []).map(c => c?.text).join("")).join("") ||
       "";
 
     if (!outputText || typeof outputText !== "string") {
       debug.noOutput = true;
-      debug.raw = safeClip(data, 4000);
       return res.status(500).json({ error: "No output from model", debug });
     }
 
@@ -227,36 +188,71 @@ Generate the NEXT workout JSON now.
       workout = JSON.parse(outputText);
     } catch (e) {
       debug.parseError = String(e);
-      debug.outputPreview = outputText.slice(0, 2000);
+      debug.outputPreview = outputText.slice(0, 1000);
       return res.status(500).json({ error: "Model returned invalid JSON", debug });
     }
 
-    workout = normalizeWorkout(workout, { sessionType, timeMinutes, lastWorkout });
+    workout = normalizeWorkout(workout, { sessionType, timeMinutes, lastWorkout: compactLast });
 
     return res.status(200).json({ workout, debug });
   } catch (err) {
+    const name = err?.name || "";
+    const msg = String(err);
+
+    // ✅ if OpenAI timed out, return a clear message (not “Unhandled error”)
+    if (name === "AbortError") {
+      return res.status(504).json({
+        error: "OpenAI timeout (took too long). Try again.",
+        debug: { ...debug, name, message: msg }
+      });
+    }
+
     return res.status(500).json({
       error: "Unhandled error",
       debug: {
         ...debug,
-        message: String(err),
-        name: err?.name || "",
-        stack: err?.stack ? String(err.stack).slice(0, 2000) : ""
+        message: msg,
+        name,
+        stack: err?.stack ? String(err.stack).slice(0, 1200) : ""
       }
     });
   }
 }
 
-// ------------------------------------
+// -----------------------------
 // Helpers
-// ------------------------------------
-async function fetchWithTimeout(url, options = {}, ms = 12000) {
+// -----------------------------
+async function fetchWithTimeout(url, options = {}, ms = 28000) {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), ms);
   try {
     return await fetch(url, { ...options, signal: ctrl.signal });
   } finally {
     clearTimeout(id);
+  }
+}
+
+function compactWorkout(w) {
+  try {
+    const out = {
+      date: w?.date || "",
+      split: w?.split || w?.session_type || "",
+      workout_name: w?.workout_name || "",
+      exercises: []
+    };
+    const exs = Array.isArray(w?.exercises) ? w.exercises : [];
+    out.exercises = exs.slice(0, 8).map(ex => {
+      const sets = Array.isArray(ex?.sets) ? ex.sets : [];
+      const done = sets.filter(s => s && (s.done === true || s.done === "true"));
+      const use = done.length ? done : sets;
+      return {
+        name: ex?.name || "",
+        sets: use.slice(0, 5).map(s => ({ w: Number(s.w) || 0, r: Number(s.r) || 0 }))
+      };
+    });
+    return out;
+  } catch {
+    return w;
   }
 }
 
@@ -267,9 +263,7 @@ function normalizeWorkout(workout, { sessionType, timeMinutes, lastWorkout }) {
   if (!w.session_type) w.session_type = sessionType || (lastWorkout?.split || "full_body");
   if (!Number.isFinite(Number(w.duration_minutes))) w.duration_minutes = timeMinutes || 60;
 
-  if (!Array.isArray(w.warmup)) w.warmup = [];
   if (!Array.isArray(w.exercises)) w.exercises = [];
-  if (!Array.isArray(w.cooldown)) w.cooldown = [];
   if (!Array.isArray(w.coach_focus)) w.coach_focus = [];
   if (!Array.isArray(w.safety_notes)) w.safety_notes = [];
 
@@ -279,29 +273,20 @@ function normalizeWorkout(workout, { sessionType, timeMinutes, lastWorkout }) {
     .map(ex => {
       const e = (ex && typeof ex === "object") ? ex : {};
       if (!e.name) e.name = "Exercise";
-      if (!e.category) e.category = "accessory";
       if (!Number.isFinite(Number(e.rest_seconds))) e.rest_seconds = 90;
+      if (typeof e.notes !== "string") e.notes = "";
 
       if (!Array.isArray(e.sets)) e.sets = [];
       e.sets = e.sets
         .filter(Boolean)
         .slice(0, 6)
-        .map(s => {
-          const ss = (s && typeof s === "object") ? s : {};
-          const wNum = Number(ss.w);
-          const rNum = Number(ss.r);
-          return {
-            w: Number.isFinite(wNum) ? wNum : NaN,
-            r: Number.isFinite(rNum) ? rNum : NaN
-          };
-        })
-        .filter(s => Number.isFinite(s.w) && s.w > 0 && Number.isFinite(s.r) && s.r > 0);
+        .map(s => ({ w: Number(s.w) || 0, r: Number(s.r) || 0 }))
+        .filter(s => s.w > 0 && s.r > 0);
 
+      // If model fails, fallback to last workout baseline
       if (!e.sets.length) {
-        const base = findBaselineForExercise(lastWorkout, e.name);
-        const safeW = Number.isFinite(base?.w) ? base.w : 0;
-        const safeR = Number.isFinite(base?.r) ? base.r : 8;
-        e.sets = [{ w: safeW, r: safeR }, { w: safeW, r: safeR }, { w: safeW, r: safeR }];
+        const base = findBaselineForExercise(lastWorkout, e.name) || { w: 0, r: 8 };
+        e.sets = [{ w: base.w, r: base.r }, { w: base.w, r: base.r }, { w: base.w, r: base.r }];
       }
 
       return e;
@@ -312,34 +297,20 @@ function normalizeWorkout(workout, { sessionType, timeMinutes, lastWorkout }) {
 
 function findBaselineForExercise(lastWorkout, exName) {
   try {
-    if (!lastWorkout || !Array.isArray(lastWorkout.exercises)) return null;
     const name = String(exName || "").toLowerCase();
-
-    for (const ex of lastWorkout.exercises) {
+    const exs = Array.isArray(lastWorkout?.exercises) ? lastWorkout.exercises : [];
+    for (const ex of exs) {
       const n = String(ex?.name || "").toLowerCase();
       if (!n) continue;
       if (n === name || n.includes(name) || name.includes(n)) {
-        const sets = Array.isArray(ex.sets) ? ex.sets : [];
-        const done = sets.filter(s => s && (s.done === true || s.done === "true"));
-        const s = (done.length ? done[done.length - 1] : sets[sets.length - 1]) || null;
-        if (s && s.w != null && s.r != null) {
-          const wNum = Number(s.w);
-          const rNum = Number(s.r);
-          if (Number.isFinite(wNum) && Number.isFinite(rNum)) return { w: wNum, r: rNum };
-        }
+        const sets = Array.isArray(ex?.sets) ? ex.sets : [];
+        const last = sets[sets.length - 1];
+        const w = Number(last?.w);
+        const r = Number(last?.r);
+        if (Number.isFinite(w) && w > 0 && Number.isFinite(r) && r > 0) return { w, r };
       }
     }
     return null;
-  } catch {
-    return null;
-  }
-}
-
-function safeClip(obj, maxChars) {
-  try {
-    const s = JSON.stringify(obj);
-    if (s.length <= maxChars) return obj;
-    return s.slice(0, maxChars);
   } catch {
     return null;
   }
