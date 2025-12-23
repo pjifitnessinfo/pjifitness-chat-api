@@ -16,9 +16,35 @@
 
 export default async function handler(req, res) {
   // -----------------------------
+  // ✅ CORS MUST BE SET FIRST (before any early returns)
+  // -----------------------------
+  const origin = req.headers.origin || "";
+
+  // Allow your live site + optional myshopify previews
+  const allowlist = new Set([
+    "https://www.pjifitness.com",
+    "https://pjifitness.com"
+    // If you test from theme preview and see CORS again, add:
+    // "https://YOUR-STORE.myshopify.com"
+  ]);
+
+  // If origin is in allowlist, echo it back. Otherwise default to main site.
+  const allowOrigin = allowlist.has(origin) ? origin : "https://www.pjifitness.com";
+
+  res.setHeader("Access-Control-Allow-Origin", allowOrigin);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS, GET");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With, Accept, x-pj-smoke"
+  );
+
+  if (req.method === "OPTIONS") return res.status(200).end();
+
+  // -----------------------------
   // ✅ PING + SMOKE TEST (DEPLOY VERIFICATION)
-// -----------------------------
-  // GET proves you're hitting the deployed file (should be 200)
+  // -----------------------------
   if (req.method === "GET") {
     return res.status(200).json({
       ok: true,
@@ -28,24 +54,10 @@ export default async function handler(req, res) {
     });
   }
 
-  // POST smoke proves POST route returns instantly (no OpenAI)
   if (req.method === "POST" && req.headers["x-pj-smoke"] === "1") {
     return res.status(200).json({ ok: true, smoke: true, ts: Date.now() });
   }
 
-  // -----------------------------
-  // CORS (match your /api/chat behavior)
-  // -----------------------------
-  const allowOrigin = "https://www.pjifitness.com";
-  res.setHeader("Access-Control-Allow-Origin", allowOrigin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS, GET");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Requested-With, Accept, x-pj-smoke"
-  );
-
-  if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Use POST" });
 
   const debug = {};
