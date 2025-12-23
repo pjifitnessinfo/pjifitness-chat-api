@@ -16,17 +16,33 @@
 
 export default async function handler(req, res) {
   // -----------------------------
+  // ✅ PING + SMOKE TEST (DEPLOY VERIFICATION)
+// -----------------------------
+  // GET proves you're hitting the deployed file (should be 200)
+  if (req.method === "GET") {
+    return res.status(200).json({
+      ok: true,
+      route: "generate-workouts",
+      vercelEnv: process.env.VERCEL_ENV || "unknown",
+      ts: Date.now()
+    });
+  }
+
+  // POST smoke proves POST route returns instantly (no OpenAI)
+  if (req.method === "POST" && req.headers["x-pj-smoke"] === "1") {
+    return res.status(200).json({ ok: true, smoke: true, ts: Date.now() });
+  }
+
+  // -----------------------------
   // CORS (match your /api/chat behavior)
   // -----------------------------
-  // NOTE: if you test from theme editor / myshopify previews and it fails,
-  // temporarily change allowOrigin to "*" or add your myshopify domain.
   const allowOrigin = "https://www.pjifitness.com";
   res.setHeader("Access-Control-Allow-Origin", allowOrigin);
   res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS, GET");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Requested-With, Accept"
+    "Content-Type, Authorization, X-Requested-With, Accept, x-pj-smoke"
   );
 
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -78,7 +94,6 @@ export default async function handler(req, res) {
     // -----------------------------
     // Build OpenAI prompt
     // -----------------------------
-    // IMPORTANT: This schema returns per-set prescriptions.
     const system = `
 You are PJiFitness "Workout Coach".
 Return ONLY valid JSON. No markdown, no backticks, no commentary.
@@ -169,7 +184,7 @@ Generate the NEXT workout JSON now.
           temperature: 0.4
         })
       },
-      12000 // ✅ 12s hard timeout so it never hangs forever
+      12000
     );
 
     debug.openai_ms = Date.now() - started;
@@ -208,7 +223,6 @@ Generate the NEXT workout JSON now.
 
     return res.status(200).json({ workout, debug });
   } catch (err) {
-    // If fetchWithTimeout aborts, this will capture it and return JSON instead of hanging
     return res.status(500).json({
       error: "Unhandled error",
       debug: {
@@ -247,7 +261,6 @@ function normalizeWorkout(workout, { sessionType, timeMinutes, lastWorkout }) {
   if (!Array.isArray(w.coach_focus)) w.coach_focus = [];
   if (!Array.isArray(w.safety_notes)) w.safety_notes = [];
 
-  // Cap exercises (safety)
   w.exercises = w.exercises
     .filter(Boolean)
     .slice(0, 10)
@@ -257,9 +270,7 @@ function normalizeWorkout(workout, { sessionType, timeMinutes, lastWorkout }) {
       if (!e.category) e.category = "accessory";
       if (!Number.isFinite(Number(e.rest_seconds))) e.rest_seconds = 90;
 
-      // Ensure sets is array of {w,r}
       if (!Array.isArray(e.sets)) e.sets = [];
-
       e.sets = e.sets
         .filter(Boolean)
         .slice(0, 6)
@@ -274,22 +285,11 @@ function normalizeWorkout(workout, { sessionType, timeMinutes, lastWorkout }) {
         })
         .filter(s => Number.isFinite(s.w) && s.w > 0 && Number.isFinite(s.r) && s.r > 0);
 
-      // If model forgot sets, provide a safe fallback using lastWorkout if possible
       if (!e.sets.length) {
-        // Try to borrow a baseline weight from lastWorkout (same exercise name contains)
         const base = findBaselineForExercise(lastWorkout, e.name);
-        const baseW = base?.w || 0;
-        const baseR = base?.r || 8;
-
-        // If we still don't have a weight, keep 0 so the UI can show blank and user fills it
-        const safeW = Number.isFinite(baseW) ? baseW : 0;
-        const safeR = Number.isFinite(baseR) ? baseR : 8;
-
-        e.sets = [
-          { w: safeW, r: safeR },
-          { w: safeW, r: safeR },
-          { w: safeW, r: safeR }
-        ];
+        const safeW = Number.isFinite(base?.w) ? base.w : 0;
+        const safeR = Number.isFinite(base?.r) ? base.r : 8;
+        e.sets = [{ w: safeW, r: safeR }, { w: safeW, r: safeR }, { w: safeW, r: safeR }];
       }
 
       return e;
@@ -302,22 +302,21 @@ function findBaselineForExercise(lastWorkout, exName) {
   try {
     if (!lastWorkout || !Array.isArray(lastWorkout.exercises)) return null;
     const name = String(exName || "").toLowerCase();
-    let match = null;
 
     for (const ex of lastWorkout.exercises) {
       const n = String(ex?.name || "").toLowerCase();
       if (!n) continue;
       if (n === name || n.includes(name) || name.includes(n)) {
-        // use the last completed set as baseline
         const sets = Array.isArray(ex.sets) ? ex.sets : [];
         const done = sets.filter(s => s && (s.done === true || s.done === "true"));
         const s = (done.length ? done[done.length - 1] : sets[sets.length - 1]) || null;
         if (s && s.w != null && s.r != null) {
-          match = { w: Number(s.w), r: Number(s.r) };
+          const wNum = Number(s.w);
+          const rNum = Number(s.r);
+          if (Number.isFinite(wNum) && Number.isFinite(rNum)) return { w: wNum, r: rNum };
         }
       }
     }
-    if (match && Number.isFinite(match.w) && Number.isFinite(match.r)) return match;
     return null;
   } catch {
     return null;
