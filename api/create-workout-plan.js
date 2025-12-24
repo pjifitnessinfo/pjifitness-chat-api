@@ -162,17 +162,32 @@ Build the program now.
 
     plan.workouts = plan.workouts.slice(0, days).map(w => {
       w.exercises = Array.isArray(w.exercises) ? w.exercises.slice(0, 8) : [];
-      w.exercises = w.exercises.map(ex => ({
-        name: ex.name || "Exercise",
-        sets: (Array.isArray(ex.sets) ? ex.sets : [{ w: 0, r: 8 }])
-  .slice(0, 5)
-  .map(s => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 8 }))
-  // ✅ If the model returns tiny "weights" (3–9), treat as unknown (0)
-  .map(s => ({ w: (s.w > 0 && s.w < 10) ? 0 : s.w, r: s.r })),
+      w.exercises = w.exercises.map(ex => {
+  const name = ex?.name || "Exercise";
 
-        rest_seconds: Number(ex.rest_seconds || 90),
-        notes: String(ex.notes || "")
-      }));
+  let sets = (Array.isArray(ex?.sets) ? ex.sets : [{ w: 0, r: 8 }])
+    .slice(0, 5)
+    .map(s => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 8 }))
+    .map(s => ({ w: (s.w > 0 && s.w < 10) ? 0 : s.w, r: s.r }));
+
+  // Compounds get 3 sets, accessories get 2 sets
+  const lower = String(name).toLowerCase();
+  const isCompound = /(squat|deadlift|bench|press|row|pull[- ]?up|pulldown|rdl|romanian|lunge|leg press)/.test(lower);
+  const targetSets = isCompound ? 3 : 2;
+
+  if (sets.length < targetSets) {
+    const base = sets[0] || { w: 0, r: 8 };
+    while (sets.length < targetSets) sets.push({ w: base.w, r: base.r });
+  }
+
+  return {
+    name,
+    sets,
+    rest_seconds: Number(ex?.rest_seconds || 90),
+    notes: String(ex?.notes || "")
+  };
+});
+
       w.coach_focus = Array.isArray(w.coach_focus) ? w.coach_focus.slice(0, 4) : [];
       w.duration_minutes = Number(w.duration_minutes || timeMinutes);
       return w;
