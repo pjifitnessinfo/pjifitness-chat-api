@@ -164,7 +164,12 @@ Build the program now.
       w.exercises = Array.isArray(w.exercises) ? w.exercises.slice(0, 8) : [];
       w.exercises = w.exercises.map(ex => ({
         name: ex.name || "Exercise",
-        sets: Array.isArray(ex.sets) ? ex.sets.slice(0, 5) : [{ w: 0, r: 8 }],
+        sets: (Array.isArray(ex.sets) ? ex.sets : [{ w: 0, r: 8 }])
+  .slice(0, 5)
+  .map(s => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 8 }))
+  // ✅ If the model returns tiny "weights" (3–9), treat as unknown (0)
+  .map(s => ({ w: (s.w > 0 && s.w < 10) ? 0 : s.w, r: s.r })),
+
         rest_seconds: Number(ex.rest_seconds || 90),
         notes: String(ex.notes || "")
       }));
