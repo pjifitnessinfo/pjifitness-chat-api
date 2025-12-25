@@ -9,10 +9,7 @@ export default async function handler(req, res) {
   // CORS
   // -----------------------------
   const origin = req.headers.origin || "";
-  const allowlist = new Set([
-    "https://www.pjifitness.com",
-    "https://pjifitness.com"
-  ]);
+  const allowlist = new Set(["https://www.pjifitness.com", "https://pjifitness.com"]);
   const allowOrigin = allowlist.has(origin) ? origin : "https://www.pjifitness.com";
 
   res.setHeader("Access-Control-Allow-Origin", allowOrigin);
@@ -28,11 +25,7 @@ export default async function handler(req, res) {
 
   // PING
   if (req.method === "GET") {
-    return res.status(200).json({
-      ok: true,
-      route: "create-workout-plan",
-      ts: Date.now()
-    });
+    return res.status(200).json({ ok: true, route: "create-workout-plan", ts: Date.now() });
   }
 
   if (req.method !== "POST") {
@@ -47,11 +40,12 @@ export default async function handler(req, res) {
 
     const body = req.body || {};
 
-    const goal = String(body.goal || "muscle_gain");
+    const goal = String(body.goal || "fat_loss"); // your UI maps "cut" => fat_loss
     const experience = String(body.experience || "intermediate");
-    const days = Number(body.days_per_week || 4);
+    const days = Math.max(1, Math.min(6, Number(body.days_per_week || 4) || 4));
     const equipment = Array.isArray(body.equipment) ? body.equipment : [];
-    const timeMinutes = Number(body.time_minutes || 60);
+    const timeMinutes = Math.max(20, Math.min(120, Number(body.time_minutes || 60) || 60));
+    const age = String(body.age || "").trim();
 
     // -----------------------------
     // OpenAI prompt
@@ -71,6 +65,8 @@ Rules:
 - Keep exercises realistic for the equipment
 - No junk volume
 - Clear titles
+- Use "session_type" as one of: "upper_body", "lower_body", "full_body"
+- Include short safety notes for each workout
 
 Return ONLY valid JSON.
 No markdown.
@@ -82,7 +78,7 @@ STRICT JSON SCHEMA:
   "days_per_week": number,
   "workouts": [
     {
-      "session_type": "string",
+      "session_type": "upper_body|lower_body|full_body",
       "title": "string",
       "duration_minutes": number,
       "exercises": [
@@ -93,21 +89,23 @@ STRICT JSON SCHEMA:
           "notes": "string"
         }
       ],
-      "coach_focus": ["string"]
+      "coach_focus": ["string"],
+      "safety_notes": ["string"]
     }
   ]
 }
-`;
+`.trim();
 
     const user = `
 Goal: ${goal}
 Experience: ${experience}
+Age: ${age || "n/a"}
 Days per week: ${days}
 Time per session: ${timeMinutes} minutes
 Equipment: ${equipment.length ? equipment.join(", ") : "full gym"}
 
 Build the program now.
-`;
+`.trim();
 
     const started = Date.now();
 
@@ -115,18 +113,18 @@ Build the program now.
       method: "POST",
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         model: process.env.OPENAI_WORKOUT_MODEL || "gpt-4.1-mini",
         input: [
           { role: "system", content: system },
-          { role: "user", content: user }
+          { role: "user", content: user },
         ],
         text: { format: { type: "json_object" } },
         temperature: 0.4,
-        max_output_tokens: 1400
-      })
+        max_output_tokens: 1600,
+      }),
     });
 
     if (!resp.ok) {
@@ -136,9 +134,10 @@ Build the program now.
 
     const data = await resp.json();
 
+    // Responses API: prefer output_text but fall back to parsing output content blocks
     const outputText =
       data?.output_text ||
-      data?.output?.[0]?.content?.find?.(c => c?.type === "output_text")?.text ||
+      data?.output?.[0]?.content?.find?.((c) => c?.type === "output_text")?.text ||
       "";
 
     if (!outputText) {
@@ -151,59 +150,96 @@ Build the program now.
     } catch (e) {
       return res.status(500).json({
         error: "Invalid JSON from model",
-        preview: outputText.slice(0, 800)
+        preview: outputText.slice(0, 800),
       });
     }
 
     // -----------------------------
     // Normalize + safety
     // -----------------------------
+    if (!plan || typeof plan !== "object") plan = {};
     if (!Array.isArray(plan.workouts)) plan.workouts = [];
 
-    plan.workouts = plan.workouts.slice(0, days).map(w => {
-      w.exercises = Array.isArray(w.exercises) ? w.exercises.slice(0, 8) : [];
-      w.exercises = w.exercises.map(ex => {
-  const name = ex?.name || "Exercise";
+    const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 
-  let sets = (Array.isArray(ex?.sets) ? ex.sets : [{ w: 0, r: 8 }])
-    .slice(0, 5)
-    .map(s => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 8 }))
-    .map(s => ({ w: (s.w > 0 && s.w < 10) ? 0 : s.w, r: s.r }));
+    const normalizeSessionType = (t) => {
+      const s = String(t || "").toLowerCase();
+      if (s.includes("lower") || s.includes("leg")) return "lower_body";
+      if (s.includes("full")) return "full_body";
+      if (s.includes("upper") || s.includes("push") || s.includes("pull")) return "upper_body";
+      // fallback: rotate a bit by day if the model gives nonsense
+      return "full_body";
+    };
 
-  // Compounds get 3 sets, accessories get 2 sets
-  const lower = String(name).toLowerCase();
-  const isCompound = /(squat|deadlift|bench|press|row|pull[- ]?up|pulldown|rdl|romanian|lunge|leg press)/.test(lower);
-  const targetSets = isCompound ? 3 : 2;
+    const isCompoundLift = (name) => {
+      const lower = String(name || "").toLowerCase();
+      return /(squat|deadlift|bench|press|row|pull[- ]?up|pulldown|rdl|romanian|lunge|leg press)/.test(
+        lower
+      );
+    };
 
-  if (sets.length < targetSets) {
-    const base = sets[0] || { w: 0, r: 8 };
-    while (sets.length < targetSets) sets.push({ w: base.w, r: base.r });
-  }
+    plan.plan_title = String(plan.plan_title || "Workout Program");
+    plan.days_per_week = Number(plan.days_per_week || days) || days;
 
-  return {
-    name,
-    sets,
-    rest_seconds: Number(ex?.rest_seconds || 90),
-    notes: String(ex?.notes || "")
-  };
-});
+    plan.workouts = plan.workouts.slice(0, days).map((w, idx) => {
+      const title = String(w?.title || `Day ${idx + 1}`);
+      const session_type = normalizeSessionType(w?.session_type);
 
-      w.coach_focus = Array.isArray(w.coach_focus) ? w.coach_focus.slice(0, 4) : [];
-      w.duration_minutes = Number(w.duration_minutes || timeMinutes);
-      return w;
+      let exercises = Array.isArray(w?.exercises) ? w.exercises.slice(0, 10) : [];
+
+      exercises = exercises.map((ex) => {
+        const name = String(ex?.name || "Exercise");
+
+        let sets = (Array.isArray(ex?.sets) ? ex.sets : [{ w: 0, r: 8 }])
+          .slice(0, 6)
+          .map((s) => ({
+            w: Number(s?.w) || 0,
+            r: Number(s?.r) || 8,
+          }))
+          // kill tiny placeholder weights (1–9 lbs) -> 0
+          .map((s) => ({ w: s.w > 0 && s.w < 10 ? 0 : s.w, r: s.r }));
+
+        // Compounds get 3 sets, accessories get 2 sets
+        const targetSets = isCompoundLift(name) ? 3 : 2;
+
+        if (sets.length < targetSets) {
+          const base = sets[0] || { w: 0, r: 8 };
+          while (sets.length < targetSets) sets.push({ w: base.w, r: base.r });
+        } else if (sets.length > targetSets) {
+          sets = sets.slice(0, targetSets);
+        }
+
+        const restDefault = isCompoundLift(name) ? 90 : 60;
+
+        return {
+          name,
+          sets,
+          rest_seconds: clamp(Number(ex?.rest_seconds || restDefault) || restDefault, 30, 180),
+          notes: String(ex?.notes || ""),
+        };
+      });
+
+      const coach_focus = Array.isArray(w?.coach_focus) ? w.coach_focus.slice(0, 5) : [];
+      const safety_notes = Array.isArray(w?.safety_notes) ? w.safety_notes.slice(0, 5) : [];
+
+      return {
+        session_type,
+        title,
+        duration_minutes: clamp(Number(w?.duration_minutes || timeMinutes) || timeMinutes, 20, 120),
+        exercises,
+        coach_focus,
+        safety_notes,
+      };
     });
 
     return res.status(200).json({
       plan,
-      debug: {
-        ms: Date.now() - started
-      }
+      debug: { ms: Date.now() - started },
     });
-
   } catch (err) {
     return res.status(500).json({
       error: "Unhandled error",
-      message: String(err)
+      message: String(err?.message || err),
     });
   }
 }
