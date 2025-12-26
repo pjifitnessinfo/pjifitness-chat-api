@@ -1,17 +1,18 @@
 // /api/generate-workouts.js
 //
-// PJiFitness - Generate NEXT workout prescription (V2 Smart)
+// PJiFitness - Generate NEXT workout prescription (V2 Smart — FIXED MATCHING + SESSION ENFORCEMENT)
 // - Returns JSON: { workout, debug }
 // - Uses OpenAI for structure/exercise selection
 // - Then applies deterministic progressive overload logic so it's ALWAYS useful
 //
 // Requires POST with last_workout.exercises[].
 // Accepts current_workout (user-edited draft).
-// NEW:
-//   - Uses more history (-10) for matching
-//   - If no history match, uses current draft weights as baseline (if present)
-//   - Adds coaching explanation fields (overall + per exercise)
-//   - Adds "last_time" per exercise (matched sets + date) so UI can show trust-building context
+//
+// FIXES:
+// ✅ Alias/canonical mapping so matches happen even when names differ
+// ✅ Enforces session_type so lower_body doesn't turn into bench/rows
+// ✅ Deload triggers only when enough completed weighted sets exist (prevents false deload)
+// ✅ Adds per-exercise last_time + rationale + overall rationale fields
 
 export default async function handler(req, res) {
   // -----------------------------
@@ -98,7 +99,9 @@ export default async function handler(req, res) {
     debug.lastWorkoutExerciseCount = Array.isArray(compactLast?.exercises) ? compactLast.exercises.length : 0;
 
     debug.hasCurrentWorkout = !!compactCurrent;
-    debug.currentWorkoutExerciseCount = Array.isArray(compactCurrent?.exercises) ? compactCurrent.exercises.length : 0;
+    debug.currentWorkoutExerciseCount = Array.isArray(compactCurrent?.exercises)
+      ? compactCurrent.exercises.length
+      : 0;
 
     // ✅ Auto-correct session type if draft clearly contains upper + lower
     if (compactCurrent?.exercises?.length) {
@@ -112,9 +115,6 @@ export default async function handler(req, res) {
     // -----------------------------
     // OpenAI prompt (structure + exercise selection)
     // -----------------------------
-    // IMPORTANT:
-    // - We still allow the model to propose structure/exercises/sets counts
-    // - But we do NOT trust model weights; smart logic overwrites weights deterministically
     const system = `
 You are PJiFitness Workout Coach.
 Return ONLY valid JSON (no markdown). No extra keys.
@@ -123,6 +123,7 @@ Goal:
 Create the NEXT workout using progressive overload (reps-first).
 If "Current edited workout draft" is provided, RESPECT it:
 - Prefer the draft’s exercise list and order.
+- DO NOT change a lower_body day into upper_body movements.
 - If you swap an exercise, explain why briefly in that exercise's notes.
 
 Prescribe weight (lbs) + reps for EACH SET.
@@ -226,6 +227,9 @@ Return NEXT workout JSON now.
     // Normalize model output
     let workout = normalizeWorkout(workoutFromModel, { sessionType, timeMinutes });
 
+    // ✅ ENFORCE session sanity (prevents "legs day" returning bench/rows)
+    workout = enforceSessionType(workout, sessionType);
+
     // SMART CORE
     const smart = applySmartProgression({
       workout,
@@ -325,7 +329,123 @@ function tokenOverlapScore(aName, bName) {
   return inter;
 }
 
-// Builds a performance library with metadata so we can power "last_time" in UI
+// -----------------------------
+// ✅ Canonical exercise mapping (fix matching)
+// -----------------------------
+const EXERCISE_ALIASES = [
+  // pressing
+  { re: /\bbench\b.*\bpress\b|\bpress\b.*\bbench\b|\bflat bench\b/i, canon: "Bench Press" },
+  { re: /\bincline\b.*\bpress\b|\bpress\b.*\bincline\b/i, canon: "Incline Press" },
+  { re: /\boverhead press\b|\bshoulder press\b|\bohp\b/i, canon: "Overhead Press" },
+
+  // pulling
+  { re: /\brow\b.*\bpulldown\b|\bpulldown\b.*\brow\b|\brow\s*\/\s*pulldown\b/i, canon: "Pulldown / Pull-up" },
+  { re: /\bpull[- ]?up\b|\bpulldown\b|\blat pulldown\b/i, canon: "Pulldown / Pull-up" },
+  { re: /\bseated row\b|\bcable row\b/i, canon: "Seated Row" },
+  { re: /\bbarbell row\b|\bdumbbell row\b|\bonearm row\b|\brow\b/i, canon: "Row (Barbell/Dumbbell)" },
+
+  // legs
+  { re: /\bsquat\b/i, canon: "Squat (any)" },
+  { re: /\brdl\b|\bromanian deadlift\b/i, canon: "Romanian Deadlift" },
+  { re: /\bdeadlift\b/i, canon: "Deadlift" },
+  { re: /\blunge\b|\bsplit squat\b/i, canon: "Lunge / Split Squat" },
+  { re: /\bcalf\b/i, canon: "Calf Raises" },
+  { re: /\bleg press\b/i, canon: "Leg Press" },
+  { re: /\bleg extension\b/i, canon: "Leg Extension" },
+  { re: /\bhamstring curl\b|\bleg curl\b/i, canon: "Hamstring Curl" },
+
+  // shoulders/accessories
+  { re: /\blateral raise\b|\bside raise\b/i, canon: "Lateral Raise" },
+  { re: /\brear delt\b|\brear delt fly\b|\breverse fly\b/i, canon: "Rear Delt Fly" },
+  { re: /\bshrug\b/i, canon: "Shrug" },
+
+  // arms
+  { re: /\btriceps pushdown\b|\bpushdown\b/i, canon: "Triceps Pushdown" },
+  { re: /\bcurl\b/i, canon: "Curl" },
+];
+
+function canonicalizeExerciseName(name) {
+  const raw = collapseSpaces(String(name || ""));
+  if (!raw) return "";
+  for (const a of EXERCISE_ALIASES) {
+    if (a.re.test(raw)) return a.canon;
+  }
+  return raw;
+}
+
+// -----------------------------
+// ✅ Session enforcement (prevents legs day -> bench/row)
+// -----------------------------
+const ALLOWED_BY_SESSION = {
+  lower_body: new Set([
+    "Squat (any)",
+    "Romanian Deadlift",
+    "Deadlift",
+    "Leg Press",
+    "Lunge / Split Squat",
+    "Calf Raises",
+    "Hamstring Curl",
+    "Leg Extension",
+    "Hip Thrust",
+    "Glute Bridge",
+  ]),
+  upper_body: new Set([
+    "Bench Press",
+    "Incline Press",
+    "Row (Barbell/Dumbbell)",
+    "Seated Row",
+    "Pulldown / Pull-up",
+    "Overhead Press",
+    "Lateral Raise",
+    "Rear Delt Fly",
+    "Shrug",
+    "Curl",
+    "Triceps Pushdown",
+    "Fly (Cable/Dumbbell)",
+  ]),
+  full_body: null,
+};
+
+function enforceSessionType(workout, sessionType) {
+  const st = normalizeSessionType(sessionType);
+  const allowed = ALLOWED_BY_SESSION[st] || null;
+  if (!allowed) return workout; // full_body => allow mixed
+
+  const exs = Array.isArray(workout?.exercises) ? workout.exercises : [];
+  const kept = exs.filter((ex) => {
+    const nm = canonicalizeExerciseName(ex?.name || "");
+    return allowed.has(nm);
+  });
+
+  if (kept.length >= 2) {
+    workout.exercises = kept.slice(0, 10).map((e) => ({ ...e, name: canonicalizeExerciseName(e.name) }));
+    workout.session_type = st;
+    return workout;
+  }
+
+  // fallback safe templates
+  if (st === "lower_body") {
+    workout.exercises = [
+      { name: "Squat (any)", sets: [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }], rest_seconds: 120, notes: "" },
+      { name: "Romanian Deadlift", sets: [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }], rest_seconds: 120, notes: "" },
+      { name: "Lunge / Split Squat", sets: [{ w: 0, r: 10 }, { w: 0, r: 10 }, { w: 0, r: 10 }], rest_seconds: 90, notes: "" },
+      { name: "Calf Raises", sets: [{ w: 0, r: 15 }, { w: 0, r: 15 }], rest_seconds: 75, notes: "" },
+    ];
+  } else if (st === "upper_body") {
+    workout.exercises = [
+      { name: "Bench Press", sets: [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }], rest_seconds: 120, notes: "" },
+      { name: "Pulldown / Pull-up", sets: [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }], rest_seconds: 120, notes: "" },
+      { name: "Overhead Press", sets: [{ w: 0, r: 10 }, { w: 0, r: 10 }, { w: 0, r: 10 }], rest_seconds: 120, notes: "" },
+      { name: "Row (Barbell/Dumbbell)", sets: [{ w: 0, r: 10 }, { w: 0, r: 10 }, { w: 0, r: 10 }], rest_seconds: 120, notes: "" },
+    ];
+  }
+  workout.session_type = st;
+  return workout;
+}
+
+// -----------------------------
+// Matching library (now canonicalized)
+// -----------------------------
 function buildPerformanceLibrary(compactLast, compactHist) {
   const workouts = [compactLast].concat(compactHist || []).filter(Boolean);
 
@@ -336,15 +456,15 @@ function buildPerformanceLibrary(compactLast, compactHist) {
     const exs = Array.isArray(w?.exercises) ? w.exercises : [];
     for (const ex of exs) {
       const sets = Array.isArray(ex?.sets) ? ex.sets : [];
-      if (!ex?.name || !sets.length) continue;
+      const nm = canonicalizeExerciseName(ex?.name || "");
       const cleaned = sets
         .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }))
         .filter((s) => s.w > 0 && s.r > 0);
 
-      if (!cleaned.length) continue;
+      if (!nm || !cleaned.length) continue;
 
       entries.push({
-        name: collapseSpaces(ex.name),
+        name: collapseSpaces(nm),
         sets: cleaned,
         date,
         workoutName,
@@ -355,8 +475,9 @@ function buildPerformanceLibrary(compactLast, compactHist) {
 }
 
 function findBestInLibrary(libraryEntries, targetName) {
-  const targetS = normNameStrict(targetName);
-  const targetL = normNameLoose(targetName);
+  const targetCanon = canonicalizeExerciseName(targetName);
+  const targetS = normNameStrict(targetCanon);
+  const targetL = normNameLoose(targetCanon);
 
   for (const e of libraryEntries || []) {
     if (normNameStrict(e?.name) === targetS) return { entry: e, score: 999 };
@@ -368,7 +489,7 @@ function findBestInLibrary(libraryEntries, targetName) {
   let best = null;
   let bestScore = 0;
   for (const e of libraryEntries || []) {
-    const sc = tokenOverlapScore(e?.name, targetName);
+    const sc = tokenOverlapScore(e?.name, targetCanon);
     if (sc > bestScore) {
       bestScore = sc;
       best = e;
@@ -396,16 +517,16 @@ function compactWorkoutCompletedOnly(w) {
     };
 
     const exs = Array.isArray(w?.exercises) ? w.exercises : [];
-    out.exercises = exs.slice(0, 10).map((ex) => {
+    out.exercises = exs.slice(0, 12).map((ex) => {
       const sets = Array.isArray(ex?.sets) ? ex.sets : [];
       const done = sets.filter((s) => s && (s.done === true || s.done === "true"));
       const use = done.length ? done : sets;
 
       return {
-        name: collapseSpaces(ex?.name || ""),
+        name: collapseSpaces(canonicalizeExerciseName(ex?.name || "")),
         sets: use
           .filter(Boolean)
-          .slice(0, 8)
+          .slice(0, 10)
           .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }))
           .filter((s) => s.w > 0 && s.r > 0),
       };
@@ -428,13 +549,13 @@ function compactWorkoutAllSets(w) {
     };
 
     const exs = Array.isArray(w?.exercises) ? w.exercises : [];
-    out.exercises = exs.slice(0, 12).map((ex) => {
+    out.exercises = exs.slice(0, 14).map((ex) => {
       const sets = Array.isArray(ex?.sets) ? ex.sets : [];
       return {
-        name: collapseSpaces(ex?.name || ""),
+        name: collapseSpaces(canonicalizeExerciseName(ex?.name || "")),
         sets: sets
           .filter(Boolean)
-          .slice(0, 10)
+          .slice(0, 12)
           .map((s) => ({
             w: Number(s?.w) || 0,
             r: Number(s?.r) || 0,
@@ -461,27 +582,25 @@ function normalizeWorkout(workout, { sessionType, timeMinutes }) {
   if (!Array.isArray(w.coach_focus)) w.coach_focus = [];
   if (!Array.isArray(w.safety_notes)) w.safety_notes = [];
 
-  // NEW: rationale fields (filled by smart logic)
   if (typeof w.rationale_overall !== "string") w.rationale_overall = "";
   if (!Array.isArray(w.rationale_bullets)) w.rationale_bullets = [];
 
   w.exercises = w.exercises
     .filter(Boolean)
-    .slice(0, 10)
+    .slice(0, 12)
     .map((ex) => {
       const e = ex && typeof ex === "object" ? ex : {};
-      e.name = collapseSpaces(e.name || "Exercise");
+      e.name = collapseSpaces(canonicalizeExerciseName(e.name || "Exercise"));
       e.rest_seconds = Number.isFinite(Number(e.rest_seconds)) ? Number(e.rest_seconds) : 90;
       e.notes = typeof e.notes === "string" ? e.notes : "";
 
-      // NEW: per exercise rationale + last_time (filled by smart logic)
       if (typeof e.rationale !== "string") e.rationale = "";
       if (typeof e.last_time !== "object" || e.last_time === null) e.last_time = null;
 
       if (!Array.isArray(e.sets)) e.sets = [];
       e.sets = e.sets
         .filter(Boolean)
-        .slice(0, 8)
+        .slice(0, 10)
         .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }));
 
       if (!e.sets.length) e.sets = [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }];
@@ -507,7 +626,7 @@ function applySmartProgression({
     newExercises: 0,
     deloaded: false,
     completionMode: false,
-    matchMode: "history_library + current_draft_fallback",
+    matchMode: "history_library + current_draft_fallback + alias_mapping",
     matchPreview: { libraryNames: [], resolved: [] },
     fatigueSignal: null,
     respectedDraftOrder: false,
@@ -516,23 +635,25 @@ function applySmartProgression({
   const fatigueSignal = computeFatigueSignal(lastWorkout, currentDraft);
   dbg.fatigueSignal = fatigueSignal;
   dbg.deloaded = !!fatigueSignal.shouldDeload;
-  dbg.completionMode = fatigueSignal.veryLowVolume === true;
+  dbg.completionMode = fatigueSignal.completionMode === true;
 
   const perfLib = buildPerformanceLibrary(lastWorkout, history);
-  dbg.matchPreview.libraryNames = perfLib.map((e) => `${e.date || ""} • ${e.name}`).slice(0, 40);
+  dbg.matchPreview.libraryNames = perfLib.map((e) => `${e.date || ""} • ${e.name}`).slice(0, 60);
 
-  // Respect draft order if present
+  // Respect draft order if present (canonicalized)
   if (currentDraft?.exercises?.length) {
     const draftOrder = currentDraft.exercises
-      .map((ex) => collapseSpaces(ex?.name || ""))
+      .map((ex) => collapseSpaces(canonicalizeExerciseName(ex?.name || "")))
       .filter(Boolean)
-      .slice(0, 8);
+      .slice(0, 10);
 
     if (draftOrder.length) {
       const rebuilt = [];
       for (const draftName of draftOrder) {
         const draftEx =
-          (currentDraft.exercises || []).find((e) => normNameLoose(e?.name) === normNameLoose(draftName)) || null;
+          (currentDraft.exercises || []).find(
+            (e) => normNameLoose(canonicalizeExerciseName(e?.name)) === normNameLoose(draftName)
+          ) || null;
 
         rebuilt.push({
           name: draftName,
@@ -550,37 +671,31 @@ function applySmartProgression({
     }
   }
 
-  // Build overall rationale header now (we’ll fill more below)
   const overallBits = [];
   const bulletBits = [];
 
   if (dbg.deloaded) {
-    overallBits.push("Deload mode triggered based on fatigue signals from the last workout.");
-    bulletBits.push("Deload applied: loads reduced slightly and reps kept in a safer range to recover while still training.");
+    overallBits.push("Deload mode: recovery + clean completion are the priority.");
+    bulletBits.push("Deload applied: loads reduced slightly and reps kept in a safer range.");
   } else {
     overallBits.push("Progression mode: reps-first progressive overload.");
-    bulletBits.push("Reps-first progression: keep weight stable and add reps before increasing load (safer + consistent).");
+    bulletBits.push("Reps-first progression: add reps before adding weight (safer + consistent).");
   }
 
   if (dbg.completionMode) {
-    bulletBits.push("Completion focus: the priority is finishing every set with clean form before chasing heavier weight.");
+    bulletBits.push("Completion focus: finish every set with clean form before chasing heavier weight.");
   }
 
   if (dbg.respectedDraftOrder) {
     bulletBits.push("Your edited exercise order was respected (AI won’t reshuffle your routine).");
   }
 
-  // Apply sets + add exercise rationale + add last_time
-  workout.exercises = (workout.exercises || []).slice(0, 8).map((ex) => {
-    const name = collapseSpaces(ex?.name || "Exercise");
+  // Apply sets + rationale + last_time
+  workout.exercises = (workout.exercises || []).slice(0, 10).map((ex) => {
+    const name = collapseSpaces(canonicalizeExerciseName(ex?.name || "Exercise"));
 
-    // 1) try history library
     const { entry: matched, score } = findBestInLibrary(perfLib, name);
-
-    // 2) fallback: use current draft values if present
     const draftPerf = draftHasUsablePerformance(ex);
-
-    const isCompound = isCompoundLift(name);
 
     if (matched && matched.sets?.length) {
       dbg.matchedExercises += 1;
@@ -591,15 +706,10 @@ function applySmartProgression({
         score,
       });
 
-      const nextSets = prescribeNextSets({
-        name,
-        lastSets: matched.sets,
-        deload: dbg.deloaded,
-      });
+      const nextSets = prescribeNextSets({ name, lastSets: matched.sets, deload: dbg.deloaded });
 
       const rationale = buildExerciseRationale({
         name,
-        source: "history",
         sourceLabel: matched.date ? `your last logged ${matched.date}` : "your last logged workout",
         lastSets: matched.sets,
         nextSets,
@@ -630,15 +740,10 @@ function applySmartProgression({
         score: 100,
       });
 
-      const nextSets = prescribeNextSets({
-        name,
-        lastSets: draftPerf,
-        deload: dbg.deloaded,
-      });
+      const nextSets = prescribeNextSets({ name, lastSets: draftPerf, deload: dbg.deloaded });
 
       const rationale = buildExerciseRationale({
         name,
-        source: "current_draft",
         sourceLabel: "your current draft",
         lastSets: draftPerf,
         nextSets,
@@ -660,33 +765,25 @@ function applySmartProgression({
       };
     }
 
-    // Otherwise: new exercise -> keep weights blank (0)
     dbg.newExercises += 1;
-    dbg.matchPreview.resolved.push({
-      current: name,
-      matchedName: "",
-      matchedFrom: "",
-      score: 0,
-    });
+    dbg.matchPreview.resolved.push({ current: name, matchedName: "", matchedFrom: "", score: 0 });
 
     const base = baselineForNewExercise(name, sessionType, experience, {
       preferSetCount: (ex?.sets || []).length || null,
     });
 
-    const setsOut = (ex?.sets?.length ? ex.sets : base.sets).slice(0, 8).map((s) => ({
+    const setsOut = (ex?.sets?.length ? ex.sets : base.sets).slice(0, 10).map((s) => ({
       w: 0,
       r: Number(s?.r) || base.defaultReps,
     }));
-
-    const rationale =
-      "No prior performance found for this movement. Weight is left blank (0) by design — start conservative at a load you can complete cleanly for all sets, then we’ll progress from your logged numbers next time.";
 
     return {
       name,
       sets: setsOut,
       rest_seconds: clamp(ex.rest_seconds || base.rest_seconds, 30, 180),
       notes: improveExerciseNote(ex.notes, name, false, dbg.completionMode) || base.notes,
-      rationale,
+      rationale:
+        "No prior performance found for this movement. Weight is left blank (0) by design — start conservative at a load you can complete cleanly for all sets, then we’ll progress from your logged numbers next time.",
       last_time: null,
     };
   });
@@ -694,14 +791,13 @@ function applySmartProgression({
   workout.session_type = normalizeSessionType(workout.session_type || sessionType);
   workout.duration_minutes = clamp(Number(workout.duration_minutes || timeMinutes) || timeMinutes, 20, 120);
 
-  // Final overall rationale
   bulletBits.push(
     `Matched ${dbg.matchedExercises} exercise(s) to your history/draft; ${dbg.newExercises} new movement(s) left blank until you log them.`
   );
 
   if (dbg.fatigueSignal) {
     bulletBits.push(
-      `Fatigue check: totalSets=${dbg.fatigueSignal.totalSets}, bigDropCount=${dbg.fatigueSignal.bigDropCount}, veryLowVolume=${dbg.fatigueSignal.veryLowVolume}.`
+      `Fatigue check: completedWeightedSets=${dbg.fatigueSignal.completedWeightedSets}, totalSets=${dbg.fatigueSignal.totalSets}, bigDropCount=${dbg.fatigueSignal.bigDropCount}.`
     );
   }
 
@@ -714,17 +810,23 @@ function applySmartProgression({
 function cloneDraftSetsOrBlank(draftEx, { defaultReps = 8 } = {}) {
   const sets = Array.isArray(draftEx?.sets) ? draftEx.sets : [];
   if (!sets.length) return [{ w: 0, r: defaultReps }, { w: 0, r: defaultReps }, { w: 0, r: defaultReps }];
-  return sets.slice(0, 8).map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || defaultReps }));
+  return sets.slice(0, 10).map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || defaultReps }));
 }
 
+// ✅ Better deload trigger: needs enough completed weighted sets to justify
 function computeFatigueSignal(lastWorkout, currentDraft) {
   const exs = Array.isArray(lastWorkout?.exercises) ? lastWorkout.exercises : [];
   let totalSets = 0;
   let bigDropCount = 0;
+  let completedWeightedSets = 0;
 
   for (const ex of exs) {
     const sets = Array.isArray(ex?.sets) ? ex.sets : [];
     totalSets += sets.length;
+
+    for (const s of sets) {
+      if (Number(s?.w) > 0 && Number(s?.r) > 0) completedWeightedSets += 1;
+    }
 
     if (sets.length >= 3) {
       const first = Number(sets[0]?.r) || 0;
@@ -733,44 +835,43 @@ function computeFatigueSignal(lastWorkout, currentDraft) {
     }
   }
 
-  const veryLowVolume = totalSets <= 6;
-
   const draftSetCount = countDraftSets(currentDraft);
   const draftLooksNormal = draftSetCount >= 10;
 
-  const shouldDeload = bigDropCount >= 2 || (veryLowVolume && !draftLooksNormal);
-  return { shouldDeload, totalSets, bigDropCount, veryLowVolume, draftSetCount, draftLooksNormal };
+  let shouldDeload = false;
+  if (completedWeightedSets >= 8) {
+    const veryLowVolume = totalSets <= 6;
+    if (bigDropCount >= 2) shouldDeload = true;
+    if (veryLowVolume && !draftLooksNormal) shouldDeload = true;
+  }
+
+  const completionMode = completedWeightedSets < 8;
+
+  return {
+    shouldDeload,
+    completionMode,
+    totalSets,
+    bigDropCount,
+    completedWeightedSets,
+    draftSetCount,
+    draftLooksNormal,
+  };
 }
 
 function countDraftSets(currentDraft) {
   try {
     const exs = Array.isArray(currentDraft?.exercises) ? currentDraft.exercises : [];
     let n = 0;
-    for (const ex of exs) {
-      const sets = Array.isArray(ex?.sets) ? ex.sets : [];
-      n += sets.length;
-    }
+    for (const ex of exs) n += Array.isArray(ex?.sets) ? ex.sets.length : 0;
     return n;
   } catch {
     return 0;
   }
 }
 
-// --- NEW: explanation builder (deterministic) ---
-function buildExerciseRationale({
-  name,
-  source,
-  sourceLabel,
-  lastSets,
-  nextSets,
-  deload,
-  completionMode,
-}) {
-  const isCompound = isCompoundLift(name);
-
+function buildExerciseRationale({ name, sourceLabel, lastSets, nextSets, deload, completionMode }) {
   const last = normalizeSets(lastSets).slice(0, 3);
   const next = normalizeSets(nextSets).slice(0, 3);
-
   const last0 = last[0] || { w: 0, r: 0 };
   const next0 = next[0] || { w: 0, r: 0 };
 
@@ -782,34 +883,20 @@ function buildExerciseRationale({
 
   if (deload) {
     parts.push(
-      `Deload applied: weight reduced slightly (${formatDelta(wDelta)} lbs vs last set 1) to manage fatigue while keeping quality reps.`
+      `Deload: reduced load slightly (${formatDelta(wDelta)} lbs vs last set 1) to manage fatigue and keep reps clean.`
     );
   } else {
-    // reps-first
-    if (wDelta > 0) {
-      parts.push(
-        `Weight increase (${formatDelta(wDelta)} lbs) because you were at/near the top of the rep range last time — progressing load is the next step.`
-      );
-    } else if (wDelta < 0) {
-      parts.push(
-        `Weight decrease (${formatDelta(wDelta)} lbs) to improve completion and keep form clean (better long-term progression).`
-      );
-    } else {
-      parts.push(
-        `Same weight as last time; goal is to add reps first (safer and more consistent than jumping weight too soon).`
-      );
-    }
-
-    if (rDelta > 0 && wDelta === 0) {
-      parts.push(`Reps nudged up first (${formatDelta(rDelta)} reps on set 1) — once you hit the top end, we bump weight next time.`);
-    }
+    if (wDelta > 0) parts.push(`Weight increased (${formatDelta(wDelta)} lbs) because last time supported a bump.`);
+    else if (wDelta < 0) parts.push(`Weight decreased (${formatDelta(wDelta)} lbs) to improve completion quality.`);
+    else parts.push(`Same weight; goal is reps-first progression before increasing load.`);
+    if (rDelta > 0 && wDelta === 0) parts.push(`Reps nudged up first (${formatDelta(rDelta)} reps on set 1).`);
   }
 
-  if (completionMode) {
-    parts.push("Completion focus: stop 1–2 reps shy of failure and finish every prescribed set before adding load.");
-  } else {
-    parts.push(isCompound ? "Keep 1–2 reps in reserve on compounds." : "Use controlled tempo and full range of motion.");
-  }
+  parts.push(
+    completionMode
+      ? "Completion focus: stop 1–2 reps shy of failure and finish every prescribed set before adding load."
+      : "Use controlled tempo and full range of motion."
+  );
 
   return parts.join(" ");
 }
@@ -835,7 +922,7 @@ function prescribeNextSets({ name, lastSets, deload }) {
   const cleaned = (lastSets || [])
     .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }))
     .filter((s) => s.w > 0 && s.r > 0)
-    .slice(0, 6);
+    .slice(0, 8);
 
   const isCompound = isCompoundLift(name);
   const targetSetCount = isCompound ? 3 : 2;
