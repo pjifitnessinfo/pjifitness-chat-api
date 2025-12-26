@@ -283,6 +283,27 @@ function normalizeSessionType(t) {
   return "full_body";
 }
 
+/** normalize name spacing for UI + matching */
+function collapseSpaces(s) {
+  return String(s || "").replace(/\s+/g, " ").trim();
+}
+
+/** true if user explicitly entered a weight in the draft */
+function draftProvidedAnyWeight(exercise) {
+  const sets = Array.isArray(exercise?.sets) ? exercise.sets : [];
+  return sets.some((s) => Number(s?.w) > 0);
+}
+
+/** force weights blank for new/unmatched exercises; keep rep targets */
+function forceWeightsToZeroKeepReps(sets, fallbackReps = 8) {
+  const arr = Array.isArray(sets) ? sets : [];
+  if (!arr.length) return [{ w: 0, r: fallbackReps }, { w: 0, r: fallbackReps }, { w: 0, r: fallbackReps }];
+  return arr.slice(0, 8).map((s) => ({
+    w: 0,
+    r: Number(s?.r) > 0 ? Number(s.r) : fallbackReps,
+  }));
+}
+
 /**
  * Completed-only compacting (for History snapshots).
  * If sets include done flags, we keep only done sets.
@@ -304,7 +325,7 @@ function compactWorkoutCompletedOnly(w) {
       const use = done.length ? done : sets;
 
       return {
-        name: String(ex?.name || ""),
+        name: collapseSpaces(ex?.name || ""),
         sets: use
           .filter(Boolean)
           .slice(0, 8)
@@ -337,7 +358,7 @@ function compactWorkoutAllSets(w) {
     out.exercises = exs.slice(0, 12).map((ex) => {
       const sets = Array.isArray(ex?.sets) ? ex.sets : [];
       return {
-        name: String(ex?.name || ""),
+        name: collapseSpaces(ex?.name || ""),
         sets: sets
           .filter(Boolean)
           .slice(0, 10)
@@ -372,7 +393,7 @@ function normalizeWorkout(workout, { sessionType, timeMinutes }) {
     .slice(0, 10)
     .map((ex) => {
       const e = ex && typeof ex === "object" ? ex : {};
-      e.name = String(e.name || "Exercise");
+      e.name = collapseSpaces(e.name || "Exercise");
       e.rest_seconds = Number.isFinite(Number(e.rest_seconds)) ? Number(e.rest_seconds) : 90;
       e.notes = typeof e.notes === "string" ? e.notes : "";
 
@@ -383,7 +404,6 @@ function normalizeWorkout(workout, { sessionType, timeMinutes }) {
         .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }));
 
       // IMPORTANT: do NOT invent heavy weights.
-      // If model omitted sets entirely, keep a sane blank template.
       if (!e.sets.length) {
         e.sets = [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }];
       }
@@ -391,7 +411,6 @@ function normalizeWorkout(workout, { sessionType, timeMinutes }) {
       return e;
     });
 
-  // If model returned nothing useful, at least return a minimal skeleton
   if (!w.exercises.length) {
     w.exercises = [
       { name: "Exercise 1", sets: [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }], rest_seconds: 90, notes: "" },
@@ -430,18 +449,16 @@ function applySmartProgression({
   dbg.deloaded = !!fatigueSignal.shouldDeload;
 
   // Completion mode: when completed volume was very low, we bias toward finishing everything
-  // (but we don't force deload if draft indicates a normal session was intended).
   dbg.completionMode = fatigueSignal.veryLowVolume === true;
 
   // If model returned nonsense exercise list, fallback:
-  // Prefer currentDraft list/order (user edits), else lastWorkout.
   if (!Array.isArray(workout.exercises) || workout.exercises.length < 3) {
     dbg.usedFallbackExercises = true;
 
     if (currentDraft?.exercises?.length) {
       dbg.fallbackSource = "currentDraft";
       workout.exercises = currentDraft.exercises.slice(0, 8).map((ex) => ({
-        name: ex.name,
+        name: collapseSpaces(ex.name),
         sets: cloneDraftSetsOrBlank(ex, { defaultReps: 8 }),
         rest_seconds: defaultRestFor(ex.name),
         notes: "Using your edited exercise list; weights/reps will be prescribed from last performance when available.",
@@ -449,7 +466,7 @@ function applySmartProgression({
     } else {
       dbg.fallbackSource = "lastWorkout";
       workout.exercises = (lastWorkout?.exercises || []).slice(0, 8).map((ex) => ({
-        name: ex.name,
+        name: collapseSpaces(ex.name),
         sets: (ex.sets || []).slice(0, 6).map((s) => ({ w: s.w, r: s.r })),
         rest_seconds: defaultRestFor(ex.name),
         notes: "",
@@ -463,10 +480,10 @@ function applySmartProgression({
     lastMap.set(normName(ex.name), ex);
   });
 
-  // Respect draft order/names if present
+  // Respect draft order/names AND force draft sets to override model sets
   if (currentDraft?.exercises?.length) {
     const draftOrder = currentDraft.exercises
-      .map((ex) => String(ex?.name || "").trim())
+      .map((ex) => collapseSpaces(ex?.name || ""))
       .filter(Boolean)
       .slice(0, 8);
 
@@ -481,19 +498,19 @@ function applySmartProgression({
         const k = normName(draftName);
         const fromModel = modelMap.get(k) || findFuzzyMatch(workout.exercises || [], draftName);
 
-        // pull draft sets (including blanks) so we preserve the user's shape
         const draftEx = (currentDraft.exercises || []).find((e) => normName(e?.name) === k) || null;
         const draftSets = draftEx ? cloneDraftSetsOrBlank(draftEx, { defaultReps: 8 }) : null;
 
         if (fromModel) {
           rebuilt.push({
             ...fromModel,
-            name: draftName,
-            sets: draftSets || fromModel.sets || [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }],
+            name: collapseSpaces(draftName),
+            // ✅ critical: NEVER let model-invented sets override the user’s draft sets
+            sets: draftSets || cloneDraftSetsOrBlank({ sets: fromModel.sets }, { defaultReps: 8 }),
           });
         } else {
           rebuilt.push({
-            name: draftName,
+            name: collapseSpaces(draftName),
             sets: draftSets || [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }],
             rest_seconds: defaultRestFor(draftName),
             notes: "From your edited plan.",
@@ -508,7 +525,7 @@ function applySmartProgression({
 
   // Apply progression per exercise
   workout.exercises = workout.exercises.slice(0, 8).map((ex) => {
-    const name = String(ex?.name || "Exercise");
+    const name = collapseSpaces(ex?.name || "Exercise");
     const key = normName(name);
     const lastEx = lastMap.get(key) || findFuzzyMatch(lastWorkout?.exercises || [], name);
 
@@ -530,20 +547,28 @@ function applySmartProgression({
       };
     }
 
-    // Otherwise: DO NOT invent heavy weights.
-    // Keep draft shape if it exists; otherwise baseline with w:0.
+    // Otherwise: NEW/UNMATCHED exercise.
+    // Rule: ONLY keep weights if the USER typed weights into the draft.
+    // If user did NOT type weights, force weights to 0 (blank) so we never invent numbers.
     dbg.newExercises += 1;
 
     const draftSets = Array.isArray(ex?.sets) ? ex.sets : [];
-    const hasAnyNumbers = draftSets.some((s) => Number(s?.r) > 0 || Number(s?.w) > 0);
+    const userProvidedWeight = draftProvidedAnyWeight(ex);
 
     const base = baselineForNewExercise(name, sessionType, experience, {
       preferSetCount: draftSets.length || null,
     });
 
-    const setsToUse = hasAnyNumbers
-      ? draftSets.map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || base.defaultReps }))
-      : base.sets;
+    let setsToUse;
+    if (userProvidedWeight) {
+      setsToUse = draftSets.slice(0, 8).map((s) => ({
+        w: Number(s?.w) || 0,
+        r: Number(s?.r) || base.defaultReps,
+      }));
+    } else {
+      // ✅ this is the missing fix that prevents 95lb squats / 25lb carries appearing from nowhere
+      setsToUse = forceWeightsToZeroKeepReps(draftSets.length ? draftSets : base.sets, base.defaultReps);
+    }
 
     return {
       name,
@@ -553,7 +578,7 @@ function applySmartProgression({
     };
   });
 
-  workout.title = String(workout.title || "").trim() || smartTitle(sessionType, dbg.deloaded);
+  workout.title = collapseSpaces(String(workout.title || "")) || smartTitle(sessionType, dbg.deloaded);
 
   workout.coach_focus = buildCoachFocus({
     goal,
@@ -574,9 +599,9 @@ function applySmartProgression({
   workout.duration_minutes = clamp(Number(workout.duration_minutes || timeMinutes) || timeMinutes, 20, 120);
 
   // IMPORTANT: do NOT filter out blank sets.
-  // UI needs blanks to show "— x reps" and allow user entry.
   workout.exercises = workout.exercises.map((ex) => ({
     ...ex,
+    name: collapseSpaces(ex?.name),
     sets: (ex.sets || []).slice(0, 8).map((s) => ({
       w: Number(s?.w) || 0,
       r: Number(s?.r) || 0,
@@ -654,7 +679,7 @@ function prescribeNextSets({ name, lastSets, deload }) {
     return Array.from({ length: sets }).map(() => ({ w: 0, r: reps }));
   }
 
-  // Deload: reduce each set weight but keep reps in a safe range
+  // Deload
   if (deload) {
     const dropPct = isCompound ? 0.10 : 0.08;
     const take = Math.min(targetSetCount, cleaned.length);
@@ -664,31 +689,27 @@ function prescribeNextSets({ name, lastSets, deload }) {
     }));
   }
 
-  // Determine if this looks like a ramp (weights vary meaningfully)
+  // Ramp detection (weights vary)
   const ws = cleaned.map((s) => s.w);
   const wMin = Math.min(...ws);
   const wMax = Math.max(...ws);
-  const isRamp = (wMax - wMin) >= 5; // dumbbell reality: 5+ lbs difference means ramp/top set
+  const isRamp = (wMax - wMin) >= 5;
 
-  const out = [];
   const take = Math.min(targetSetCount, cleaned.length);
+  const out = [];
 
   for (let i = 0; i < take; i++) {
     const base = cleaned[i] || cleaned[0];
-    const bump = i < 2 ? 1 : 0; // reps-first on first 2 sets
+    const bump = i < 2 ? 1 : 0;
     const newR = clampInt(base.r + bump, isCompound ? 4 : 8, isCompound ? 12 : 15);
-
-    // For ramp sets, do not change weights automatically (keep per-set w)
     out.push({ w: base.w, r: newR });
   }
 
-  // If NOT ramp and reps are at the top of range, allow a small weight bump
+  // If not ramp and at top of rep range, bump weight
   if (!isRamp) {
     const repRangeTop = isCompound ? 10 : 15;
-    const avgR = Math.round(cleaned.slice(0, take).reduce((a, b) => a + b.r, 0) / Math.max(1, take));
-    const atTop = avgR >= repRangeTop;
-
-    if (atTop) {
+    const avgR = Math.round(out.reduce((a, b) => a + b.r, 0) / Math.max(1, out.length));
+    if (avgR >= repRangeTop) {
       const baseW = cleaned[0].w;
       const inc = isCompound ? pickIncrement(baseW, 5, 10) : pickIncrement(baseW, 2.5, 5);
       const newW = roundToIncrement(baseW + inc, isCompound ? 5 : 2.5);
@@ -742,8 +763,16 @@ function buildCoachFocus({ goal, experience, sessionType, title, deload, complet
 
   const noteLine = notes ? `Coach note: ${notes}` : "";
 
-  const bullets = [sessionLine, `Overall goal: ${goalText}, so we’re prioritizing high-quality reps and consistency over ego-lifting.`, fatigueLine, rpeLine, pacingLine, formLine, draftLine, noteLine]
-    .filter(Boolean);
+  const bullets = [
+    sessionLine,
+    `Overall goal: ${goalText}, so we’re prioritizing high-quality reps and consistency over ego-lifting.`,
+    fatigueLine,
+    rpeLine,
+    pacingLine,
+    formLine,
+    draftLine,
+    noteLine,
+  ].filter(Boolean);
 
   return bullets.slice(0, 6);
 }
@@ -809,8 +838,6 @@ function baselineForNewExercise(name, sessionType, experience, { preferSetCount 
   const defaultSets = compound ? 3 : 2;
 
   const sets = clampInt(preferSetCount || defaultSets, 1, 6);
-
-  // IMPORTANT: default weight for new/unmatched exercise should be blank (0), not invented.
   const defaultW = 0;
 
   return {
