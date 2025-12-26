@@ -6,6 +6,7 @@
 // - Then applies deterministic progressive overload logic so it's ALWAYS useful
 //
 // Requires POST with last_workout.exercises[] for real prescriptions.
+// NEW: accepts current_workout (user-edited draft) to respect edits + improve coach_focus.
 
 export default async function handler(req, res) {
   // -----------------------------
@@ -61,8 +62,10 @@ export default async function handler(req, res) {
     const equipment = Array.isArray(body.equipment) ? body.equipment : [];
     const timeMinutes = Number.isFinite(Number(body.time_minutes)) ? Number(body.time_minutes) : 60;
     const notes = String(body.notes || "");
-    const lastWorkoutRaw = body.last_workout || null;
+
+    const lastWorkoutRaw = body.last_workout || null;            // completed-only snapshot from History
     const historyRaw = Array.isArray(body.history) ? body.history : [];
+    const currentWorkoutRaw = body.current_workout || null;      // NEW: user-edited draft from Today (may include uncompleted sets)
 
     debug.goal = goal;
     debug.experience = experience;
@@ -77,11 +80,15 @@ export default async function handler(req, res) {
     }
 
     // Compact inputs (lower tokens / faster)
-    const compactLast = compactWorkout(lastWorkoutRaw);
-    const compactHist = historyRaw.slice(-3).map(compactWorkout);
+    const compactLast = compactWorkoutCompletedOnly(lastWorkoutRaw);
+    const compactHist = historyRaw.slice(-3).map(compactWorkoutCompletedOnly);
+    const compactCurrent = currentWorkoutRaw ? compactWorkoutAllSets(currentWorkoutRaw) : null;
 
     debug.hasLastWorkout = !!compactLast;
     debug.lastWorkoutExerciseCount = Array.isArray(compactLast?.exercises) ? compactLast.exercises.length : 0;
+
+    debug.hasCurrentWorkout = !!compactCurrent;
+    debug.currentWorkoutExerciseCount = Array.isArray(compactCurrent?.exercises) ? compactCurrent.exercises.length : 0;
 
     // -----------------------------
     // OpenAI prompt (structure + exercise selection)
@@ -92,8 +99,12 @@ You are PJiFitness Workout Coach.
 Return ONLY valid JSON (no markdown). No extra keys.
 
 Goal:
-Create the NEXT workout based on the last workout performance using progressive overload (reps-first).
+Create the NEXT workout based on last workout performance using progressive overload (reps-first).
 Be consistent: keep most exercises the same as last workout unless there's a clear reason to swap.
+If "Current edited workout draft" is provided, RESPECT it:
+- Prefer the draft’s exercise list and order (the user edited it intentionally).
+- If you swap an exercise, explain why briefly in that exercise's notes.
+
 Prescribe exact weight (lbs) + reps for EACH SET.
 
 Coach Focus requirement:
@@ -130,6 +141,9 @@ Notes: ${notes || "(none)"}
 
 Last workout (completed sets only):
 ${JSON.stringify(compactLast)}
+
+Current edited workout draft (may include uncompleted sets; respect exercise list/order if present):
+${compactCurrent ? JSON.stringify(compactCurrent) : "(none)"}
 
 Recent history:
 ${compactHist.length ? JSON.stringify(compactHist) : "(none)"}
@@ -174,7 +188,6 @@ Return NEXT workout JSON now.
       const errText = await oaiResp.text();
       debug.openaiStatus = oaiResp.status;
       debug.openaiError = errText?.slice(0, 2000);
-      // We'll still return a deterministic fallback workout
       debug.fallbackReason = "openai_failed";
     } else {
       const data = await oaiResp.json();
@@ -208,12 +221,13 @@ Return NEXT workout JSON now.
     // -----------------------------
     // SMART CORE: Apply deterministic progressive overload
     // - ensures weights/reps are actually based on last workout performance
-    // - keeps workout stable and useful every time
+    // - respects user-edited draft (exercise list/order)
     // -----------------------------
     const smart = applySmartProgression({
       workout,
       lastWorkout: compactLast,
       history: compactHist,
+      currentDraft: compactCurrent, // ✅ NEW
       goal,
       experience,
       sessionType,
@@ -268,7 +282,12 @@ function normalizeSessionType(t) {
   return "full_body";
 }
 
-function compactWorkout(w) {
+/**
+ * Completed-only compacting (for History snapshots).
+ * If sets include done flags, we keep only done sets.
+ * If no done flags exist, we keep whatever is there.
+ */
+function compactWorkoutCompletedOnly(w) {
   try {
     const out = {
       date: w?.date || "",
@@ -280,9 +299,9 @@ function compactWorkout(w) {
     const exs = Array.isArray(w?.exercises) ? w.exercises : [];
     out.exercises = exs.slice(0, 10).map((ex) => {
       const sets = Array.isArray(ex?.sets) ? ex.sets : [];
-      // prefer completed sets if present
       const done = sets.filter((s) => s && (s.done === true || s.done === "true"));
       const use = done.length ? done : sets;
+
       return {
         name: String(ex?.name || ""),
         sets: use
@@ -293,8 +312,40 @@ function compactWorkout(w) {
       };
     });
 
-    // remove exercises that have no usable sets
     out.exercises = out.exercises.filter((e) => e?.name && Array.isArray(e.sets) && e.sets.length);
+    return out;
+  } catch {
+    return w;
+  }
+}
+
+/**
+ * All-sets compacting (for "Current edited workout draft")
+ * Keeps all sets that have w/r (including not-done), so we can respect user edits.
+ */
+function compactWorkoutAllSets(w) {
+  try {
+    const out = {
+      date: w?.date || "",
+      split: w?.split || w?.session_type || "",
+      workout_name: w?.workout_name || w?.title || "",
+      exercises: [],
+    };
+
+    const exs = Array.isArray(w?.exercises) ? w.exercises : [];
+    out.exercises = exs.slice(0, 12).map((ex) => {
+      const sets = Array.isArray(ex?.sets) ? ex.sets : [];
+      return {
+        name: String(ex?.name || ""),
+        sets: sets
+          .filter(Boolean)
+          .slice(0, 8)
+          .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0, done: !!s?.done }))
+          .filter((s) => (s.w > 0 && s.r > 0) || (s.w === 0 && s.r === 0)), // allow blanks, but keep shape
+      };
+    });
+
+    out.exercises = out.exercises.filter((e) => e?.name);
     return out;
   } catch {
     return w;
@@ -312,7 +363,6 @@ function normalizeWorkout(workout, { sessionType, timeMinutes }) {
   if (!Array.isArray(w.coach_focus)) w.coach_focus = [];
   if (!Array.isArray(w.safety_notes)) w.safety_notes = [];
 
-  // Keep list tight (UI + time)
   w.exercises = w.exercises
     .filter(Boolean)
     .slice(0, 8)
@@ -329,7 +379,6 @@ function normalizeWorkout(workout, { sessionType, timeMinutes }) {
         .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }))
         .filter((s) => s.w > 0 && s.r > 0);
 
-      // If model gave nothing usable, fill with placeholder (will be replaced by smart progression)
       if (!e.sets.length) {
         e.sets = [{ w: 95, r: 8 }, { w: 95, r: 8 }, { w: 95, r: 8 }];
       }
@@ -344,6 +393,7 @@ function applySmartProgression({
   workout,
   lastWorkout,
   history,
+  currentDraft, // ✅ NEW
   goal,
   experience,
   sessionType,
@@ -352,33 +402,83 @@ function applySmartProgression({
 }) {
   const dbg = {
     usedFallbackExercises: false,
+    fallbackSource: "",
+    respectedDraftOrder: false,
     matchedExercises: 0,
     newExercises: 0,
     deloaded: false,
     progressionMode: "reps_first",
   };
 
-  // If model returned nonsense exercise list, fallback to last workout exercise order
+  // Determine deload (avoid false deload when last workout is "completed-only" and low volume)
+  const fatigueSignal = computeFatigueSignal(lastWorkout, currentDraft);
+  if (fatigueSignal.shouldDeload) dbg.deloaded = true;
+  dbg.fatigueSignal = fatigueSignal;
+
+  // If model returned nonsense exercise list, fallback:
+  // Prefer currentDraft list/order (user edits), else lastWorkout.
   if (!Array.isArray(workout.exercises) || workout.exercises.length < 3) {
     dbg.usedFallbackExercises = true;
-    workout.exercises = (lastWorkout?.exercises || []).slice(0, 6).map((ex) => ({
-      name: ex.name,
-      sets: (ex.sets || []).slice(0, 4).map((s) => ({ w: s.w, r: s.r })),
-      rest_seconds: defaultRestFor(ex.name),
-      notes: "",
-    }));
-  }
 
-  // Determine if deload is needed:
-  // - lots of missed volume signal (we only receive completed sets; so if sets count very low OR reps crashed)
-  const fatigueSignal = computeFatigueSignal(lastWorkout);
-  if (fatigueSignal.shouldDeload) dbg.deloaded = true;
+    if (currentDraft?.exercises?.length) {
+      dbg.fallbackSource = "currentDraft";
+      workout.exercises = currentDraft.exercises.slice(0, 7).map((ex) => ({
+        name: ex.name,
+        sets: [{ w: 95, r: 8 }, { w: 95, r: 8 }, { w: 95, r: 8 }],
+        rest_seconds: defaultRestFor(ex.name),
+        notes: "Using your edited exercise list; weights/reps will be prescribed from last performance when available.",
+      }));
+    } else {
+      dbg.fallbackSource = "lastWorkout";
+      workout.exercises = (lastWorkout?.exercises || []).slice(0, 6).map((ex) => ({
+        name: ex.name,
+        sets: (ex.sets || []).slice(0, 4).map((s) => ({ w: s.w, r: s.r })),
+        rest_seconds: defaultRestFor(ex.name),
+        notes: "",
+      }));
+    }
+  }
 
   // Build map for last workout exercises by normalized name
   const lastMap = new Map();
   (lastWorkout?.exercises || []).forEach((ex) => {
     lastMap.set(normName(ex.name), ex);
   });
+
+  // If draft exists, force exercise order/names to match draft as much as possible
+  // (this is the key "respect user edits" behavior)
+  if (currentDraft?.exercises?.length) {
+    const draftOrder = currentDraft.exercises
+      .map((ex) => String(ex?.name || "").trim())
+      .filter(Boolean)
+      .slice(0, 7);
+
+    if (draftOrder.length) {
+      const modelMap = new Map();
+      for (const ex of workout.exercises || []) {
+        modelMap.set(normName(ex?.name), ex);
+      }
+
+      const rebuilt = [];
+      for (const draftName of draftOrder) {
+        const k = normName(draftName);
+        const fromModel = modelMap.get(k) || findFuzzyMatch(workout.exercises || [], draftName);
+        if (fromModel) {
+          rebuilt.push({ ...fromModel, name: draftName });
+        } else {
+          rebuilt.push({
+            name: draftName,
+            sets: [{ w: 95, r: 8 }, { w: 95, r: 8 }, { w: 95, r: 8 }],
+            rest_seconds: defaultRestFor(draftName),
+            notes: "From your edited plan.",
+          });
+        }
+      }
+
+      workout.exercises = rebuilt;
+      dbg.respectedDraftOrder = true;
+    }
+  }
 
   // Apply progression per exercise
   workout.exercises = workout.exercises.slice(0, 7).map((ex) => {
@@ -402,7 +502,6 @@ function applySmartProgression({
     }
 
     dbg.newExercises += 1;
-    // New exercise: pick a sensible baseline (light/moderate), reps-first
     const base = baselineForNewExercise(name, sessionType, experience);
     return {
       name,
@@ -412,10 +511,8 @@ function applySmartProgression({
     };
   });
 
-  // Title: keep model title if good, otherwise build a stable one
   workout.title = String(workout.title || "").trim() || smartTitle(sessionType, dbg.deloaded);
 
-  // Strong Coach Focus + Safety Notes (always)
   workout.coach_focus = buildCoachFocus({
     goal,
     experience,
@@ -425,15 +522,14 @@ function applySmartProgression({
     lastWorkout,
     workout,
     notes,
+    currentDraft,
   });
 
   workout.safety_notes = buildSafetyNotes({ sessionType, deload: dbg.deloaded });
 
-  // Keep schema clean
   workout.session_type = normalizeSessionType(workout.session_type || sessionType);
   workout.duration_minutes = clamp(Number(workout.duration_minutes || timeMinutes) || timeMinutes, 20, 120);
 
-  // Ensure sets are valid
   workout.exercises = workout.exercises.map((ex) => ({
     ...ex,
     sets: (ex.sets || []).filter((s) => Number(s.w) > 0 && Number(s.r) > 0).slice(0, 6),
@@ -442,9 +538,10 @@ function applySmartProgression({
   return { workout, debug: dbg };
 }
 
-function computeFatigueSignal(lastWorkout) {
+function computeFatigueSignal(lastWorkout, currentDraft) {
   // Heuristics:
-  // - if any big exercise shows major rep drop OR very low volume overall, consider deload
+  // - completed-only snapshots can look like "very low volume" even when user simply didn't finish
+  // - if we have a current draft with a normal amount of planned work, avoid deloading purely from low volume
   const exs = Array.isArray(lastWorkout?.exercises) ? lastWorkout.exercises : [];
   let totalSets = 0;
   let bigDropCount = 0;
@@ -460,17 +557,38 @@ function computeFatigueSignal(lastWorkout) {
     }
   }
 
-  const veryLowVolume = totalSets <= 6; // completed-only snapshot; if super low, likely fatigue/time issue
-  const shouldDeload = veryLowVolume || bigDropCount >= 2;
+  const veryLowVolume = totalSets <= 6;
 
-  return { shouldDeload, totalSets, bigDropCount };
+  // If draft suggests a normal session was intended, do not deload solely due to low completed volume
+  const draftSetCount = countDraftSets(currentDraft);
+  const draftLooksNormal = draftSetCount >= 10;
+
+  // Deload triggers:
+  // - strong fatigue signal from rep collapse across multiple exercises
+  // - OR very low completed volume *and* no draft evidence of a normal session
+  const shouldDeload = bigDropCount >= 2 || (veryLowVolume && !draftLooksNormal);
+
+  return { shouldDeload, totalSets, bigDropCount, veryLowVolume, draftSetCount, draftLooksNormal };
+}
+
+function countDraftSets(currentDraft) {
+  try {
+    const exs = Array.isArray(currentDraft?.exercises) ? currentDraft.exercises : [];
+    let n = 0;
+    for (const ex of exs) {
+      const sets = Array.isArray(ex?.sets) ? ex.sets : [];
+      n += sets.length;
+    }
+    return n;
+  } catch {
+    return 0;
+  }
 }
 
 function prescribeNextSets({ name, lastSets, deload }) {
   const sets = (lastSets || []).filter((s) => Number(s.w) > 0 && Number(s.r) > 0).slice(0, 5);
   const isCompound = isCompoundLift(name);
 
-  // If deload: reduce weight 7–12% and keep reps similar (slightly easier)
   if (deload) {
     const dropPct = isCompound ? 0.10 : 0.08;
     return sets.slice(0, isCompound ? 3 : 2).map((s) => ({
@@ -479,7 +597,6 @@ function prescribeNextSets({ name, lastSets, deload }) {
     }));
   }
 
-  // Reps-first progression with fatigue check
   const reps = sets.map((s) => s.r);
   const weight = sets[0]?.w || 0;
 
@@ -489,7 +606,6 @@ function prescribeNextSets({ name, lastSets, deload }) {
 
   const targetSetCount = isCompound ? 3 : 2;
 
-  // If fatigue drop: keep weight, add +1 rep to early sets only
   if (fatigueDrop) {
     const out = [];
     for (let i = 0; i < Math.min(targetSetCount, sets.length); i++) {
@@ -500,28 +616,23 @@ function prescribeNextSets({ name, lastSets, deload }) {
     return out;
   }
 
-  // If strong performance: either add reps or small weight bump
-  // Strong = last set within 1 rep of first set AND average reps decent
   const avgR = Math.round(reps.reduce((a, b) => a + b, 0) / Math.max(1, reps.length));
   const strong = lastR >= firstR - 1 && avgR >= (isCompound ? 6 : 10);
 
-  // Prefer reps-first until top of range, then add weight
   const repRange = isCompound ? [5, 10] : [10, 15];
   const atTop = avgR >= repRange[1];
 
   if (strong && atTop) {
-    // add weight, keep reps at mid-range
     const inc = isCompound ? pickIncrement(weight, 5, 10) : pickIncrement(weight, 2.5, 5);
     const newW = roundToIncrement(weight + inc, isCompound ? 5 : 2.5);
     const targetR = isCompound ? 6 : 10;
     return Array.from({ length: targetSetCount }).map(() => ({ w: newW, r: targetR }));
   }
 
-  // Otherwise: add reps across sets (small)
   const out = [];
   for (let i = 0; i < targetSetCount; i++) {
     const base = sets[i] || sets[0] || { w: weight || 95, r: isCompound ? 6 : 10 };
-    const add = i < 2 ? 1 : 0; // push first sets
+    const add = i < 2 ? 1 : 0;
     out.push({
       w: base.w,
       r: clampInt((base.r || (isCompound ? 6 : 10)) + add, repRange[0], repRange[1]),
@@ -530,7 +641,7 @@ function prescribeNextSets({ name, lastSets, deload }) {
   return out;
 }
 
-function buildCoachFocus({ goal, experience, sessionType, title, deload, lastWorkout, workout, notes }) {
+function buildCoachFocus({ goal, experience, sessionType, title, deload, lastWorkout, workout, notes, currentDraft }) {
   const g = String(goal || "").toLowerCase();
   const goalText =
     g.includes("fat") ? "fat loss while keeping strength" :
@@ -558,16 +669,24 @@ function buildCoachFocus({ goal, experience, sessionType, title, deload, lastWor
       : "Effort target: work sets around 1–2 reps in reserve; if form breaks, stop the set and keep the weight.";
 
   const pacingLine =
-    "Pacing: take the full rest listed for your main lift, then keep accessories moving with steady rest so the session fits your time window.";
+    `Pacing: rest fully on ${mainLift}, then keep accessories moving so you finish in ~${workout?.duration_minutes || 60} minutes.`;
 
   const formLine =
     `Form cue for ${mainLift}: control the lowering phase, keep a tight core/bracing, and make every rep look the same.`;
 
+  const draftLine =
+    currentDraft?.exercises?.length
+      ? "Your edits were respected: the exercise order is based on your current workout draft so the plan matches what you actually want to do."
+      : "";
+
   const noteLine = notes ? `Coach note: ${notes}` : "";
 
-  // 4–6 bullets, detailed sentences (your UI supports long strings)
-  const bullets = [sessionLine, fatigueLine, rpeLine, pacingLine, formLine].filter(Boolean);
-  if (noteLine) bullets.push(noteLine);
+  const bullets = [sessionLine, fatigueLine, rpeLine, pacingLine, formLine, draftLine, noteLine].filter(Boolean);
+
+  // small polish: include the goalText implicitly in one bullet if room
+  if (bullets.length < 6) {
+    bullets.unshift(`Overall goal: ${goalText}, so we’re prioritizing high-quality reps and consistency over ego-lifting.`);
+  }
 
   return bullets.slice(0, 6);
 }
@@ -606,7 +725,6 @@ function improveExerciseNote(note, name, deload) {
   const n = String(note || "").trim();
   if (n) return n.slice(0, 160);
 
-  // lightweight auto-notes to make workout feel coached
   const lower = String(name || "").toLowerCase();
   if (/(squat|deadlift|rdl|romanian|hinge|leg press)/.test(lower)) {
     return deload
@@ -628,12 +746,9 @@ function baselineForNewExercise(name, sessionType, experience) {
   const compound = isCompoundLift(name);
   const rest = compound ? 90 : 60;
 
-  // conservative baseline reps
   const reps = compound ? 6 : 12;
   const sets = compound ? 3 : 2;
 
-  // weight left blank in UI if 0, but your API requires >0; so use a safe starter.
-  // This is only for brand-new exercises not in history.
   const defaultW = compound ? 95 : 25;
 
   return {
@@ -692,7 +807,6 @@ function roundToIncrement(w, inc) {
 }
 
 function pickIncrement(currentW, lo, hi) {
-  // choose smaller increments for lighter weights, larger for heavier
   const w = Number(currentW) || 0;
   if (w >= 225) return hi;
   return lo;
