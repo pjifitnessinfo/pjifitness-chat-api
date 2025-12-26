@@ -6,8 +6,10 @@
 // - Then applies deterministic progressive overload logic so it's ALWAYS useful
 //
 // Requires POST with last_workout.exercises[].
-// Accepts current_workout (user-edited draft) to respect edits.
-// NEW: Uses recent history to match per-exercise (so it works even when last workout is a different day/split).
+// Accepts current_workout (user-edited draft).
+// NEW:
+//   - Uses more history (-10) for matching
+//   - If no history match, uses current draft weights as baseline (if present)
 
 export default async function handler(req, res) {
   // -----------------------------
@@ -64,13 +66,13 @@ export default async function handler(req, res) {
     const timeMinutes = Number.isFinite(Number(body.time_minutes)) ? Number(body.time_minutes) : 60;
     const notes = String(body.notes || "");
 
-    const lastWorkoutRaw = body.last_workout || null;            // completed-only snapshot from History
+    const lastWorkoutRaw = body.last_workout || null;
     const historyRaw = Array.isArray(body.history) ? body.history : [];
-    const currentWorkoutRaw = body.current_workout || null;      // user-edited draft (may include blanks)
+    const currentWorkoutRaw = body.current_workout || null;
 
     debug.goal = goal;
     debug.experience = experience;
-    debug.sessionType = sessionType; // (we will overwrite after auto-correct)
+    debug.sessionType = sessionType;
     debug.timeMinutes = timeMinutes;
 
     if (!lastWorkoutRaw || !Array.isArray(lastWorkoutRaw.exercises)) {
@@ -80,9 +82,14 @@ export default async function handler(req, res) {
       });
     }
 
+    // -----------------------------
     // Compact inputs
+    // -----------------------------
     const compactLast = compactWorkoutCompletedOnly(lastWorkoutRaw);
-    const compactHist = historyRaw.slice(-3).map(compactWorkoutCompletedOnly);
+
+    // ✅ Use MORE history so matches actually happen
+    const compactHist = historyRaw.slice(-10).map(compactWorkoutCompletedOnly);
+
     const compactCurrent = currentWorkoutRaw ? compactWorkoutAllSets(currentWorkoutRaw) : null;
 
     debug.hasLastWorkout = !!compactLast;
@@ -91,14 +98,14 @@ export default async function handler(req, res) {
     debug.hasCurrentWorkout = !!compactCurrent;
     debug.currentWorkoutExerciseCount = Array.isArray(compactCurrent?.exercises) ? compactCurrent.exercises.length : 0;
 
-    // ✅ Auto-correct session type if UI sent a wrong one AND draft clearly contains upper + lower elements
+    // ✅ Auto-correct session type if draft clearly contains upper + lower
     if (compactCurrent?.exercises?.length) {
       const names = compactCurrent.exercises.map((e) => normNameLoose(e?.name)).join(" ");
       const hasUpper = /(press|row|pull|cleanpress)/.test(names);
       const hasLower = /(squat|lunge|deadlift|rdl)/.test(names);
       if (hasUpper && hasLower) sessionType = "full_body";
     }
-    debug.sessionType = sessionType; // ✅ reflect corrected session type in debug
+    debug.sessionType = sessionType;
 
     // -----------------------------
     // OpenAI prompt (structure + exercise selection)
@@ -214,7 +221,7 @@ Return NEXT workout JSON now.
     // Normalize model output
     let workout = normalizeWorkout(workoutFromModel, { sessionType, timeMinutes });
 
-    // SMART CORE (now history-aware)
+    // SMART CORE
     const smart = applySmartProgression({
       workout,
       lastWorkout: compactLast,
@@ -313,11 +320,9 @@ function tokenOverlapScore(aName, bName) {
   return inter;
 }
 
-// ✅ Build library of most-recent performance for each exercise across last + recent history
 function buildPerformanceLibrary(compactLast, compactHist) {
   const workouts = [compactLast].concat(compactHist || []).filter(Boolean);
 
-  // assume compactLast is most recent, then compactHist is older
   const entries = [];
   for (const w of workouts) {
     const date = w?.date || "";
@@ -328,7 +333,9 @@ function buildPerformanceLibrary(compactLast, compactHist) {
       if (!ex?.name || !sets.length) continue;
       entries.push({
         name: collapseSpaces(ex.name),
-        sets: sets.map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 })).filter((s) => s.w > 0 && s.r > 0),
+        sets: sets
+          .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }))
+          .filter((s) => s.w > 0 && s.r > 0),
         date,
         workoutName,
       });
@@ -337,20 +344,17 @@ function buildPerformanceLibrary(compactLast, compactHist) {
   return entries;
 }
 
-// ✅ Find best match in the library (strict → loose → token overlap)
 function findBestInLibrary(libraryEntries, targetName) {
   const targetS = normNameStrict(targetName);
   const targetL = normNameLoose(targetName);
 
-  // 1) strict
   for (const e of libraryEntries || []) {
     if (normNameStrict(e?.name) === targetS) return { entry: e, score: 999 };
   }
-  // 2) loose
   for (const e of libraryEntries || []) {
     if (normNameLoose(e?.name) === targetL) return { entry: e, score: 500 };
   }
-  // 3) token overlap
+
   let best = null;
   let bestScore = 0;
   for (const e of libraryEntries || []) {
@@ -364,18 +368,12 @@ function findBestInLibrary(libraryEntries, targetName) {
   return { entry: null, score: 0 };
 }
 
-function draftProvidedAnyWeight(exercise) {
-  const sets = Array.isArray(exercise?.sets) ? exercise.sets : [];
-  return sets.some((s) => Number(s?.w) > 0);
-}
-
-function forceWeightsToZeroKeepReps(sets, fallbackReps = 8) {
-  const arr = Array.isArray(sets) ? sets : [];
-  if (!arr.length) return [{ w: 0, r: fallbackReps }, { w: 0, r: fallbackReps }, { w: 0, r: fallbackReps }];
-  return arr.slice(0, 8).map((s) => ({
-    w: 0,
-    r: Number(s?.r) > 0 ? Number(s.r) : fallbackReps,
-  }));
+function draftHasUsablePerformance(ex) {
+  const sets = Array.isArray(ex?.sets) ? ex.sets : [];
+  const cleaned = sets
+    .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }))
+    .filter((s) => s.w > 0 && s.r > 0);
+  return cleaned.length ? cleaned : null;
 }
 
 function compactWorkoutCompletedOnly(w) {
@@ -472,14 +470,6 @@ function normalizeWorkout(workout, { sessionType, timeMinutes }) {
       return e;
     });
 
-  if (!w.exercises.length) {
-    w.exercises = [
-      { name: "Exercise 1", sets: [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }], rest_seconds: 90, notes: "" },
-      { name: "Exercise 2", sets: [{ w: 0, r: 10 }, { w: 0, r: 10 }], rest_seconds: 75, notes: "" },
-      { name: "Exercise 3", sets: [{ w: 0, r: 12 }, { w: 0, r: 12 }], rest_seconds: 60, notes: "" },
-    ];
-  }
-
   return w;
 }
 
@@ -499,12 +489,10 @@ function applySmartProgression({
     newExercises: 0,
     deloaded: false,
     completionMode: false,
-    matchMode: "history_library (strict+loose+token)",
-    matchPreview: {
-      libraryNames: [],
-      resolved: [],
-    },
+    matchMode: "history_library + current_draft_fallback",
+    matchPreview: { libraryNames: [], resolved: [] },
     fatigueSignal: null,
+    respectedDraftOrder: false,
   };
 
   const fatigueSignal = computeFatigueSignal(lastWorkout, currentDraft);
@@ -512,9 +500,8 @@ function applySmartProgression({
   dbg.deloaded = !!fatigueSignal.shouldDeload;
   dbg.completionMode = fatigueSignal.veryLowVolume === true;
 
-  // Build library from compactLast + compactHist
   const perfLib = buildPerformanceLibrary(lastWorkout, history);
-  dbg.matchPreview.libraryNames = perfLib.map((e) => `${e.date || ""} • ${e.name}`).slice(0, 25);
+  dbg.matchPreview.libraryNames = perfLib.map((e) => `${e.date || ""} • ${e.name}`).slice(0, 40);
 
   // Respect draft order if present
   if (currentDraft?.exercises?.length) {
@@ -528,6 +515,7 @@ function applySmartProgression({
       for (const draftName of draftOrder) {
         const draftEx =
           (currentDraft.exercises || []).find((e) => normNameLoose(e?.name) === normNameLoose(draftName)) || null;
+
         rebuilt.push({
           name: draftName,
           sets: draftEx ? cloneDraftSetsOrBlank(draftEx, { defaultReps: 8 }) : [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }],
@@ -540,46 +528,68 @@ function applySmartProgression({
     }
   }
 
-  // Apply progression PER EXERCISE from perfLib (not lastWorkout only)
   workout.exercises = (workout.exercises || []).slice(0, 8).map((ex) => {
     const name = collapseSpaces(ex?.name || "Exercise");
 
+    // 1) try history library
     const { entry: matched, score } = findBestInLibrary(perfLib, name);
 
-    dbg.matchPreview.resolved.push({
-      current: name,
-      matchedName: matched ? matched.name : "",
-      matchedFrom: matched ? (matched.date || matched.workoutName || "") : "",
-      score,
-    });
+    // 2) fallback: use current draft values if present (this fixes your exact case)
+    const draftPerf = draftHasUsablePerformance(ex);
 
-    if (matched && Array.isArray(matched.sets) && matched.sets.length) {
+    if (matched && matched.sets?.length) {
       dbg.matchedExercises += 1;
-      const nextSets = prescribeNextSets({ name, lastSets: matched.sets, deload: dbg.deloaded });
+      dbg.matchPreview.resolved.push({
+        current: name,
+        matchedName: matched.name,
+        matchedFrom: matched.date || matched.workoutName || "",
+        score,
+      });
+
       return {
         name,
-        sets: nextSets,
+        sets: prescribeNextSets({ name, lastSets: matched.sets, deload: dbg.deloaded }),
         rest_seconds: clamp(ex.rest_seconds || defaultRestFor(name), 30, 180),
         notes: improveExerciseNote(ex.notes, name, dbg.deloaded, dbg.completionMode),
       };
     }
 
+    if (draftPerf && draftPerf.length) {
+      dbg.matchedExercises += 1;
+      dbg.matchPreview.resolved.push({
+        current: name,
+        matchedName: name,
+        matchedFrom: "current_draft",
+        score: 100,
+      });
+
+      return {
+        name,
+        sets: prescribeNextSets({ name, lastSets: draftPerf, deload: dbg.deloaded }),
+        rest_seconds: clamp(ex.rest_seconds || defaultRestFor(name), 30, 180),
+        notes: improveExerciseNote(ex.notes, name, dbg.deloaded, dbg.completionMode),
+      };
+    }
+
+    // Otherwise: new exercise -> keep weights blank (0)
     dbg.newExercises += 1;
-
-    const draftSets = Array.isArray(ex?.sets) ? ex.sets : [];
-    const userProvidedWeight = draftProvidedAnyWeight(ex);
-
-    const base = baselineForNewExercise(name, sessionType, experience, {
-      preferSetCount: draftSets.length || null,
+    dbg.matchPreview.resolved.push({
+      current: name,
+      matchedName: "",
+      matchedFrom: "",
+      score: 0,
     });
 
-    const setsToUse = userProvidedWeight
-      ? draftSets.slice(0, 8).map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || base.defaultReps }))
-      : forceWeightsToZeroKeepReps(draftSets.length ? draftSets : base.sets, base.defaultReps);
+    const base = baselineForNewExercise(name, sessionType, experience, {
+      preferSetCount: (ex?.sets || []).length || null,
+    });
 
     return {
       name,
-      sets: setsToUse,
+      sets: (ex?.sets?.length ? ex.sets : base.sets).slice(0, 8).map((s) => ({
+        w: 0,
+        r: Number(s?.r) || base.defaultReps,
+      })),
       rest_seconds: clamp(ex.rest_seconds || base.rest_seconds, 30, 180),
       notes: improveExerciseNote(ex.notes, name, false, dbg.completionMode) || base.notes,
     };
@@ -587,15 +597,6 @@ function applySmartProgression({
 
   workout.session_type = normalizeSessionType(workout.session_type || sessionType);
   workout.duration_minutes = clamp(Number(workout.duration_minutes || timeMinutes) || timeMinutes, 20, 120);
-
-  workout.exercises = workout.exercises.map((ex) => ({
-    ...ex,
-    name: collapseSpaces(ex?.name),
-    sets: (ex.sets || []).slice(0, 8).map((s) => ({
-      w: Number(s?.w) || 0,
-      r: Number(s?.r) || 0,
-    })),
-  }));
 
   return { workout, debug: dbg };
 }
@@ -628,7 +629,6 @@ function computeFatigueSignal(lastWorkout, currentDraft) {
   const draftLooksNormal = draftSetCount >= 10;
 
   const shouldDeload = bigDropCount >= 2 || (veryLowVolume && !draftLooksNormal);
-
   return { shouldDeload, totalSets, bigDropCount, veryLowVolume, draftSetCount, draftLooksNormal };
 }
 
@@ -677,7 +677,6 @@ function prescribeNextSets({ name, lastSets, deload }) {
 
   const take = Math.min(targetSetCount, cleaned.length);
   const out = [];
-
   for (let i = 0; i < take; i++) {
     const base = cleaned[i] || cleaned[0];
     const bump = i < 2 ? 1 : 0;
@@ -703,24 +702,7 @@ function prescribeNextSets({ name, lastSets, deload }) {
 function improveExerciseNote(note, name, deload, completionMode) {
   const n = String(note || "").trim();
   if (n) return n.slice(0, 160);
-
   if (completionMode) return "Completion focus: keep loads realistic and finish every set with clean form before progressing.";
-
-  const lower = String(name || "").toLowerCase();
-
-  if (/(squat|deadlift|rdl|romanian|hinge|leg press)/.test(lower)) {
-    return deload
-      ? "Technique day: control the lowering, keep brace tight, and stop 2–3 reps before failure."
-      : "Brace hard, control the eccentric, and keep reps consistent—no grinding.";
-  }
-  if (/(bench|press|overhead|incline)/.test(lower)) {
-    return deload
-      ? "Smooth reps: keep shoulder blades set and avoid pushing to failure today."
-      : "Full range, shoulder blades retracted, and avoid bouncing—earn progression with clean reps.";
-  }
-  if (/(row|pulldown|pull[- ]?up)/.test(lower)) {
-    return "Pull with the back, not momentum—pause briefly at peak contraction.";
-  }
   return deload ? "Keep tempo controlled; stop with reps in reserve." : "Control tempo; aim for consistent reps.";
 }
 
@@ -732,13 +714,11 @@ function baselineForNewExercise(name, sessionType, experience, { preferSetCount 
   const defaultSets = compound ? 3 : 2;
 
   const sets = clampInt(preferSetCount || defaultSets, 1, 6);
-  const defaultW = 0;
-
   return {
     rest_seconds: rest,
     notes: "New/untracked movement: start conservative, keep form strict, and enter a weight you can complete cleanly for all sets.",
     defaultReps: reps,
-    sets: Array.from({ length: sets }).map(() => ({ w: defaultW, r: reps })),
+    sets: Array.from({ length: sets }).map(() => ({ w: 0, r: reps })),
   };
 }
 
@@ -748,7 +728,7 @@ function defaultRestFor(name) {
 
 function isCompoundLift(name) {
   const lower = String(name || "").toLowerCase();
-  return /(squat|deadlift|bench|press|row|pull[- ]?up|pulldown|rdl|romanian|lunge|leg press)/.test(lower);
+  return /(squat|deadlift|bench|press|row|pull[- ]?up|pulldown|rdl|romanian|lunge|leg press|clean)/.test(lower);
 }
 
 function clamp(n, lo, hi) {
