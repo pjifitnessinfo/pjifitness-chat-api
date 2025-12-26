@@ -10,6 +10,8 @@
 // NEW:
 //   - Uses more history (-10) for matching
 //   - If no history match, uses current draft weights as baseline (if present)
+//   - Adds coaching explanation fields (overall + per exercise)
+//   - Adds "last_time" per exercise (matched sets + date) so UI can show trust-building context
 
 export default async function handler(req, res) {
   // -----------------------------
@@ -110,6 +112,9 @@ export default async function handler(req, res) {
     // -----------------------------
     // OpenAI prompt (structure + exercise selection)
     // -----------------------------
+    // IMPORTANT:
+    // - We still allow the model to propose structure/exercises/sets counts
+    // - But we do NOT trust model weights; smart logic overwrites weights deterministically
     const system = `
 You are PJiFitness Workout Coach.
 Return ONLY valid JSON (no markdown). No extra keys.
@@ -120,7 +125,7 @@ If "Current edited workout draft" is provided, RESPECT it:
 - Prefer the draft’s exercise list and order.
 - If you swap an exercise, explain why briefly in that exercise's notes.
 
-Prescribe exact weight (lbs) + reps for EACH SET.
+Prescribe weight (lbs) + reps for EACH SET.
 IMPORTANT: If you are unsure of a weight (no data), set weight to 0 and keep reps.
 
 Coach Focus: 4–6 complete-sentence bullets.
@@ -180,7 +185,7 @@ Return NEXT workout JSON now.
             { role: "user", content: user },
           ],
           text: { format: { type: "json_object" } },
-          max_output_tokens: 1200,
+          max_output_tokens: 1400,
           temperature: 0.25,
         }),
       },
@@ -320,6 +325,7 @@ function tokenOverlapScore(aName, bName) {
   return inter;
 }
 
+// Builds a performance library with metadata so we can power "last_time" in UI
 function buildPerformanceLibrary(compactLast, compactHist) {
   const workouts = [compactLast].concat(compactHist || []).filter(Boolean);
 
@@ -331,11 +337,15 @@ function buildPerformanceLibrary(compactLast, compactHist) {
     for (const ex of exs) {
       const sets = Array.isArray(ex?.sets) ? ex.sets : [];
       if (!ex?.name || !sets.length) continue;
+      const cleaned = sets
+        .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }))
+        .filter((s) => s.w > 0 && s.r > 0);
+
+      if (!cleaned.length) continue;
+
       entries.push({
         name: collapseSpaces(ex.name),
-        sets: sets
-          .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }))
-          .filter((s) => s.w > 0 && s.r > 0),
+        sets: cleaned,
         date,
         workoutName,
       });
@@ -451,6 +461,10 @@ function normalizeWorkout(workout, { sessionType, timeMinutes }) {
   if (!Array.isArray(w.coach_focus)) w.coach_focus = [];
   if (!Array.isArray(w.safety_notes)) w.safety_notes = [];
 
+  // NEW: rationale fields (filled by smart logic)
+  if (typeof w.rationale_overall !== "string") w.rationale_overall = "";
+  if (!Array.isArray(w.rationale_bullets)) w.rationale_bullets = [];
+
   w.exercises = w.exercises
     .filter(Boolean)
     .slice(0, 10)
@@ -459,6 +473,10 @@ function normalizeWorkout(workout, { sessionType, timeMinutes }) {
       e.name = collapseSpaces(e.name || "Exercise");
       e.rest_seconds = Number.isFinite(Number(e.rest_seconds)) ? Number(e.rest_seconds) : 90;
       e.notes = typeof e.notes === "string" ? e.notes : "";
+
+      // NEW: per exercise rationale + last_time (filled by smart logic)
+      if (typeof e.rationale !== "string") e.rationale = "";
+      if (typeof e.last_time !== "object" || e.last_time === null) e.last_time = null;
 
       if (!Array.isArray(e.sets)) e.sets = [];
       e.sets = e.sets
@@ -518,9 +536,13 @@ function applySmartProgression({
 
         rebuilt.push({
           name: draftName,
-          sets: draftEx ? cloneDraftSetsOrBlank(draftEx, { defaultReps: 8 }) : [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }],
+          sets: draftEx
+            ? cloneDraftSetsOrBlank(draftEx, { defaultReps: 8 })
+            : [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }],
           rest_seconds: defaultRestFor(draftName),
           notes: "",
+          rationale: "",
+          last_time: null,
         });
       }
       workout.exercises = rebuilt;
@@ -528,14 +550,37 @@ function applySmartProgression({
     }
   }
 
+  // Build overall rationale header now (we’ll fill more below)
+  const overallBits = [];
+  const bulletBits = [];
+
+  if (dbg.deloaded) {
+    overallBits.push("Deload mode triggered based on fatigue signals from the last workout.");
+    bulletBits.push("Deload applied: loads reduced slightly and reps kept in a safer range to recover while still training.");
+  } else {
+    overallBits.push("Progression mode: reps-first progressive overload.");
+    bulletBits.push("Reps-first progression: keep weight stable and add reps before increasing load (safer + consistent).");
+  }
+
+  if (dbg.completionMode) {
+    bulletBits.push("Completion focus: the priority is finishing every set with clean form before chasing heavier weight.");
+  }
+
+  if (dbg.respectedDraftOrder) {
+    bulletBits.push("Your edited exercise order was respected (AI won’t reshuffle your routine).");
+  }
+
+  // Apply sets + add exercise rationale + add last_time
   workout.exercises = (workout.exercises || []).slice(0, 8).map((ex) => {
     const name = collapseSpaces(ex?.name || "Exercise");
 
     // 1) try history library
     const { entry: matched, score } = findBestInLibrary(perfLib, name);
 
-    // 2) fallback: use current draft values if present (this fixes your exact case)
+    // 2) fallback: use current draft values if present
     const draftPerf = draftHasUsablePerformance(ex);
+
+    const isCompound = isCompoundLift(name);
 
     if (matched && matched.sets?.length) {
       dbg.matchedExercises += 1;
@@ -546,11 +591,33 @@ function applySmartProgression({
         score,
       });
 
+      const nextSets = prescribeNextSets({
+        name,
+        lastSets: matched.sets,
+        deload: dbg.deloaded,
+      });
+
+      const rationale = buildExerciseRationale({
+        name,
+        source: "history",
+        sourceLabel: matched.date ? `your last logged ${matched.date}` : "your last logged workout",
+        lastSets: matched.sets,
+        nextSets,
+        deload: dbg.deloaded,
+        completionMode: dbg.completionMode,
+      });
+
       return {
         name,
-        sets: prescribeNextSets({ name, lastSets: matched.sets, deload: dbg.deloaded }),
+        sets: nextSets,
         rest_seconds: clamp(ex.rest_seconds || defaultRestFor(name), 30, 180),
         notes: improveExerciseNote(ex.notes, name, dbg.deloaded, dbg.completionMode),
+        rationale,
+        last_time: {
+          date: matched.date || "",
+          workout_name: matched.workoutName || "",
+          sets: matched.sets.slice(0, 6).map((s) => ({ w: s.w, r: s.r })),
+        },
       };
     }
 
@@ -563,11 +630,33 @@ function applySmartProgression({
         score: 100,
       });
 
+      const nextSets = prescribeNextSets({
+        name,
+        lastSets: draftPerf,
+        deload: dbg.deloaded,
+      });
+
+      const rationale = buildExerciseRationale({
+        name,
+        source: "current_draft",
+        sourceLabel: "your current draft",
+        lastSets: draftPerf,
+        nextSets,
+        deload: dbg.deloaded,
+        completionMode: dbg.completionMode,
+      });
+
       return {
         name,
-        sets: prescribeNextSets({ name, lastSets: draftPerf, deload: dbg.deloaded }),
+        sets: nextSets,
         rest_seconds: clamp(ex.rest_seconds || defaultRestFor(name), 30, 180),
         notes: improveExerciseNote(ex.notes, name, dbg.deloaded, dbg.completionMode),
+        rationale,
+        last_time: {
+          date: "",
+          workout_name: "current draft",
+          sets: draftPerf.slice(0, 6).map((s) => ({ w: s.w, r: s.r })),
+        },
       };
     }
 
@@ -584,19 +673,40 @@ function applySmartProgression({
       preferSetCount: (ex?.sets || []).length || null,
     });
 
+    const setsOut = (ex?.sets?.length ? ex.sets : base.sets).slice(0, 8).map((s) => ({
+      w: 0,
+      r: Number(s?.r) || base.defaultReps,
+    }));
+
+    const rationale =
+      "No prior performance found for this movement. Weight is left blank (0) by design — start conservative at a load you can complete cleanly for all sets, then we’ll progress from your logged numbers next time.";
+
     return {
       name,
-      sets: (ex?.sets?.length ? ex.sets : base.sets).slice(0, 8).map((s) => ({
-        w: 0,
-        r: Number(s?.r) || base.defaultReps,
-      })),
+      sets: setsOut,
       rest_seconds: clamp(ex.rest_seconds || base.rest_seconds, 30, 180),
       notes: improveExerciseNote(ex.notes, name, false, dbg.completionMode) || base.notes,
+      rationale,
+      last_time: null,
     };
   });
 
   workout.session_type = normalizeSessionType(workout.session_type || sessionType);
   workout.duration_minutes = clamp(Number(workout.duration_minutes || timeMinutes) || timeMinutes, 20, 120);
+
+  // Final overall rationale
+  bulletBits.push(
+    `Matched ${dbg.matchedExercises} exercise(s) to your history/draft; ${dbg.newExercises} new movement(s) left blank until you log them.`
+  );
+
+  if (dbg.fatigueSignal) {
+    bulletBits.push(
+      `Fatigue check: totalSets=${dbg.fatigueSignal.totalSets}, bigDropCount=${dbg.fatigueSignal.bigDropCount}, veryLowVolume=${dbg.fatigueSignal.veryLowVolume}.`
+    );
+  }
+
+  workout.rationale_overall = overallBits.join(" ");
+  workout.rationale_bullets = bulletBits.slice(0, 8);
 
   return { workout, debug: dbg };
 }
@@ -646,6 +756,81 @@ function countDraftSets(currentDraft) {
   }
 }
 
+// --- NEW: explanation builder (deterministic) ---
+function buildExerciseRationale({
+  name,
+  source,
+  sourceLabel,
+  lastSets,
+  nextSets,
+  deload,
+  completionMode,
+}) {
+  const isCompound = isCompoundLift(name);
+
+  const last = normalizeSets(lastSets).slice(0, 3);
+  const next = normalizeSets(nextSets).slice(0, 3);
+
+  const last0 = last[0] || { w: 0, r: 0 };
+  const next0 = next[0] || { w: 0, r: 0 };
+
+  const wDelta = next0.w - last0.w;
+  const rDelta = next0.r - last0.r;
+
+  const parts = [];
+  parts.push(`Based on ${sourceLabel}, we prescribed ${describeSets(next)}.`);
+
+  if (deload) {
+    parts.push(
+      `Deload applied: weight reduced slightly (${formatDelta(wDelta)} lbs vs last set 1) to manage fatigue while keeping quality reps.`
+    );
+  } else {
+    // reps-first
+    if (wDelta > 0) {
+      parts.push(
+        `Weight increase (${formatDelta(wDelta)} lbs) because you were at/near the top of the rep range last time — progressing load is the next step.`
+      );
+    } else if (wDelta < 0) {
+      parts.push(
+        `Weight decrease (${formatDelta(wDelta)} lbs) to improve completion and keep form clean (better long-term progression).`
+      );
+    } else {
+      parts.push(
+        `Same weight as last time; goal is to add reps first (safer and more consistent than jumping weight too soon).`
+      );
+    }
+
+    if (rDelta > 0 && wDelta === 0) {
+      parts.push(`Reps nudged up first (${formatDelta(rDelta)} reps on set 1) — once you hit the top end, we bump weight next time.`);
+    }
+  }
+
+  if (completionMode) {
+    parts.push("Completion focus: stop 1–2 reps shy of failure and finish every prescribed set before adding load.");
+  } else {
+    parts.push(isCompound ? "Keep 1–2 reps in reserve on compounds." : "Use controlled tempo and full range of motion.");
+  }
+
+  return parts.join(" ");
+}
+
+function normalizeSets(sets) {
+  return (Array.isArray(sets) ? sets : [])
+    .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }))
+    .filter((s) => s.w > 0 && s.r > 0);
+}
+
+function describeSets(sets) {
+  const s = normalizeSets(sets);
+  if (!s.length) return "blank weights until you log a baseline";
+  return s.map((x) => `${x.w}×${x.r}`).join(", ");
+}
+
+function formatDelta(n) {
+  const x = Number(n) || 0;
+  return (x >= 0 ? "+" : "") + Math.round(x * 10) / 10;
+}
+
 function prescribeNextSets({ name, lastSets, deload }) {
   const cleaned = (lastSets || [])
     .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }))
@@ -673,7 +858,7 @@ function prescribeNextSets({ name, lastSets, deload }) {
   const ws = cleaned.map((s) => s.w);
   const wMin = Math.min(...ws);
   const wMax = Math.max(...ws);
-  const isRamp = (wMax - wMin) >= 5;
+  const isRamp = wMax - wMin >= 5;
 
   const take = Math.min(targetSetCount, cleaned.length);
   const out = [];
