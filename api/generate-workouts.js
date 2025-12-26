@@ -5,8 +5,9 @@
 // - Uses OpenAI for structure/exercise selection
 // - Then applies deterministic progressive overload logic so it's ALWAYS useful
 //
-// Requires POST with last_workout.exercises[] for real prescriptions.
-// Accepts current_workout (user-edited draft) to respect edits + improve coach_focus.
+// Requires POST with last_workout.exercises[].
+// Accepts current_workout (user-edited draft) to respect edits.
+// NEW: Uses recent history to match per-exercise (so it works even when last workout is a different day/split).
 
 export default async function handler(req, res) {
   // -----------------------------
@@ -69,7 +70,7 @@ export default async function handler(req, res) {
 
     debug.goal = goal;
     debug.experience = experience;
-    debug.sessionType = sessionType;
+    debug.sessionType = sessionType; // (we will overwrite after auto-correct)
     debug.timeMinutes = timeMinutes;
 
     if (!lastWorkoutRaw || !Array.isArray(lastWorkoutRaw.exercises)) {
@@ -79,7 +80,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // Compact inputs (lower tokens / faster)
+    // Compact inputs
     const compactLast = compactWorkoutCompletedOnly(lastWorkoutRaw);
     const compactHist = historyRaw.slice(-3).map(compactWorkoutCompletedOnly);
     const compactCurrent = currentWorkoutRaw ? compactWorkoutAllSets(currentWorkoutRaw) : null;
@@ -90,14 +91,14 @@ export default async function handler(req, res) {
     debug.hasCurrentWorkout = !!compactCurrent;
     debug.currentWorkoutExerciseCount = Array.isArray(compactCurrent?.exercises) ? compactCurrent.exercises.length : 0;
 
-    // ✅ Auto-correct session type if UI sent a wrong one, and the draft is clearly full-body
-    // (prevents "lower_body" coach_focus on a clean+press / row workout)
+    // ✅ Auto-correct session type if UI sent a wrong one AND draft clearly contains upper + lower elements
     if (compactCurrent?.exercises?.length) {
       const names = compactCurrent.exercises.map((e) => normNameLoose(e?.name)).join(" ");
-      const looksFullBody =
-        /(cleanpress|farmer|carry|row|press)/.test(names) && /(squat|lunge|deadlift|rdl)/.test(names);
-      if (looksFullBody) sessionType = "full_body";
+      const hasUpper = /(press|row|pull|cleanpress)/.test(names);
+      const hasLower = /(squat|lunge|deadlift|rdl)/.test(names);
+      if (hasUpper && hasLower) sessionType = "full_body";
     }
+    debug.sessionType = sessionType; // ✅ reflect corrected session type in debug
 
     // -----------------------------
     // OpenAI prompt (structure + exercise selection)
@@ -107,8 +108,7 @@ You are PJiFitness Workout Coach.
 Return ONLY valid JSON (no markdown). No extra keys.
 
 Goal:
-Create the NEXT workout based on last workout performance using progressive overload (reps-first).
-Be consistent: keep most exercises the same as last workout unless there's a clear reason to swap.
+Create the NEXT workout using progressive overload (reps-first).
 If "Current edited workout draft" is provided, RESPECT it:
 - Prefer the draft’s exercise list and order.
 - If you swap an exercise, explain why briefly in that exercise's notes.
@@ -116,15 +116,8 @@ If "Current edited workout draft" is provided, RESPECT it:
 Prescribe exact weight (lbs) + reps for EACH SET.
 IMPORTANT: If you are unsure of a weight (no data), set weight to 0 and keep reps.
 
-Coach Focus requirement:
-coach_focus MUST be 4–6 complete-sentence bullets with:
-- purpose of today
-- main lift focus & how to progress
-- effort target (RPE / reps in reserve)
-- pacing/rest guidance
-- 1–2 key form cues
-
-Safety notes: 2–4 clear bullets.
+Coach Focus: 4–6 complete-sentence bullets.
+Safety notes: 2–4 bullets.
 
 STRICT JSON schema:
 {
@@ -150,10 +143,10 @@ Notes: ${notes || "(none)"}
 Last workout (completed sets only):
 ${JSON.stringify(compactLast)}
 
-Current edited workout draft (may include blanks; respect exercise list/order if present):
+Current edited workout draft (may include blanks; respect list/order):
 ${compactCurrent ? JSON.stringify(compactCurrent) : "(none)"}
 
-Recent history:
+Recent history (completed sets only):
 ${compactHist.length ? JSON.stringify(compactHist) : "(none)"}
 
 Return NEXT workout JSON now.
@@ -221,7 +214,7 @@ Return NEXT workout JSON now.
     // Normalize model output
     let workout = normalizeWorkout(workoutFromModel, { sessionType, timeMinutes });
 
-    // SMART CORE
+    // SMART CORE (now history-aware)
     const smart = applySmartProgression({
       workout,
       lastWorkout: compactLast,
@@ -293,7 +286,6 @@ function normNameStrict(s) {
     .trim();
 }
 
-// looser match: remove equipment words + normalize common variants
 function normNameLoose(s) {
   const base = normNameStrict(s);
   return base
@@ -318,40 +310,58 @@ function tokenOverlapScore(aName, bName) {
   if (!a.size || !b.size) return 0;
   let inter = 0;
   for (const t of a) if (b.has(t)) inter += 1;
-  // slight preference for longer overlap
   return inter;
 }
 
-function findBestLastMatch(lastExercises, targetName) {
+// ✅ Build library of most-recent performance for each exercise across last + recent history
+function buildPerformanceLibrary(compactLast, compactHist) {
+  const workouts = [compactLast].concat(compactHist || []).filter(Boolean);
+
+  // assume compactLast is most recent, then compactHist is older
+  const entries = [];
+  for (const w of workouts) {
+    const date = w?.date || "";
+    const workoutName = w?.workout_name || w?.split || "";
+    const exs = Array.isArray(w?.exercises) ? w.exercises : [];
+    for (const ex of exs) {
+      const sets = Array.isArray(ex?.sets) ? ex.sets : [];
+      if (!ex?.name || !sets.length) continue;
+      entries.push({
+        name: collapseSpaces(ex.name),
+        sets: sets.map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 })).filter((s) => s.w > 0 && s.r > 0),
+        date,
+        workoutName,
+      });
+    }
+  }
+  return entries;
+}
+
+// ✅ Find best match in the library (strict → loose → token overlap)
+function findBestInLibrary(libraryEntries, targetName) {
   const targetS = normNameStrict(targetName);
   const targetL = normNameLoose(targetName);
 
+  // 1) strict
+  for (const e of libraryEntries || []) {
+    if (normNameStrict(e?.name) === targetS) return { entry: e, score: 999 };
+  }
+  // 2) loose
+  for (const e of libraryEntries || []) {
+    if (normNameLoose(e?.name) === targetL) return { entry: e, score: 500 };
+  }
+  // 3) token overlap
   let best = null;
-
-  // pass 1: strict equality
-  for (const ex of lastExercises || []) {
-    if (normNameStrict(ex?.name) === targetS) return ex;
-  }
-
-  // pass 2: loose equality
-  for (const ex of lastExercises || []) {
-    if (normNameLoose(ex?.name) === targetL) return ex;
-  }
-
-  // pass 3: token overlap
   let bestScore = 0;
-  for (const ex of lastExercises || []) {
-    const score = tokenOverlapScore(ex?.name, targetName);
-    if (score > bestScore) {
-      bestScore = score;
-      best = ex;
+  for (const e of libraryEntries || []) {
+    const sc = tokenOverlapScore(e?.name, targetName);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = e;
     }
   }
-
-  // require at least 2 shared tokens to avoid dumb matches
-  if (best && bestScore >= 2) return best;
-
-  return null;
+  if (best && bestScore >= 2) return { entry: best, score: bestScore };
+  return { entry: null, score: 0 };
 }
 
 function draftProvidedAnyWeight(exercise) {
@@ -485,24 +495,16 @@ function applySmartProgression({
   notes,
 }) {
   const dbg = {
-    usedFallbackExercises: false,
-    fallbackSource: "",
-    respectedDraftOrder: false,
     matchedExercises: 0,
     newExercises: 0,
     deloaded: false,
-    progressionMode: "reps_first",
     completionMode: false,
-    matchMode: "strict+loose+token",
+    matchMode: "history_library (strict+loose+token)",
     matchPreview: {
-      lastNames: (lastWorkout?.exercises || []).map((e) => e?.name || ""),
-      lastKeysStrict: (lastWorkout?.exercises || []).map((e) => normNameStrict(e?.name)),
-      lastKeysLoose: (lastWorkout?.exercises || []).map((e) => normNameLoose(e?.name)),
-      currentNames: (workout?.exercises || []).map((e) => e?.name || ""),
-      currentKeysStrict: (workout?.exercises || []).map((e) => normNameStrict(e?.name)),
-      currentKeysLoose: (workout?.exercises || []).map((e) => normNameLoose(e?.name)),
+      libraryNames: [],
       resolved: [],
     },
+    fatigueSignal: null,
   };
 
   const fatigueSignal = computeFatigueSignal(lastWorkout, currentDraft);
@@ -510,30 +512,11 @@ function applySmartProgression({
   dbg.deloaded = !!fatigueSignal.shouldDeload;
   dbg.completionMode = fatigueSignal.veryLowVolume === true;
 
-  // fallback if model list is bad
-  if (!Array.isArray(workout.exercises) || workout.exercises.length < 3) {
-    dbg.usedFallbackExercises = true;
+  // Build library from compactLast + compactHist
+  const perfLib = buildPerformanceLibrary(lastWorkout, history);
+  dbg.matchPreview.libraryNames = perfLib.map((e) => `${e.date || ""} • ${e.name}`).slice(0, 25);
 
-    if (currentDraft?.exercises?.length) {
-      dbg.fallbackSource = "currentDraft";
-      workout.exercises = currentDraft.exercises.slice(0, 8).map((ex) => ({
-        name: collapseSpaces(ex.name),
-        sets: cloneDraftSetsOrBlank(ex, { defaultReps: 8 }),
-        rest_seconds: defaultRestFor(ex.name),
-        notes: "Using your edited exercise list; weights/reps will be prescribed from last performance when available.",
-      }));
-    } else {
-      dbg.fallbackSource = "lastWorkout";
-      workout.exercises = (lastWorkout?.exercises || []).slice(0, 8).map((ex) => ({
-        name: collapseSpaces(ex.name),
-        sets: (ex.sets || []).slice(0, 6).map((s) => ({ w: s.w, r: s.r })),
-        rest_seconds: defaultRestFor(ex.name),
-        notes: "",
-      }));
-    }
-  }
-
-  // respect draft order
+  // Respect draft order if present
   if (currentDraft?.exercises?.length) {
     const draftOrder = currentDraft.exercises
       .map((ex) => collapseSpaces(ex?.name || ""))
@@ -541,76 +524,38 @@ function applySmartProgression({
       .slice(0, 8);
 
     if (draftOrder.length) {
-      const modelList = Array.isArray(workout.exercises) ? workout.exercises : [];
-
       const rebuilt = [];
       for (const draftName of draftOrder) {
         const draftEx =
           (currentDraft.exercises || []).find((e) => normNameLoose(e?.name) === normNameLoose(draftName)) || null;
-        const draftSets = draftEx ? cloneDraftSetsOrBlank(draftEx, { defaultReps: 8 }) : null;
-
-        // find best model match by loose+token (so draft spelling still works)
-        let fromModel = null;
-        for (const ex of modelList) {
-          if (normNameLoose(ex?.name) === normNameLoose(draftName)) {
-            fromModel = ex;
-            break;
-          }
-        }
-        if (!fromModel) {
-          // token overlap
-          let bestScore = 0;
-          for (const ex of modelList) {
-            const sc = tokenOverlapScore(ex?.name, draftName);
-            if (sc > bestScore) {
-              bestScore = sc;
-              fromModel = ex;
-            }
-          }
-          if (fromModel && bestScore < 2) fromModel = null;
-        }
-
-        if (fromModel) {
-          rebuilt.push({
-            ...fromModel,
-            name: collapseSpaces(draftName),
-            sets: draftSets || cloneDraftSetsOrBlank({ sets: fromModel.sets }, { defaultReps: 8 }),
-          });
-        } else {
-          rebuilt.push({
-            name: collapseSpaces(draftName),
-            sets: draftSets || [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }],
-            rest_seconds: defaultRestFor(draftName),
-            notes: "From your edited plan.",
-          });
-        }
+        rebuilt.push({
+          name: draftName,
+          sets: draftEx ? cloneDraftSetsOrBlank(draftEx, { defaultReps: 8 }) : [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }],
+          rest_seconds: defaultRestFor(draftName),
+          notes: "",
+        });
       }
-
       workout.exercises = rebuilt;
       dbg.respectedDraftOrder = true;
     }
   }
 
-  // apply progression
+  // Apply progression PER EXERCISE from perfLib (not lastWorkout only)
   workout.exercises = (workout.exercises || []).slice(0, 8).map((ex) => {
     const name = collapseSpaces(ex?.name || "Exercise");
-    const lastEx = findBestLastMatch(lastWorkout?.exercises || [], name);
+
+    const { entry: matched, score } = findBestInLibrary(perfLib, name);
 
     dbg.matchPreview.resolved.push({
       current: name,
-      matchedLast: lastEx ? (lastEx.name || "") : "",
-      score: lastEx ? tokenOverlapScore(lastEx.name, name) : 0,
+      matchedName: matched ? matched.name : "",
+      matchedFrom: matched ? (matched.date || matched.workoutName || "") : "",
+      score,
     });
 
-    if (lastEx && Array.isArray(lastEx.sets) && lastEx.sets.length) {
+    if (matched && Array.isArray(matched.sets) && matched.sets.length) {
       dbg.matchedExercises += 1;
-
-      const nextSets = prescribeNextSets({
-        name,
-        lastSets: lastEx.sets,
-        deload: dbg.deloaded,
-      });
-
+      const nextSets = prescribeNextSets({ name, lastSets: matched.sets, deload: dbg.deloaded });
       return {
         name,
         sets: nextSets,
@@ -628,15 +573,9 @@ function applySmartProgression({
       preferSetCount: draftSets.length || null,
     });
 
-    let setsToUse;
-    if (userProvidedWeight) {
-      setsToUse = draftSets.slice(0, 8).map((s) => ({
-        w: Number(s?.w) || 0,
-        r: Number(s?.r) || base.defaultReps,
-      }));
-    } else {
-      setsToUse = forceWeightsToZeroKeepReps(draftSets.length ? draftSets : base.sets, base.defaultReps);
-    }
+    const setsToUse = userProvidedWeight
+      ? draftSets.slice(0, 8).map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || base.defaultReps }))
+      : forceWeightsToZeroKeepReps(draftSets.length ? draftSets : base.sets, base.defaultReps);
 
     return {
       name,
@@ -646,24 +585,8 @@ function applySmartProgression({
     };
   });
 
-  workout.title = collapseSpaces(String(workout.title || "")) || smartTitle(sessionType, dbg.deloaded);
-
-  // ✅ ensure session type reflects output (not the UI input)
   workout.session_type = normalizeSessionType(workout.session_type || sessionType);
   workout.duration_minutes = clamp(Number(workout.duration_minutes || timeMinutes) || timeMinutes, 20, 120);
-
-  workout.coach_focus = buildCoachFocus({
-    goal,
-    experience,
-    sessionType: workout.session_type,
-    deload: dbg.deloaded,
-    completionMode: dbg.completionMode,
-    workout,
-    notes,
-    currentDraft,
-  });
-
-  workout.safety_notes = buildSafetyNotes({ sessionType: workout.session_type, deload: dbg.deloaded });
 
   workout.exercises = workout.exercises.map((ex) => ({
     ...ex,
@@ -777,87 +700,13 @@ function prescribeNextSets({ name, lastSets, deload }) {
   return out;
 }
 
-function buildCoachFocus({ goal, experience, sessionType, deload, completionMode, workout, notes, currentDraft }) {
-  const g = String(goal || "").toLowerCase();
-  const goalText =
-    g.includes("fat") ? "fat loss while keeping strength" :
-    g.includes("maintenance") ? "maintenance and consistency" :
-    "building muscle with steady progression";
-
-  const mainLift = (workout?.exercises?.[0]?.name || "your first movement").trim();
-
-  const fatigueLine = deload
-    ? "Today is a controlled deload: move crisp, stop with 2–3 reps in reserve, and leave the gym feeling better than you arrived."
-    : completionMode
-    ? "Today is completion-focused: keep loads honest, finish every planned set, and make every rep look the same before chasing heavier weight."
-    : "This is a progressive overload day: earn progression by cleaner reps first, then small weight bumps only when reps stay strong across sets.";
-
-  const sessionLine =
-    sessionType === "lower_body"
-      ? "Goal of today: drive lower-body strength and solid hinge/squat patterns without grinding reps."
-      : sessionType === "upper_body"
-      ? "Goal of today: build upper-body strength and tension through full range, no sloppy momentum."
-      : "Goal of today: full-body stimulus with smart effort—strong reps, controlled breathing, and consistent pacing.";
-
-  const rpeLine =
-    experience === "beginner"
-      ? "Effort target: most sets should feel like you could do 2–3 more reps (easy technique focus)."
-      : experience === "advanced"
-      ? "Effort target: main sets around 1–2 reps in reserve; accessories controlled with clean tempo."
-      : "Effort target: work sets around 1–2 reps in reserve; if form breaks, stop the set and keep the weight.";
-
-  const pacingLine =
-    `Pacing: rest fully on ${mainLift}, then keep accessories moving so you finish in ~${workout?.duration_minutes || 60} minutes.`;
-
-  const formLine =
-    `Form cue for ${mainLift}: control the lowering phase, keep a tight core/bracing, and make every rep look the same.`;
-
-  const draftLine =
-    currentDraft?.exercises?.length
-      ? "Your edits were respected: the exercise order is based on your current workout draft so the plan matches what you actually want to do."
-      : "";
-
-  const noteLine = notes ? `Coach note: ${notes}` : "";
-
-  const bullets = [
-    sessionLine,
-    `Overall goal: ${goalText}, so we’re prioritizing high-quality reps and consistency over ego-lifting.`,
-    fatigueLine,
-    rpeLine,
-    pacingLine,
-    formLine,
-    draftLine,
-    noteLine,
-  ].filter(Boolean);
-
-  return bullets.slice(0, 6);
-}
-
-function buildSafetyNotes({ sessionType, deload }) {
-  const base = [
-    "Warm up 5–8 minutes and do 2–3 ramp-up sets before your first working set.",
-    "Stop sets if pain (sharp/unstable) shows up; adjust range of motion or swap the movement.",
-  ];
-
-  const extra =
-    sessionType === "lower_body"
-      ? ["Brace before each rep on squats/hinges and keep the spine neutral—no rushed reps."]
-      : sessionType === "upper_body"
-      ? ["For pressing, keep shoulder blades set and don’t flare elbows excessively at the bottom."]
-      : ["Maintain controlled breathing and core tension so fatigue doesn’t turn reps sloppy."];
-
-  if (deload) extra.push("Keep everything smooth today—no max efforts; the win is recovery + perfect reps.");
-  else extra.push("Progress only if reps stay clean—don’t chase weight at the expense of form.");
-
-  return base.concat(extra).slice(0, 4);
-}
-
 function improveExerciseNote(note, name, deload, completionMode) {
   const n = String(note || "").trim();
   if (n) return n.slice(0, 160);
 
-  const lower = String(name || "").toLowerCase();
   if (completionMode) return "Completion focus: keep loads realistic and finish every set with clean form before progressing.";
+
+  const lower = String(name || "").toLowerCase();
 
   if (/(squat|deadlift|rdl|romanian|hinge|leg press)/.test(lower)) {
     return deload
