@@ -58,7 +58,7 @@ export default async function handler(req, res) {
     const goal = String(body.goal || "muscle_gain");
     const experience = String(body.experience || "intermediate");
     const sessionTypeIn = String(body.session_type || "full_body");
-    const sessionType = normalizeSessionType(sessionTypeIn);
+    let sessionType = normalizeSessionType(sessionTypeIn);
     const equipment = Array.isArray(body.equipment) ? body.equipment : [];
     const timeMinutes = Number.isFinite(Number(body.time_minutes)) ? Number(body.time_minutes) : 60;
     const notes = String(body.notes || "");
@@ -89,6 +89,15 @@ export default async function handler(req, res) {
 
     debug.hasCurrentWorkout = !!compactCurrent;
     debug.currentWorkoutExerciseCount = Array.isArray(compactCurrent?.exercises) ? compactCurrent.exercises.length : 0;
+
+    // ✅ Auto-correct session type if UI sent a wrong one, and the draft is clearly full-body
+    // (prevents "lower_body" coach_focus on a clean+press / row workout)
+    if (compactCurrent?.exercises?.length) {
+      const names = compactCurrent.exercises.map((e) => normNameLoose(e?.name)).join(" ");
+      const looksFullBody =
+        /(cleanpress|farmer|carry|row|press)/.test(names) && /(squat|lunge|deadlift|rdl)/.test(names);
+      if (looksFullBody) sessionType = "full_body";
+    }
 
     // -----------------------------
     // OpenAI prompt (structure + exercise selection)
@@ -276,8 +285,6 @@ function collapseSpaces(s) {
   return String(s || "").replace(/\s+/g, " ").trim();
 }
 
-// -------- Matching keys --------
-// strict: normal alnum
 function normNameStrict(s) {
   return collapseSpaces(String(s || ""))
     .toLowerCase()
@@ -286,7 +293,7 @@ function normNameStrict(s) {
     .trim();
 }
 
-// loose: ALSO strip equipment words so DB Row matches Dumbbell Row, etc.
+// looser match: remove equipment words + normalize common variants
 function normNameLoose(s) {
   const base = normNameStrict(s);
   return base
@@ -297,6 +304,54 @@ function normNameLoose(s) {
     .replace(/\b(farmers|farmer's|farmer)\b/g, "farmer")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function tokenizeLoose(name) {
+  const n = normNameLoose(name);
+  if (!n) return [];
+  return n.split(" ").filter(Boolean);
+}
+
+function tokenOverlapScore(aName, bName) {
+  const a = new Set(tokenizeLoose(aName));
+  const b = new Set(tokenizeLoose(bName));
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter += 1;
+  // slight preference for longer overlap
+  return inter;
+}
+
+function findBestLastMatch(lastExercises, targetName) {
+  const targetS = normNameStrict(targetName);
+  const targetL = normNameLoose(targetName);
+
+  let best = null;
+
+  // pass 1: strict equality
+  for (const ex of lastExercises || []) {
+    if (normNameStrict(ex?.name) === targetS) return ex;
+  }
+
+  // pass 2: loose equality
+  for (const ex of lastExercises || []) {
+    if (normNameLoose(ex?.name) === targetL) return ex;
+  }
+
+  // pass 3: token overlap
+  let bestScore = 0;
+  for (const ex of lastExercises || []) {
+    const score = tokenOverlapScore(ex?.name, targetName);
+    if (score > bestScore) {
+      bestScore = score;
+      best = ex;
+    }
+  }
+
+  // require at least 2 shared tokens to avoid dumb matches
+  if (best && bestScore >= 2) return best;
+
+  return null;
 }
 
 function draftProvidedAnyWeight(exercise) {
@@ -438,7 +493,16 @@ function applySmartProgression({
     deloaded: false,
     progressionMode: "reps_first",
     completionMode: false,
-    matchMode: "strict+loose",
+    matchMode: "strict+loose+token",
+    matchPreview: {
+      lastNames: (lastWorkout?.exercises || []).map((e) => e?.name || ""),
+      lastKeysStrict: (lastWorkout?.exercises || []).map((e) => normNameStrict(e?.name)),
+      lastKeysLoose: (lastWorkout?.exercises || []).map((e) => normNameLoose(e?.name)),
+      currentNames: (workout?.exercises || []).map((e) => e?.name || ""),
+      currentKeysStrict: (workout?.exercises || []).map((e) => normNameStrict(e?.name)),
+      currentKeysLoose: (workout?.exercises || []).map((e) => normNameLoose(e?.name)),
+      resolved: [],
+    },
   };
 
   const fatigueSignal = computeFatigueSignal(lastWorkout, currentDraft);
@@ -469,15 +533,7 @@ function applySmartProgression({
     }
   }
 
-  // maps for matching
-  const lastMapStrict = new Map();
-  const lastMapLoose = new Map();
-  (lastWorkout?.exercises || []).forEach((ex) => {
-    lastMapStrict.set(normNameStrict(ex.name), ex);
-    lastMapLoose.set(normNameLoose(ex.name), ex);
-  });
-
-  // respect draft order and preserve draft set-shape
+  // respect draft order
   if (currentDraft?.exercises?.length) {
     const draftOrder = currentDraft.exercises
       .map((ex) => collapseSpaces(ex?.name || ""))
@@ -485,29 +541,34 @@ function applySmartProgression({
       .slice(0, 8);
 
     if (draftOrder.length) {
-      const modelMapStrict = new Map();
-      const modelMapLoose = new Map();
-      for (const ex of workout.exercises || []) {
-        modelMapStrict.set(normNameStrict(ex?.name), ex);
-        modelMapLoose.set(normNameLoose(ex?.name), ex);
-      }
+      const modelList = Array.isArray(workout.exercises) ? workout.exercises : [];
 
       const rebuilt = [];
       for (const draftName of draftOrder) {
-        const kS = normNameStrict(draftName);
-        const kL = normNameLoose(draftName);
-
-        const fromModel =
-          modelMapStrict.get(kS) ||
-          modelMapLoose.get(kL) ||
-          findFuzzyMatch(workout.exercises || [], draftName);
-
         const draftEx =
-          (currentDraft.exercises || []).find((e) => normNameStrict(e?.name) === kS) ||
-          (currentDraft.exercises || []).find((e) => normNameLoose(e?.name) === kL) ||
-          null;
-
+          (currentDraft.exercises || []).find((e) => normNameLoose(e?.name) === normNameLoose(draftName)) || null;
         const draftSets = draftEx ? cloneDraftSetsOrBlank(draftEx, { defaultReps: 8 }) : null;
+
+        // find best model match by loose+token (so draft spelling still works)
+        let fromModel = null;
+        for (const ex of modelList) {
+          if (normNameLoose(ex?.name) === normNameLoose(draftName)) {
+            fromModel = ex;
+            break;
+          }
+        }
+        if (!fromModel) {
+          // token overlap
+          let bestScore = 0;
+          for (const ex of modelList) {
+            const sc = tokenOverlapScore(ex?.name, draftName);
+            if (sc > bestScore) {
+              bestScore = sc;
+              fromModel = ex;
+            }
+          }
+          if (fromModel && bestScore < 2) fromModel = null;
+        }
 
         if (fromModel) {
           rebuilt.push({
@@ -531,15 +592,15 @@ function applySmartProgression({
   }
 
   // apply progression
-  workout.exercises = workout.exercises.slice(0, 8).map((ex) => {
+  workout.exercises = (workout.exercises || []).slice(0, 8).map((ex) => {
     const name = collapseSpaces(ex?.name || "Exercise");
-    const kS = normNameStrict(name);
-    const kL = normNameLoose(name);
+    const lastEx = findBestLastMatch(lastWorkout?.exercises || [], name);
 
-    const lastEx =
-      lastMapStrict.get(kS) ||
-      lastMapLoose.get(kL) ||
-      findFuzzyMatch(lastWorkout?.exercises || [], name);
+    dbg.matchPreview.resolved.push({
+      current: name,
+      matchedLast: lastEx ? (lastEx.name || "") : "",
+      score: lastEx ? tokenOverlapScore(lastEx.name, name) : 0,
+    });
 
     if (lastEx && Array.isArray(lastEx.sets) && lastEx.sets.length) {
       dbg.matchedExercises += 1;
@@ -574,7 +635,6 @@ function applySmartProgression({
         r: Number(s?.r) || base.defaultReps,
       }));
     } else {
-      // critical: force weights blank if user didn't enter weight
       setsToUse = forceWeightsToZeroKeepReps(draftSets.length ? draftSets : base.sets, base.defaultReps);
     }
 
@@ -588,26 +648,22 @@ function applySmartProgression({
 
   workout.title = collapseSpaces(String(workout.title || "")) || smartTitle(sessionType, dbg.deloaded);
 
-  // use the actual workout session type for coach focus (prevents "lower body" text on full body list)
-  const focusSessionType = normalizeSessionType(workout.session_type || sessionType);
+  // ✅ ensure session type reflects output (not the UI input)
+  workout.session_type = normalizeSessionType(workout.session_type || sessionType);
+  workout.duration_minutes = clamp(Number(workout.duration_minutes || timeMinutes) || timeMinutes, 20, 120);
 
   workout.coach_focus = buildCoachFocus({
     goal,
     experience,
-    sessionType: focusSessionType,
-    title: workout.title,
+    sessionType: workout.session_type,
     deload: dbg.deloaded,
     completionMode: dbg.completionMode,
-    lastWorkout,
     workout,
     notes,
     currentDraft,
   });
 
-  workout.safety_notes = buildSafetyNotes({ sessionType: focusSessionType, deload: dbg.deloaded });
-
-  workout.session_type = focusSessionType;
-  workout.duration_minutes = clamp(Number(workout.duration_minutes || timeMinutes) || timeMinutes, 20, 120);
+  workout.safety_notes = buildSafetyNotes({ sessionType: workout.session_type, deload: dbg.deloaded });
 
   workout.exercises = workout.exercises.map((ex) => ({
     ...ex,
@@ -721,7 +777,7 @@ function prescribeNextSets({ name, lastSets, deload }) {
   return out;
 }
 
-function buildCoachFocus({ goal, experience, sessionType, title, deload, completionMode, lastWorkout, workout, notes, currentDraft }) {
+function buildCoachFocus({ goal, experience, sessionType, deload, completionMode, workout, notes, currentDraft }) {
   const g = String(goal || "").toLowerCase();
   const goalText =
     g.includes("fat") ? "fat loss while keeping strength" :
@@ -790,21 +846,10 @@ function buildSafetyNotes({ sessionType, deload }) {
       ? ["For pressing, keep shoulder blades set and don’t flare elbows excessively at the bottom."]
       : ["Maintain controlled breathing and core tension so fatigue doesn’t turn reps sloppy."];
 
-  if (deload) {
-    extra.push("Keep everything smooth today—no max efforts; the win is recovery + perfect reps.");
-  } else {
-    extra.push("Progress only if reps stay clean—don’t chase weight at the expense of form.");
-  }
+  if (deload) extra.push("Keep everything smooth today—no max efforts; the win is recovery + perfect reps.");
+  else extra.push("Progress only if reps stay clean—don’t chase weight at the expense of form.");
 
   return base.concat(extra).slice(0, 4);
-}
-
-function smartTitle(sessionType, deload) {
-  const base =
-    sessionType === "lower_body" ? "Lower Body Strength" :
-    sessionType === "upper_body" ? "Upper Body Strength" :
-    "Full Body Strength";
-  return deload ? `${base} (Deload / Technique)` : `${base} (Progressive Overload)`;
 }
 
 function improveExerciseNote(note, name, deload, completionMode) {
@@ -855,22 +900,6 @@ function defaultRestFor(name) {
 function isCompoundLift(name) {
   const lower = String(name || "").toLowerCase();
   return /(squat|deadlift|bench|press|row|pull[- ]?up|pulldown|rdl|romanian|lunge|leg press)/.test(lower);
-}
-
-function findFuzzyMatch(exercises, name) {
-  const targetS = normNameStrict(name);
-  const targetL = normNameLoose(name);
-  if (!targetS && !targetL) return null;
-
-  for (const ex of exercises || []) {
-    const nS = normNameStrict(ex?.name);
-    const nL = normNameLoose(ex?.name);
-    if (!nS && !nL) continue;
-    if (nS === targetS || nL === targetL) return ex;
-    if (nS.includes(targetS) || targetS.includes(nS)) return ex;
-    if (nL.includes(targetL) || targetL.includes(nL)) return ex;
-  }
-  return null;
 }
 
 function clamp(n, lo, hi) {
