@@ -1919,7 +1919,7 @@ if (req.method === "OPTIONS") {
 // FREE PREVIEW MESSAGE GATE
 // ===============================
 let remainingAfter = null;
-const FREE_START = 15;
+const FREE_START = 30;
 
 // ✅ trust frontend flag (we’ll send it in Step 2)
 const isSubscriber = req.body?.isSubscriber === true;
