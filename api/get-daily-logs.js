@@ -14,61 +14,84 @@ function localYMD() {
   return new Date(d.getTime() - off * 60000).toISOString().slice(0, 10);
 }
 
+function requireEnv() {
+  if (!SHOPIFY_STORE_DOMAIN) throw new Error("Missing SHOPIFY_STORE_DOMAIN");
+  if (!SHOPIFY_ADMIN_API_ACCESS_TOKEN) throw new Error("Missing SHOPIFY_ADMIN_API_ACCESS_TOKEN");
+}
+
 async function shopifyGraphQL(query, variables = {}) {
-  if (!SHOPIFY_STORE_DOMAIN || !SHOPIFY_ADMIN_API_ACCESS_TOKEN) {
-    throw new Error("Missing Shopify env vars");
-  }
+  requireEnv();
 
-  const res = await fetch(
-    `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_ACCESS_TOKEN,
-      },
-      body: JSON.stringify({ query, variables }),
-    }
-  );
+  const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`;
 
-  let json;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_ACCESS_TOKEN,
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+
+  const text = await res.text().catch(() => "");
+  let json = null;
   try {
-    json = await res.json();
+    json = text ? JSON.parse(text) : null;
   } catch (e) {
-    const text = await res.text().catch(() => "");
-    console.error("Shopify invalid JSON:", text);
-    throw new Error("Invalid JSON from Shopify");
+    // Return raw body for debugging
+    const err = new Error("Shopify GraphQL invalid JSON");
+    err.status = res.status;
+    err.raw = text;
+    throw err;
   }
 
-  if (!res.ok || json.errors) {
-    console.error("Shopify GraphQL error:", JSON.stringify(json, null, 2));
-    throw new Error("Shopify GraphQL error");
+  if (!res.ok || (json && json.errors)) {
+    const err = new Error("Shopify GraphQL error");
+    err.status = res.status;
+    err.shopify_errors = json?.errors || null;
+    err.raw = json;
+    throw err;
   }
 
   return json.data;
 }
 
 /**
- * ✅ CRITICAL: Verify the customerId truly matches the email in Shopify.
- * This prevents returning another user's logs if the browser sends a stale/wrong id.
+ * ✅ Identity verification via REST (fast + clear errors)
+ * Requires Admin API scope: read_customers
  */
-async function verifyCustomerIdentity(customerGid, email) {
+async function verifyCustomerIdentityREST(numericCustomerId, email) {
+  requireEnv();
+
   const emailNorm = String(email || "").trim().toLowerCase();
   if (!emailNorm) return { ok: false, reason: "missing_email" };
 
-  const q = `
-    query VerifyCustomer($id: ID!) {
-      customer(id: $id) { id email }
-    }
-  `;
+  const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/customers/${numericCustomerId}.json`;
 
-  const data = await shopifyGraphQL(q, { id: customerGid });
-  const shopEmail = data?.customer?.email
-    ? String(data.customer.email).trim().toLowerCase()
-    : "";
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_ACCESS_TOKEN,
+      "Content-Type": "application/json",
+    },
+  });
 
-  if (!shopEmail) return { ok: false, reason: "customer_not_found" };
-  if (shopEmail !== emailNorm) return { ok: false, reason: "customer_email_mismatch" };
+  const text = await res.text().catch(() => "");
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch(e) {}
+
+  if (!res.ok) {
+    return {
+      ok: false,
+      reason: "shopify_rest_error",
+      status: res.status,
+      details: json || text || "(empty)",
+    };
+  }
+
+  const shopEmail = json?.customer?.email ? String(json.customer.email).trim().toLowerCase() : "";
+  if (!shopEmail) return { ok: false, reason: "customer_not_found_or_no_email" };
+  if (shopEmail !== emailNorm) return { ok: false, reason: "customer_email_mismatch", shopEmail };
 
   return { ok: true, shopEmail };
 }
@@ -98,9 +121,7 @@ export default async function handler(req, res) {
   );
 
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") {
-    return res.status(405).json({ ok: false, error: "Method not allowed" });
-  }
+  if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method not allowed" });
   // ===== END CORS =====
 
   let body = {};
@@ -110,7 +131,6 @@ export default async function handler(req, res) {
     body = {};
   }
 
-  // ✅ Require BOTH customerId and email (for identity verification)
   const email = body.email || body.customerEmail || body.userEmail || "";
   const rawId =
     body.customerId ||
@@ -119,50 +139,34 @@ export default async function handler(req, res) {
     body.customerGid;
 
   if (!rawId) return res.status(400).json({ ok: false, error: "Missing customerId" });
-
-  // ✅ IMPORTANT: do NOT hard-fail if email is missing yet.
-  // This keeps the app working even if some front-end calls haven't been updated.
-  const emailProvided = !!String(email).trim();
+  if (!email) return res.status(400).json({ ok: false, error: "Missing email" });
 
   const numeric = String(rawId).replace(/[^0-9]/g, "");
   if (!numeric) return res.status(400).json({ ok: false, error: "Invalid customerId" });
 
   const customerGid = `gid://shopify/Customer/${numeric}`;
-
-  // ✅ Core: choose dateKey once (clientDate preferred)
   const dateKey = isYMD(body.clientDate) ? body.clientDate : localYMD();
 
-  // ✅ STOP-THE-BLEEDING: if email exists, verify identity BEFORE reading logs
-  if (emailProvided) {
-    try {
-      const v = await verifyCustomerIdentity(customerGid, email);
-      if (!v.ok) {
-        return res.status(401).json({
-          ok: false,
-          error: "UNAUTHORIZED",
-          reason: v.reason,
-          dateKey,
-        });
-      }
-    } catch (e) {
-      console.error("Identity verify failed:", e);
-      return res.status(500).json({
-        ok: false,
-        error: "Identity verification failed",
-        details: String(e?.message || e),
-        dateKey,
-      });
-    }
-  } else {
-    // Keep working, but log so you can see if any caller isn't sending email yet
-    console.warn("[get-daily-logs] Missing email in request; skipping identity verify.");
+  // ✅ STOP THE BLEEDING: identity verification first
+  const v = await verifyCustomerIdentityREST(numeric, email);
+  if (!v.ok) {
+    return res.status(401).json({
+      ok: false,
+      error: "UNAUTHORIZED",
+      reason: v.reason,
+      status: v.status || null,
+      details: v.details || null,
+      dateKey,
+    });
   }
 
-  // ✅ Only after verify (or if email missing): fetch daily_logs
+  // ✅ Only after verify: fetch daily_logs (GraphQL is fine for metafield)
   const q = `
     query GetDailyLogs($id: ID!) {
       customer(id: $id) {
-        metafield(namespace:"custom", key:"daily_logs") { value }
+        metafield(namespace:"custom", key:"daily_logs") {
+          value
+        }
       }
     }
   `;
@@ -178,23 +182,20 @@ export default async function handler(req, res) {
         const parsed = JSON.parse(raw);
         logs = Array.isArray(parsed) ? parsed : [];
       } catch (e) {
-        console.error("Failed parsing daily_logs JSON:", e);
         logs = [];
       }
     }
 
-    return res.status(200).json({
-      ok: true,
-      logs,
-      dateKey,
-    });
+    return res.status(200).json({ ok: true, logs, dateKey });
   } catch (e) {
-    console.error("get-daily-logs error:", e);
+    // ✅ Return REAL Shopify errors so we can fix immediately
     return res.status(500).json({
       ok: false,
       error: "Failed to load daily_logs",
-      details: String(e?.message || e),
       dateKey,
+      shopifyStatus: e?.status || null,
+      shopifyErrors: e?.shopify_errors || null,
+      details: e?.raw || String(e?.message || e),
     });
   }
 }
