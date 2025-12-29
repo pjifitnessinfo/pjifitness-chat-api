@@ -48,6 +48,31 @@ async function shopifyGraphQL(query, variables = {}) {
   return json.data;
 }
 
+/**
+ * ✅ CRITICAL: Verify the customerId truly matches the email in Shopify.
+ * This prevents returning another user's logs if the browser sends a stale/wrong id.
+ */
+async function verifyCustomerIdentity(customerGid, email) {
+  const emailNorm = String(email || "").trim().toLowerCase();
+  if (!emailNorm) return { ok: false, reason: "missing_email" };
+
+  const q = `
+    query VerifyCustomer($id: ID!) {
+      customer(id: $id) { id email }
+    }
+  `;
+
+  const data = await shopifyGraphQL(q, { id: customerGid });
+  const shopEmail = data?.customer?.email
+    ? String(data.customer.email).trim().toLowerCase()
+    : "";
+
+  if (!shopEmail) return { ok: false, reason: "customer_not_found" };
+  if (shopEmail !== emailNorm) return { ok: false, reason: "customer_email_mismatch" };
+
+  return { ok: true, shopEmail };
+}
+
 export default async function handler(req, res) {
   // ===== CORS =====
   const origin = req.headers.origin || "";
@@ -82,20 +107,48 @@ export default async function handler(req, res) {
   try {
     body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
   } catch (e) {
-    // keep body = {}
+    body = {};
   }
 
-  const rawId = body.customerId || body.shopifyCustomerId || body.customer_id || body.customerGid;
-  if (!rawId) return res.status(400).json({ error: "Missing customerId" });
+  // ✅ Require BOTH customerId and email
+  const email = body.email || body.customerEmail || body.userEmail || "";
+  const rawId =
+    body.customerId ||
+    body.shopifyCustomerId ||
+    body.customer_id ||
+    body.customerGid;
+
+  if (!rawId) return res.status(400).json({ ok: false, error: "Missing customerId" });
+  if (!email) return res.status(400).json({ ok: false, error: "Missing email" });
 
   const numeric = String(rawId).replace(/[^0-9]/g, "");
-  if (!numeric) return res.status(400).json({ error: "Invalid customerId" });
+  if (!numeric) return res.status(400).json({ ok: false, error: "Invalid customerId" });
 
   const customerGid = `gid://shopify/Customer/${numeric}`;
 
   // ✅ Core: choose dateKey once (clientDate preferred)
   const dateKey = isYMD(body.clientDate) ? body.clientDate : localYMD();
 
+  // ✅ STOP-THE-BLEEDING: identity verification BEFORE reading logs
+  try {
+    const v = await verifyCustomerIdentity(customerGid, email);
+    if (!v.ok) {
+      return res.status(401).json({
+        ok: false,
+        error: "UNAUTHORIZED",
+        reason: v.reason,
+      });
+    }
+  } catch (e) {
+    console.error("Identity verify failed:", e);
+    return res.status(500).json({
+      ok: false,
+      error: "Identity verification failed",
+      details: String(e?.message || e),
+    });
+  }
+
+  // ✅ Only after verify: fetch daily_logs
   const q = `
     query GetDailyLogs($id: ID!) {
       customer(id: $id) {
@@ -130,6 +183,7 @@ export default async function handler(req, res) {
   } catch (e) {
     console.error("get-daily-logs error:", e);
     return res.status(500).json({
+      ok: false,
       error: "Failed to load daily_logs",
       details: String(e?.message || e),
     });
