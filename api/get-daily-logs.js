@@ -38,7 +38,6 @@ async function shopifyGraphQL(query, variables = {}) {
   try {
     json = text ? JSON.parse(text) : null;
   } catch (e) {
-    // Return raw body for debugging
     const err = new Error("Shopify GraphQL invalid JSON");
     err.status = res.status;
     err.raw = text;
@@ -49,7 +48,7 @@ async function shopifyGraphQL(query, variables = {}) {
     const err = new Error("Shopify GraphQL error");
     err.status = res.status;
     err.shopify_errors = json?.errors || null;
-    err.raw = json;
+    err.raw = json || text;
     throw err;
   }
 
@@ -64,7 +63,7 @@ async function verifyCustomerIdentityREST(numericCustomerId, email) {
   requireEnv();
 
   const emailNorm = String(email || "").trim().toLowerCase();
-  if (!emailNorm) return { ok: false, reason: "missing_email" };
+  if (!emailNorm) return { ok: false, reason: "missing_email", debug: { emailNorm } };
 
   const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/customers/${numericCustomerId}.json`;
 
@@ -78,22 +77,54 @@ async function verifyCustomerIdentityREST(numericCustomerId, email) {
 
   const text = await res.text().catch(() => "");
   let json = null;
-  try { json = text ? JSON.parse(text) : null; } catch(e) {}
+  try { json = text ? JSON.parse(text) : null; } catch (e) { json = null; }
 
+  // If Shopify blocks token/scope or customer not found, we should see it here.
   if (!res.ok) {
     return {
       ok: false,
       reason: "shopify_rest_error",
       status: res.status,
       details: json || text || "(empty)",
+      debug: { url },
     };
   }
 
-  const shopEmail = json?.customer?.email ? String(json.customer.email).trim().toLowerCase() : "";
-  if (!shopEmail) return { ok: false, reason: "customer_not_found_or_no_email" };
-  if (shopEmail !== emailNorm) return { ok: false, reason: "customer_email_mismatch", shopEmail };
+  // Sometimes Shopify returns HTML or weird bodies even with 200; expose it.
+  const shopEmailRaw = json?.customer?.email;
+  const shopEmail = shopEmailRaw ? String(shopEmailRaw).trim().toLowerCase() : "";
 
-  return { ok: true, shopEmail };
+  if (!json || !json.customer) {
+    return {
+      ok: false,
+      reason: "customer_payload_missing",
+      status: res.status,
+      details: json || text || "(empty)",
+      debug: { url },
+    };
+  }
+
+  if (!shopEmail) {
+    return {
+      ok: false,
+      reason: "customer_email_missing",
+      status: res.status,
+      details: json, // ✅ show full customer payload
+      debug: { url, shopEmailRaw },
+    };
+  }
+
+  if (shopEmail !== emailNorm) {
+    return {
+      ok: false,
+      reason: "customer_email_mismatch",
+      status: res.status,
+      details: { shopEmail, emailNorm },
+      debug: { url },
+    };
+  }
+
+  return { ok: true, shopEmail, status: res.status };
 }
 
 export default async function handler(req, res) {
@@ -147,7 +178,7 @@ export default async function handler(req, res) {
   const customerGid = `gid://shopify/Customer/${numeric}`;
   const dateKey = isYMD(body.clientDate) ? body.clientDate : localYMD();
 
-  // ✅ STOP THE BLEEDING: identity verification first
+  // ✅ Identity verification first (returns debug)
   const v = await verifyCustomerIdentityREST(numeric, email);
   if (!v.ok) {
     return res.status(401).json({
@@ -156,11 +187,12 @@ export default async function handler(req, res) {
       reason: v.reason,
       status: v.status || null,
       details: v.details || null,
+      debug: v.debug || null,
       dateKey,
     });
   }
 
-  // ✅ Only after verify: fetch daily_logs (GraphQL is fine for metafield)
+  // ✅ Only after verify: fetch daily_logs
   const q = `
     query GetDailyLogs($id: ID!) {
       customer(id: $id) {
@@ -188,7 +220,6 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ ok: true, logs, dateKey });
   } catch (e) {
-    // ✅ Return REAL Shopify errors so we can fix immediately
     return res.status(500).json({
       ok: false,
       error: "Failed to load daily_logs",
