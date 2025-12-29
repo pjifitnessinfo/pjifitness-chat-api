@@ -99,7 +99,7 @@ export default async function handler(req, res) {
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
   // ===== END CORS =====
 
@@ -110,7 +110,7 @@ export default async function handler(req, res) {
     body = {};
   }
 
-  // ✅ Require BOTH customerId and email
+  // ✅ Require BOTH customerId and email (for identity verification)
   const email = body.email || body.customerEmail || body.userEmail || "";
   const rawId =
     body.customerId ||
@@ -119,7 +119,10 @@ export default async function handler(req, res) {
     body.customerGid;
 
   if (!rawId) return res.status(400).json({ ok: false, error: "Missing customerId" });
-  if (!email) return res.status(400).json({ ok: false, error: "Missing email" });
+
+  // ✅ IMPORTANT: do NOT hard-fail if email is missing yet.
+  // This keeps the app working even if some front-end calls haven't been updated.
+  const emailProvided = !!String(email).trim();
 
   const numeric = String(rawId).replace(/[^0-9]/g, "");
   if (!numeric) return res.status(400).json({ ok: false, error: "Invalid customerId" });
@@ -129,32 +132,37 @@ export default async function handler(req, res) {
   // ✅ Core: choose dateKey once (clientDate preferred)
   const dateKey = isYMD(body.clientDate) ? body.clientDate : localYMD();
 
-  // ✅ STOP-THE-BLEEDING: identity verification BEFORE reading logs
-  try {
-    const v = await verifyCustomerIdentity(customerGid, email);
-    if (!v.ok) {
-      return res.status(401).json({
+  // ✅ STOP-THE-BLEEDING: if email exists, verify identity BEFORE reading logs
+  if (emailProvided) {
+    try {
+      const v = await verifyCustomerIdentity(customerGid, email);
+      if (!v.ok) {
+        return res.status(401).json({
+          ok: false,
+          error: "UNAUTHORIZED",
+          reason: v.reason,
+          dateKey,
+        });
+      }
+    } catch (e) {
+      console.error("Identity verify failed:", e);
+      return res.status(500).json({
         ok: false,
-        error: "UNAUTHORIZED",
-        reason: v.reason,
+        error: "Identity verification failed",
+        details: String(e?.message || e),
+        dateKey,
       });
     }
-  } catch (e) {
-    console.error("Identity verify failed:", e);
-    return res.status(500).json({
-      ok: false,
-      error: "Identity verification failed",
-      details: String(e?.message || e),
-    });
+  } else {
+    // Keep working, but log so you can see if any caller isn't sending email yet
+    console.warn("[get-daily-logs] Missing email in request; skipping identity verify.");
   }
 
-  // ✅ Only after verify: fetch daily_logs
+  // ✅ Only after verify (or if email missing): fetch daily_logs
   const q = `
     query GetDailyLogs($id: ID!) {
       customer(id: $id) {
-        metafield(namespace:"custom", key:"daily_logs") {
-          value
-        }
+        metafield(namespace:"custom", key:"daily_logs") { value }
       }
     }
   `;
@@ -186,6 +194,7 @@ export default async function handler(req, res) {
       ok: false,
       error: "Failed to load daily_logs",
       details: String(e?.message || e),
+      dateKey,
     });
   }
 }
