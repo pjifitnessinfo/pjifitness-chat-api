@@ -7,124 +7,44 @@ function isYMD(s) {
   return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
 }
 
-// ✅ Server-local YYYY-MM-DD (fallback only)
 function localYMD() {
   const d = new Date();
   const off = d.getTimezoneOffset();
   return new Date(d.getTime() - off * 60000).toISOString().slice(0, 10);
 }
 
-function requireEnv() {
-  if (!SHOPIFY_STORE_DOMAIN) throw new Error("Missing SHOPIFY_STORE_DOMAIN");
-  if (!SHOPIFY_ADMIN_API_ACCESS_TOKEN) throw new Error("Missing SHOPIFY_ADMIN_API_ACCESS_TOKEN");
-}
-
 async function shopifyGraphQL(query, variables = {}) {
-  requireEnv();
-
-  const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`;
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_ACCESS_TOKEN,
-    },
-    body: JSON.stringify({ query, variables }),
-  });
-
-  const text = await res.text().catch(() => "");
-  let json = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch (e) {
-    const err = new Error("Shopify GraphQL invalid JSON");
-    err.status = res.status;
-    err.raw = text;
-    throw err;
+  if (!SHOPIFY_STORE_DOMAIN || !SHOPIFY_ADMIN_API_ACCESS_TOKEN) {
+    throw new Error("Missing Shopify env vars");
   }
 
-  if (!res.ok || (json && json.errors)) {
-    const err = new Error("Shopify GraphQL error");
-    err.status = res.status;
-    err.shopify_errors = json?.errors || null;
-    err.raw = json || text;
-    throw err;
+  const res = await fetch(
+    `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_ACCESS_TOKEN,
+      },
+      body: JSON.stringify({ query, variables }),
+    }
+  );
+
+  const text = await res.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (e) {
+    console.error("Shopify invalid JSON:", text);
+    throw new Error("Invalid JSON from Shopify");
+  }
+
+  if (!res.ok || json.errors) {
+    console.error("Shopify GraphQL error:", JSON.stringify(json, null, 2));
+    throw new Error("Shopify GraphQL error");
   }
 
   return json.data;
-}
-
-/**
- * ✅ Identity verification via REST (fast + clear errors)
- * Requires Admin API scope: read_customers
- */
-async function verifyCustomerIdentityREST(numericCustomerId, email) {
-  requireEnv();
-
-  const emailNorm = String(email || "").trim().toLowerCase();
-  if (!emailNorm) return { ok: false, reason: "missing_email", debug: { emailNorm } };
-
-  const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/customers/${numericCustomerId}.json`;
-
-  const res = await fetch(url, {
-    method: "GET",
-    headers: {
-      "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_ACCESS_TOKEN,
-      "Content-Type": "application/json",
-    },
-  });
-
-  const text = await res.text().catch(() => "");
-  let json = null;
-  try { json = text ? JSON.parse(text) : null; } catch (e) { json = null; }
-
-  // If Shopify blocks token/scope or customer not found, we should see it here.
-  if (!res.ok) {
-    return {
-      ok: false,
-      reason: "shopify_rest_error",
-      status: res.status,
-      details: json || text || "(empty)",
-      debug: { url },
-    };
-  }
-
-  // Sometimes Shopify returns HTML or weird bodies even with 200; expose it.
-  const shopEmailRaw = json?.customer?.email;
-  const shopEmail = shopEmailRaw ? String(shopEmailRaw).trim().toLowerCase() : "";
-
-  if (!json || !json.customer) {
-    return {
-      ok: false,
-      reason: "customer_payload_missing",
-      status: res.status,
-      details: json || text || "(empty)",
-      debug: { url },
-    };
-  }
-
-  if (!shopEmail) {
-    return {
-      ok: false,
-      reason: "customer_email_missing",
-      status: res.status,
-      details: json, // ✅ show full customer payload
-      debug: { url, shopEmailRaw },
-    };
-  }
-
-  if (shopEmail !== emailNorm) {
-    return {
-      ok: false,
-      reason: "customer_email_mismatch",
-      status: res.status,
-      details: { shopEmail, emailNorm },
-      debug: { url },
-    };
-  }
-
-  return { ok: true, shopEmail, status: res.status };
 }
 
 export default async function handler(req, res) {
@@ -162,15 +82,8 @@ export default async function handler(req, res) {
     body = {};
   }
 
-  const email = body.email || body.customerEmail || body.userEmail || "";
-  const rawId =
-    body.customerId ||
-    body.shopifyCustomerId ||
-    body.customer_id ||
-    body.customerGid;
-
+  const rawId = body.customerId || body.shopifyCustomerId || body.customer_id || body.customerGid;
   if (!rawId) return res.status(400).json({ ok: false, error: "Missing customerId" });
-  if (!email) return res.status(400).json({ ok: false, error: "Missing email" });
 
   const numeric = String(rawId).replace(/[^0-9]/g, "");
   if (!numeric) return res.status(400).json({ ok: false, error: "Invalid customerId" });
@@ -178,27 +91,10 @@ export default async function handler(req, res) {
   const customerGid = `gid://shopify/Customer/${numeric}`;
   const dateKey = isYMD(body.clientDate) ? body.clientDate : localYMD();
 
-  // ✅ Identity verification first (returns debug)
-  const v = await verifyCustomerIdentityREST(numeric, email);
-  if (!v.ok) {
-    return res.status(401).json({
-      ok: false,
-      error: "UNAUTHORIZED",
-      reason: v.reason,
-      status: v.status || null,
-      details: v.details || null,
-      debug: v.debug || null,
-      dateKey,
-    });
-  }
-
-  // ✅ Only after verify: fetch daily_logs
   const q = `
     query GetDailyLogs($id: ID!) {
       customer(id: $id) {
-        metafield(namespace:"custom", key:"daily_logs") {
-          value
-        }
+        metafield(namespace:"custom", key:"daily_logs") { value }
       }
     }
   `;
@@ -214,19 +110,19 @@ export default async function handler(req, res) {
         const parsed = JSON.parse(raw);
         logs = Array.isArray(parsed) ? parsed : [];
       } catch (e) {
+        console.error("Failed parsing daily_logs JSON:", e);
         logs = [];
       }
     }
 
     return res.status(200).json({ ok: true, logs, dateKey });
   } catch (e) {
+    console.error("get-daily-logs error:", e);
     return res.status(500).json({
       ok: false,
       error: "Failed to load daily_logs",
+      details: String(e?.message || e),
       dateKey,
-      shopifyStatus: e?.status || null,
-      shopifyErrors: e?.shopify_errors || null,
-      details: e?.raw || String(e?.message || e),
     });
   }
 }
