@@ -476,7 +476,7 @@ hidden DAILY_LOG_JSON block at the VERY END of your reply.
 - Today's calories (total for the day)
 - Today's steps
 - Macros for the day (protein, carbs, fats)
-- A daily check-in summary (any combo of weight / calories / steps / macros / mood / notes)
+- A daily check-in summary (any combo of weight / calories / steps / macros / mood / notes / meals)
 
 You STILL respond like a normal coach in natural text…
 BUT you MUST ALSO include EXACTLY ONE DAILY_LOG_JSON block AFTER your visible reply.
@@ -498,56 +498,10 @@ FORMAT IT EXACTLY LIKE THIS:
 
 RULES:
 - date = TODAY in the user’s local time, format "YYYY-MM-DD".
-- If the user ONLY gives weight, set:
-  - weight = that number
-  - calories / protein_g / carbs_g / fat_g / steps = null
-  - notes = short note like "User reported morning weight 181 lbs."
-- If the user ONLY gives calories for the day, set:
-  - calories = that number
-  - other fields = null (unless clearly given)
-- If they give multiple items (e.g. "I weighed 186, ate ~2100 calories, and hit 7k steps"):
-  - Fill ALL fields you can: weight, calories, steps, etc.
 - If a value is unknown, use null, NOT 0.
-- Weight is in pounds. Steps is an integer step count. Macros are grams.
 - This block MUST be present whenever the user gives ANY NEW daily weight/calorie/step/macro check-in.
 - Place the DAILY_LOG_JSON block AFTER your visible coaching message.
 - Do NOT show or explain the JSON block in your visible reply; it is hidden metadata for the app.
-
-EXAMPLES (IMPORTANT):
-
-User: "hey coach i weighed 181 this morning"
-Assistant reply (END MUST INCLUDE):
-
-[[DAILY_LOG_JSON
-{
-  "date": "2025-12-10",
-  "weight": 181.0,
-  "calories": null,
-  "protein_g": null,
-  "carbs_g": null,
-  "fat_g": null,
-  "steps": null,
-  "notes": "User reported morning weight 181 lbs.",
-  "coach_focus": null
-}
-]]
-
-User: "Today I hit 2100 calories, 150g protein, and about 8k steps."
-Assistant reply (END MUST INCLUDE):
-
-[[DAILY_LOG_JSON
-{
-  "date": "2025-12-10",
-  "weight": null,
-  "calories": 2100,
-  "protein_g": 150,
-  "carbs_g": null,
-  "fat_g": null,
-  "steps": 8000,
-  "notes": "User logged calories, protein, and steps.",
-  "coach_focus": "Keep calories around 2100 and protein 140g+ tomorrow."
-}
-]]
 
 ======================================================
 F. MEAL LOGGING (MEAL_LOG_JSON)
@@ -578,65 +532,8 @@ When the user describes food and clearly wants it logged (e.g., “log this as d
 Rules:
 - Always include: date, meal_type, items, calories, protein, carbs, fat.
 - date = TODAY in the user’s local time, format YYYY-MM-DD.
-- meal_type must be one of:
-  - "Breakfast"
-  - "Lunch"
-  - "Dinner"
-  - "Snacks" (use if not specified or if it’s a snack/graze).
-- items is an array of short strings describing the food.
-- calories/macros should be your best reasonable estimates (never all 0 unless truly zero-calorie).
-
-If \`USER_REQUEST_OVERRIDE_MEAL\` is present (e.g., user says “change my breakfast to…”):
-- Still output normal visible reply + MEAL_LOG_JSON.
-- The backend will handle replacing that meal type.
-
-======================================================
-F2. REVIEW MY MEALS (MEAL REVIEW + SWAPS)
-======================================================
-
-TRIGGERS:
-If the user says: "Review my meals", "Review meals", "Meal review", or taps the Review Meals button.
-
-DATA SOURCE (IMPORTANT):
-- Use TODAY's saved MEAL_LOG_JSON and/or DAILY_LOG_JSON as the source of truth.
-- Review whatever meals are currently logged for today.
-- Do NOT require a full day of meals.
-- Do NOT ask the user to log missing meals.
-- Never say "no meals logged" if at least one meal exists.
-
-OUTPUT FORMAT (always use this structure):
-1) Meals logged today (grouped by breakfast / lunch / dinner / snacks)
-2) Totals vs targets:
-   - Calories: total vs target
-   - Protein / Carbs / Fat: totals vs targets (if available)
-3) Coaching feedback:
-   - Wins (1–3 bullets)
-   - Swaps ONLY if rules below say to
-4) ONE best next move (one simple actionable step)
-
-CALORIE RANGE RULE (NO NITPICKING):
-- Treat calorie targets as a RANGE, not a strict limit.
-- Being within ±200 calories of target counts as "on plan" and is a MAJOR win.
-- Do NOT describe ±200 as "over", "missed", or "failed".
-
-WHEN TO SUGGEST SWAPS (ONLY IF TRUE):
-Only suggest food swaps if at least ONE is true:
-A) Calories are more than ~200 over target
-B) Protein is clearly low vs target
-C) Meals are very calorie-dense / low volume AND the user has mentioned hunger
-D) The user explicitly asks for swaps or optimization
-
-SWAP STYLE (IF NEEDED):
-- 1–3 swaps max
-- Practical, tasty foods (no extreme diet foods)
-- Focus on higher volume, lower calorie density, higher protein
-- Explain briefly WHY the swap helps
-- Never shame, never guilt
-
-IF WITHIN RANGE:
-- Lead with praise
-- Reinforce consistency
-- Optional: ONE “if you want more fullness” suggestion (clearly optional)
+- meal_type must be one of: "Breakfast" | "Lunch" | "Dinner" | "Snacks"
+- If \`USER_REQUEST_OVERRIDE_MEAL\` is present, backend will handle replacing.
 
 ======================================================
 G. DAILY REVIEW (DAILY_REVIEW_JSON)
@@ -655,16 +552,9 @@ When you do, add this hidden block:
 }
 ]]
 
-- risk_color: "green", "yellow", or "red".
-- needs_human_review: true only if they seem very stuck, very upset, or there’s
-  something a human coach should check.
-
 ======================================================
 I. COACH DAILY REVIEW (COACH_REVIEW_JSON) — ALWAYS UPDATE
 ======================================================
-
-You keep a running internal coaching review of the user's current day.
-This is NOT a chat response. It is a private coaching note.
 
 After EVERY assistant reply, append ONE hidden block at the VERY END
 in this exact format:
@@ -682,14 +572,6 @@ in this exact format:
 }
 ]]
 
-Rules:
-- date = TODAY in the user’s local time.
-- This block is updated (overwritten) throughout the day, not appended.
-- Be coach-like and insightful, not generic.
-- If limited info exists, keep fields shorter but still intentional.
-- Do NOT invent data.
-- NEVER display or explain this block in the visible reply.
-
 ======================================================
 H. CRITICAL LOGGING BEHAVIOR — DAILY_LOG_JSON
 ======================================================
@@ -698,40 +580,8 @@ H. CRITICAL LOGGING BEHAVIOR — DAILY_LOG_JSON
    answer normally.
 
 2) When the user reports ANY daily data, you MUST also emit DAILY_LOG_JSON.
-   This includes:
-   - Weight (e.g. “I weighed 176 this morning”, “scale said 183.4”, “log 181”)
-   - Calories for the day
-   - Steps for the day
-   - Macros for the day
-   - Any daily check-in summary (weight / calories / steps / macros / “how the day went”)
 
-In those cases you MUST:
-- Respond like a coach in natural language, AND
-- Append EXACTLY ONE hidden block at the VERY END of your reply:
-
-[[DAILY_LOG_JSON
-{
-  "date": "YYYY-MM-DD",
-  "weight": 176.0,
-  "calories": 2050,
-  "protein_g": 150,
-  "carbs_g": 200,
-  "fat_g": 60,
-  "steps": 8000,
-  "notes": "Short 1–2 sentence note about the day (or empty string)."
-}
-]]
-
-RULES:
-- date = TODAY in the user’s local time, format "YYYY-MM-DD".
-- If the user ONLY gives a weight (e.g. “I weighed 176 this morning”):
-  - weight = that number,
-  - calories / protein_g / carbs_g / fat_g / steps = null,
-  - notes = "User logged morning weight 176 lbs." (or similar).
-- If they give multiple items (weight, calories, steps, macros), fill all those fields.
-- If a value is unknown, use null, NOT 0.
-- NEVER show these JSON blocks as code to the user; they are hidden metadata.
-- If you skip DAILY_LOG_JSON when daily data is given, you are BREAKING THE APP. Do not skip it.
+If you skip DAILY_LOG_JSON when daily data is given, you are BREAKING THE APP. Do not skip it.
 `;
 
 
@@ -1007,9 +857,8 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
 
   const ownerId = customerGid;
 
-     // ================================
+  // ================================
   // ✅ LOCK EXISTING START/GOAL (SERVER-SIDE SAFETY)
-  // Prevent any onboarding re-run / buggy path from overwriting start_weight or goal_weight
   // ================================
   let existingPlan = null;
   try {
@@ -1048,7 +897,6 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
     normalizeNum(existingPlan?.goal_weight) ??
     null;
 
-  // Apply locks directly onto planJson so the rest of this function stays consistent
   if (existingStart) {
     planJson.start_weight = existingStart;
     planJson.start_weight_lbs = existingStart;
@@ -1060,7 +908,6 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
   // ================================
   // ✅ END LOCK
   // ================================
-
 
   const startWeight = planJson.start_weight != null
     ? Number(planJson.start_weight)
@@ -1516,7 +1363,7 @@ function detectSimpleMealFromUser(userMsg) {
   }
 
   m = text.match(
-    /log\s+this\s+as\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*[:\-]?\s*(.*)$/i
+    /log\s+this\s+as\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*[:\\-]?\\s*(.*)$/i
   );
   if (m) {
     const mealType = normalizeMealType(m[1]);
@@ -1536,7 +1383,7 @@ function detectSimpleMealFromUser(userMsg) {
   }
 
   m = text.match(
-    /i\s+(?:had|ate)\s+(.*)\s+for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b/i
+    /i\\s+(?:had|ate)\\s+(.*)\\s+for\\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\\b/i
   );
   if (m) {
     const descLower = m[1] || "";
@@ -1556,8 +1403,8 @@ function detectSimpleMealFromUser(userMsg) {
     return { meal_type: mealType, items: [desc] };
   }
 
-     // ✅ NEW: "chicken and rice for dinner" (no "I had/ate")
-  m = text.match(/^(.*)\s+for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b/i);
+  // ✅ NEW: "chicken and rice for dinner" (no "I had/ate")
+  m = text.match(/^(.*)\\s+for\\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\\b/i);
   if (m) {
     const mealType = normalizeMealType(m[2]);
     let desc = m[1];
@@ -1572,8 +1419,7 @@ function detectSimpleMealFromUser(userMsg) {
     return { meal_type: mealType, items: [desc] };
   }
 
-
-  m = text.match(/i\s+(?:had|ate)\s+(.*)$/i);
+  m = text.match(/i\\s+(?:had|ate)\\s+(.*)$/i);
   if (m) {
     const descLower = m[1] || "";
     const startIndex = text.indexOf(descLower);
@@ -1597,13 +1443,11 @@ function detectSimpleMealFromUser(userMsg) {
 async function upsertMealLog(customerGid, meal, dateKey, options = {}) {
   if (!customerGid || !meal) return;
 
-  // ✅ validate dateKey or fall back safely
   const cleanDate = isYMD(dateKey) ? dateKey : localYMD();
 
   const { logs } = await getDailyLogsMetafield(customerGid);
   const idx = logs.findIndex(entry => entry && entry.date === cleanDate);
 
-  // Normalize macros
   const cals = Number(meal.calories) || 0;
   const protein = Number(meal.protein) || 0;
   const carbs = Number(meal.carbs) || 0;
@@ -1623,7 +1467,6 @@ async function upsertMealLog(customerGid, meal, dateKey, options = {}) {
     const existing = logs[idx] || {};
     const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
 
-    // If override for this meal type, remove prior meals of that type
     let baseMeals = existingMeals;
     if (replaceMealType && mealType === replaceMealType) {
       baseMeals = existingMeals.filter(m => !m || normalizeMealType(m.meal_type) !== replaceMealType);
@@ -1632,7 +1475,6 @@ async function upsertMealLog(customerGid, meal, dateKey, options = {}) {
     const newMeal = { meal_type: mealType, items, calories: cals, protein, carbs, fat };
     const updatedMeals = baseMeals.concat([newMeal]);
 
-    // Recompute totals from all meals for THIS day
     let sumCals = 0, sumP = 0, sumC = 0, sumF = 0;
     updatedMeals.forEach(m => {
       sumCals += Number(m.calories) || 0;
@@ -1685,8 +1527,6 @@ async function upsertDailyReview(customerGid, review, dateKey) {
       ? review.date.trim()
       : dateKey;
 
-  const idx = logs.findIndex(entry => entry && entry.date === date);
-
   const summary =
     typeof review.summary === "string" && review.summary.trim()
       ? review.summary.trim()
@@ -1694,6 +1534,8 @@ async function upsertDailyReview(customerGid, review, dateKey) {
 
   const riskColor = review.risk_color || "green";
   const needsHumanReview = !!review.needs_human_review;
+
+  const idx = logs.findIndex(entry => entry && entry.date === date);
 
   if (idx >= 0) {
     const existing = logs[idx] || {};
@@ -1756,10 +1598,10 @@ async function upsertCoachReview(customerGid, coachReview, dateKey) {
   };
 
   if (idx >= 0) {
-  const existing = logs[idx] || {};
-  const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
-  logs[idx] = { ...existing, date, meals: existingMeals, ...payload };
-} else {
+    const existing = logs[idx] || {};
+    const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
+    logs[idx] = { ...existing, date, meals: existingMeals, ...payload };
+  } else {
     logs.push({
       date,
       weight: null,
@@ -1834,34 +1676,33 @@ function localYMD() {
 }
 
 export default async function handler(req, res) {
- // ===== CORS FOR PJIFITNESS =====
-const origin = req.headers.origin || "";
+  // ===== CORS FOR PJIFITNESS =====
+  const origin = req.headers.origin || "";
 
-const ALLOWED_ORIGINS = new Set([
-  "https://www.pjifitness.com",
-  "https://pjifitness.com",
-  "https://pjifitness.myshopify.com",
-]);
+  const ALLOWED_ORIGINS = new Set([
+    "https://www.pjifitness.com",
+    "https://pjifitness.com",
+    "https://pjifitness.myshopify.com",
+  ]);
 
-if (ALLOWED_ORIGINS.has(origin)) {
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-}
+  if (ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
 
-res.setHeader("Vary", "Origin");
-res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-res.setHeader(
-  "Access-Control-Allow-Headers",
-  req.headers["access-control-request-headers"] ||
-    "Content-Type, Authorization, X-Requested-With, Accept"
-);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    req.headers["access-control-request-headers"] ||
+      "Content-Type, Authorization, X-Requested-With, Accept"
+  );
 
-if (req.method === "OPTIONS") {
-  res.status(200).end();
-  return;
-}
-// ===== END CORS =====
-
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+  // ===== END CORS =====
 
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
@@ -1987,52 +1828,49 @@ if (req.method === "OPTIONS") {
     appendUserMessage,
     onboarding_complete: onboardingComplete,
     shopifyMetafieldReadStatus,
-    dateKey,                 // ✅ helpful for debugging the UTC issue
+    dateKey,
     clientDate: clientDate || null,
     messagesCount: null,
     model: "gpt-4.1-mini",
   };
 
- // ===============================
-// FREE PREVIEW MESSAGE GATE
-// ===============================
-let remainingAfter = null;
-const FREE_START = 30;
+  // ===============================
+  // FREE PREVIEW MESSAGE GATE
+  // ===============================
+  let remainingAfter = null;
+  const FREE_START = 30;
 
-// ✅ trust frontend flag (we’ll send it in Step 2)
-const isSubscriber = req.body?.isSubscriber === true;
+  // ✅ FIXED: use parsed body (not req.body)
+  const isSubscriber = body?.isSubscriber === true;
 
-try {
-  if (customerGid) {
+  try {
+    if (customerGid) {
+      if (isSubscriber) {
+        remainingAfter = 999999;
+      } else {
+        let remaining = await getFreeChatRemaining(customerGid);
 
-    // ✅ Subscribers: never gate, never decrement
-    if (isSubscriber) {
-      remainingAfter = 999999;
-    } else {
-      let remaining = await getFreeChatRemaining(customerGid);
+        if (remaining === null) {
+          remaining = FREE_START;
+          await setFreeChatRemaining(customerGid, remaining);
+        }
 
-      if (remaining === null) {
-        remaining = FREE_START;
-        await setFreeChatRemaining(customerGid, remaining);
+        if (remaining <= 0) {
+          return res.status(200).json({
+            reply: "[[PAYWALL]]",
+            free_chat_remaining: 0,
+            debug: { ...debug, free_chat_remaining: 0, isSubscriber },
+          });
+        }
+
+        remainingAfter = remaining - 1;
+        await setFreeChatRemaining(customerGid, remainingAfter);
       }
-
-      if (remaining <= 0) {
-        return res.status(200).json({
-          reply: "[[PAYWALL]]",
-          free_chat_remaining: 0,
-          debug: { ...debug, free_chat_remaining: 0, isSubscriber },
-        });
-      }
-
-      remainingAfter = remaining - 1;
-      await setFreeChatRemaining(customerGid, remainingAfter);
     }
+  } catch (err) {
+    console.warn("Free-preview gate failed open:", err);
+    remainingAfter = null;
   }
-} catch (err) {
-  console.warn("Free-preview gate failed open:", err);
-  remainingAfter = null;
-}
-
 
   // DAILY TOTAL CALORIES FROM USER MESSAGE
   if (customerGid && userMessage) {
@@ -2040,7 +1878,7 @@ try {
     if (parsedDailyCals) {
       debug.parsedDailyCalories = parsedDailyCals;
       try {
-        await upsertDailyTotalCalories(customerGid, parsedDailyCals, dateKey); // ✅ dateKey
+        await upsertDailyTotalCalories(customerGid, parsedDailyCals, dateKey);
         debug.dailyCaloriesSavedToDailyLogs = true;
       } catch (e) {
         console.error("Error saving daily total calories from chat", e);
@@ -2165,7 +2003,7 @@ try {
       data.choices?.[0]?.message?.content ||
       "Sorry, I’m not sure what to say to that.";
 
-    // DAILY_LOG_JSON -> save to daily_logs (✅ dateKey)
+    // DAILY_LOG_JSON -> save to daily_logs
     if (customerGid) {
       const dailyLog = extractDailyLogFromText(rawReply);
       if (dailyLog) {
@@ -2196,7 +2034,7 @@ try {
     }
 
     // ✅ SAFETY: never derive/save plan from normal text
-debug.planFromText = false;
+    debug.planFromText = false;
 
     if (planJson) {
       debug.planJson = planJson;
@@ -2220,89 +2058,82 @@ debug.planFromText = false;
       }
 
       if (shouldSave) {
-  try {
-    await saveCoachPlanForCustomer(customerGid, planJson);
-    debug.planSavedToShopify = true;
-    onboardingComplete = true;
-    debug.onboardingCompleteAfterSave = true;
+        try {
+          await saveCoachPlanForCustomer(customerGid, planJson);
+          debug.planSavedToShopify = true;
+          onboardingComplete = true;
+          debug.onboardingCompleteAfterSave = true;
 
-    // ==================================================
-    // ✅ ONBOARDING FINALIZATION
-    // Write TODAY'S weight = CURRENT onboarding weight
-    // ==================================================
-    const cw =
-  planJson?.current_weight_lbs ??
-  planJson?.current_weight ??
-  planJson?.start_weight_lbs ??
-  planJson?.start_weight;
+          // ✅ ONBOARDING FINALIZATION: Write TODAY'S weight = CURRENT onboarding weight
+          const cw =
+            planJson?.current_weight_lbs ??
+            planJson?.current_weight ??
+            planJson?.start_weight_lbs ??
+            planJson?.start_weight;
 
-if (customerGid && onboardingComplete === true && cw != null) {
+          if (customerGid && onboardingComplete === true && cw != null) {
+            try {
+              const currentW = Number(cw);
+              if (Number.isFinite(currentW) && currentW > 0) {
+                await upsertDailyLog(
+                  customerGid,
+                  {
+                    date: dateKey,
+                    weight: currentW,
+                    calories: null,
+                    protein_g: null,
+                    carbs_g: null,
+                    fat_g: null,
+                    steps: null,
+                    notes: "Initial weight from onboarding."
+                  },
+                  dateKey
+                );
 
-      try {
-        const currentW = Number(cw);
+                debug.onboardingInitialWeightWritten = currentW;
+              }
+            } catch (e) {
+              console.error("Failed to write onboarding initial daily weight", e);
+              debug.onboardingInitialWeightError = String(e?.message || e);
+            }
+          }
 
-
-        if (Number.isFinite(currentW) && currentW > 0) {
-          await upsertDailyLog(
-            customerGid,
-            {
-              date: dateKey,
-              weight: currentW,
-              calories: null,
-              protein_g: null,
-              carbs_g: null,
-              fat_g: null,
-              steps: null,
-              notes: "Initial weight from onboarding."
-            },
-            dateKey
-          );
-
-          debug.onboardingInitialWeightWritten = currentW;
+        } catch (e) {
+          console.error("Error saving coach_plan metafield", e);
+          debug.planSavedToShopify = false;
+          debug.planSaveError = String(e?.message || e);
+          if (e && e.shopifyUserErrors) debug.planSaveUserErrors = e.shopifyUserErrors;
         }
-      } catch (e) {
-        console.error("Failed to write onboarding initial daily weight", e);
-        debug.onboardingInitialWeightError = String(e?.message || e);
+      } else {
+        debug.planSavedToShopify = false;
+        debug.planSavedSkippedReason = skipReason;
       }
     }
 
-  } catch (e) {
-    console.error("Error saving coach_plan metafield", e);
-    debug.planSavedToShopify = false;
-    debug.planSaveError = String(e?.message || e);
-    if (e && e.shopifyUserErrors) debug.planSaveUserErrors = e.shopifyUserErrors;
-  }
-} else {
-  debug.planSavedToShopify = false;
-  debug.planSavedSkippedReason = skipReason;
-}
-    }
-
-    // MEAL LOGS (✅ dateKey everywhere)
+    // MEAL LOGS
     if (customerGid) {
       const mealLogs = extractMealLogsFromText(rawReply);
-       console.log("[PJ DEBUG] extractMealLogsFromText:", mealLogs);
+      console.log("[PJ DEBUG] extractMealLogsFromText:", mealLogs);
 
       if (mealLogs && mealLogs.length) {
         debug.mealLogsFound = mealLogs.length;
         debug.mealLogsSample = mealLogs.slice(0, 2);
         try {
           for (const meal of mealLogs) {
-  await upsertMealLog(
-    customerGid,
-    meal,
-    dateKey,
-    overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
-  );
-}
-
+            await upsertMealLog(
+              customerGid,
+              meal,
+              dateKey,
+              overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
+            );
+          }
           debug.mealLogsSavedToDailyLogs = true;
         } catch (e) {
           console.error("Error saving meal logs from chat", e);
           debug.mealLogsSavedToDailyLogs = false;
           debug.mealLogsSaveError = String(e?.message || e);
         }
-            } else if (detectSimpleMealFromUser(userMessage)) {
+      } else if (detectSimpleMealFromUser(userMessage)) {
         debug.mealLogsFound = 1;
         debug.mealLogsFallbackUsed = true;
 
@@ -2338,11 +2169,11 @@ if (customerGid && onboardingComplete === true && cw != null) {
           debug.mealLogsSaveError = String(e?.message || e);
         }
       } else {
-      debug.mealLogsFound = 0;
+        debug.mealLogsFound = 0;
+      }
     }
-  }
 
-    // DAILY_REVIEW_JSON (✅ dateKey)
+    // DAILY_REVIEW_JSON
     if (customerGid) {
       const dailyReview = extractDailyReviewFromText(rawReply);
       if (dailyReview) {
@@ -2358,13 +2189,13 @@ if (customerGid && onboardingComplete === true && cw != null) {
       }
     }
 
-    // COACH_REVIEW_JSON (✅ dateKey; DO NOT overwrite date with UTC)
+    // COACH_REVIEW_JSON
     if (customerGid) {
       const coachReview = extractCoachReviewFromText(rawReply);
       if (coachReview) {
         debug.coachReviewFound = coachReview;
         try {
-          coachReview.date = dateKey; // ✅ FIXED (was UTC)
+          coachReview.date = dateKey;
           await upsertCoachReview(customerGid, coachReview, dateKey);
           debug.coachReviewSavedToDailyLogs = true;
         } catch (e) {
