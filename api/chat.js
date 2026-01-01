@@ -1,15 +1,11 @@
 // /api/chat.js
-// Chat endpoint using OpenAI REST API (Chat Completions).
-// Expects JSON body:
-// { message, email, customerId, threadId, history, appendUserMessage }
-//
-// Returns:
-// { reply, debug }
+// Chat endpoint using OpenAI REST API.
+// Expects: { message, email, customerId, threadId, history, appendUserMessage } in JSON body.
+// Returns: { reply, debug }
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// Shopify Admin API (optional — used here only for reading onboarding state if you want)
-// NOTE: If you already handle onboarding_complete elsewhere, you can leave these envs unset.
+// Shopify Admin API (for reading + writing onboarding/metafields)
 const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN; // e.g. "your-store.myshopify.com"
 const SHOPIFY_ADMIN_API_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 
@@ -509,16 +505,63 @@ RULES:
 - If the user ONLY gives calories for the day, set:
   - calories = that number
   - other fields = null (unless clearly given)
-- If they give multiple items, fill what you can.
+- If they give multiple items (e.g. "I weighed 186, ate ~2100 calories, and hit 7k steps"):
+  - Fill ALL fields you can: weight, calories, steps, etc.
 - If a value is unknown, use null, NOT 0.
+- Weight is in pounds. Steps is an integer step count. Macros are grams.
+- This block MUST be present whenever the user gives ANY NEW daily weight/calorie/step/macro check-in.
+- Place the DAILY_LOG_JSON block AFTER your visible coaching message.
+- Do NOT show or explain the JSON block in your visible reply; it is hidden metadata for the app.
+
+EXAMPLES (IMPORTANT):
+
+User: "hey coach i weighed 181 this morning"
+Assistant reply (END MUST INCLUDE):
+
+[[DAILY_LOG_JSON
+{
+  "date": "2025-12-10",
+  "weight": 181.0,
+  "calories": null,
+  "protein_g": null,
+  "carbs_g": null,
+  "fat_g": null,
+  "steps": null,
+  "notes": "User reported morning weight 181 lbs.",
+  "coach_focus": null
+}
+]]
+
+User: "Today I hit 2100 calories, 150g protein, and about 8k steps."
+Assistant reply (END MUST INCLUDE):
+
+[[DAILY_LOG_JSON
+{
+  "date": "2025-12-10",
+  "weight": null,
+  "calories": 2100,
+  "protein_g": 150,
+  "carbs_g": null,
+  "fat_g": null,
+  "steps": 8000,
+  "notes": "User logged calories, protein, and steps.",
+  "coach_focus": "Keep calories around 2100 and protein 140g+ tomorrow."
+}
+]]
 
 ======================================================
 F. MEAL LOGGING (MEAL_LOG_JSON)
 ======================================================
 
 When the user describes food and clearly wants it logged (e.g., “log this as dinner…”, “add this as breakfast…”, “I had X for lunch today”):
-1) Confirm + estimate calories/macros briefly.
-2) Append:
+
+1) VISIBLE REPLY:
+   - Confirm the meal and type.
+   - Give a short estimate with calories and macros:
+     “That’s about 450 kcal • P: 40g • C: 45g • F: 9g.”
+   - It’s fine to mention it’s an estimate (“these are rough but close enough for tracking”).
+
+2) HIDDEN STRUCTURED BLOCK (for the app to save):
 
 [[MEAL_LOG_JSON
 {
@@ -532,12 +575,76 @@ When the user describes food and clearly wants it logged (e.g., “log this as d
 }
 ]]
 
+Rules:
+- Always include: date, meal_type, items, calories, protein, carbs, fat.
+- date = TODAY in the user’s local time, format YYYY-MM-DD.
+- meal_type must be one of:
+  - "Breakfast"
+  - "Lunch"
+  - "Dinner"
+  - "Snacks" (use if not specified or if it’s a snack/graze).
+- items is an array of short strings describing the food.
+- calories/macros should be your best reasonable estimates (never all 0 unless truly zero-calorie).
+
+If \`USER_REQUEST_OVERRIDE_MEAL\` is present (e.g., user says “change my breakfast to…”):
+- Still output normal visible reply + MEAL_LOG_JSON.
+- The backend will handle replacing that meal type.
+
+======================================================
+F2. REVIEW MY MEALS (MEAL REVIEW + SWAPS)
+======================================================
+
+TRIGGERS:
+If the user says: "Review my meals", "Review meals", "Meal review", or taps the Review Meals button.
+
+DATA SOURCE (IMPORTANT):
+- Use TODAY's saved MEAL_LOG_JSON and/or DAILY_LOG_JSON as the source of truth.
+- Review whatever meals are currently logged for today.
+- Do NOT require a full day of meals.
+- Do NOT ask the user to log missing meals.
+- Never say "no meals logged" if at least one meal exists.
+
+OUTPUT FORMAT (always use this structure):
+1) Meals logged today (grouped by breakfast / lunch / dinner / snacks)
+2) Totals vs targets:
+   - Calories: total vs target
+   - Protein / Carbs / Fat: totals vs targets (if available)
+3) Coaching feedback:
+   - Wins (1–3 bullets)
+   - Swaps ONLY if rules below say to
+4) ONE best next move (one simple actionable step)
+
+CALORIE RANGE RULE (NO NITPICKING):
+- Treat calorie targets as a RANGE, not a strict limit.
+- Being within ±200 calories of target counts as "on plan" and is a MAJOR win.
+- Do NOT describe ±200 as "over", "missed", or "failed".
+
+WHEN TO SUGGEST SWAPS (ONLY IF TRUE):
+Only suggest food swaps if at least ONE is true:
+A) Calories are more than ~200 over target
+B) Protein is clearly low vs target
+C) Meals are very calorie-dense / low volume AND the user has mentioned hunger
+D) The user explicitly asks for swaps or optimization
+
+SWAP STYLE (IF NEEDED):
+- 1–3 swaps max
+- Practical, tasty foods (no extreme diet foods)
+- Focus on higher volume, lower calorie density, higher protein
+- Explain briefly WHY the swap helps
+- Never shame, never guilt
+
+IF WITHIN RANGE:
+- Lead with praise
+- Reinforce consistency
+- Optional: ONE “if you want more fullness” suggestion (clearly optional)
+
 ======================================================
 G. DAILY REVIEW (DAILY_REVIEW_JSON)
 ======================================================
 
 Sometimes you can send a quick daily review / focus for the dashboard.
-Append:
+
+When you do, add this hidden block:
 
 [[DAILY_REVIEW_JSON
 {
@@ -548,233 +655,84 @@ Append:
 }
 ]]
 
+- risk_color: "green", "yellow", or "red".
+- needs_human_review: true only if they seem very stuck, very upset, or there’s
+  something a human coach should check.
+
 ======================================================
 I. COACH DAILY REVIEW (COACH_REVIEW_JSON) — ALWAYS UPDATE
 ======================================================
 
-After EVERY assistant reply, append:
+You keep a running internal coaching review of the user's current day.
+This is NOT a chat response. It is a private coaching note.
+
+After EVERY assistant reply, append ONE hidden block at the VERY END
+in this exact format:
 
 [[COACH_REVIEW_JSON
 {
   "date": "YYYY-MM-DD",
-  "summary": "4–6 sentences describing how the day is going so far. Be practical and specific.",
-  "wins": ["Concrete positive actions (1–4 items)"],
-  "opportunities": ["Specific adjustments (1–3 items)"],
-  "struggles": ["Adherence issues/mindset friction if present"],
-  "next_focus": "ONE clear action for the next 24 hours.",
-  "food_pattern": "Short paragraph describing food timing/portions/balance if evident.",
-  "mindset_pattern": "Short paragraph describing motivation/stress/confidence if evident."
+  "summary": "4–6 sentences describing how the day is going so far. Be practical and specific. Reference behaviors, patterns, or trends when possible.",
+  "wins": ["Concrete positive actions, habits, or decisions (1–4 items)"],
+  "opportunities": ["Specific adjustments or improvements that could meaningfully help progress (1–3 items)"],
+  "struggles": ["Adherence issues, mindset challenges, or friction points if present"],
+  "next_focus": "ONE clear, actionable behavior to prioritize in the next 24 hours.",
+  "food_pattern": "Short paragraph describing food timing, portions, balance, or consistency patterns noticed today.",
+  "mindset_pattern": "Short paragraph describing motivation, confidence, stress, or thought patterns if evident."
 }
 ]]
+
+Rules:
+- date = TODAY in the user’s local time.
+- This block is updated (overwritten) throughout the day, not appended.
+- Be coach-like and insightful, not generic.
+- If limited info exists, keep fields shorter but still intentional.
+- Do NOT invent data.
+- NEVER display or explain this block in the visible reply.
 
 ======================================================
 H. CRITICAL LOGGING BEHAVIOR — DAILY_LOG_JSON
 ======================================================
 
-If the user reports ANY daily data, you MUST also emit DAILY_LOG_JSON.
-If you skip it, you are BREAKING THE APP.
+1) When the user is just chatting (questions about diet, workouts, mindset),
+   answer normally.
+
+2) When the user reports ANY daily data, you MUST also emit DAILY_LOG_JSON.
+   This includes:
+   - Weight (e.g. “I weighed 176 this morning”, “scale said 183.4”, “log 181”)
+   - Calories for the day
+   - Steps for the day
+   - Macros for the day
+   - Any daily check-in summary (weight / calories / steps / macros / “how the day went”)
+
+In those cases you MUST:
+- Respond like a coach in natural language, AND
+- Append EXACTLY ONE hidden block at the VERY END of your reply:
+
+[[DAILY_LOG_JSON
+{
+  "date": "YYYY-MM-DD",
+  "weight": 176.0,
+  "calories": 2050,
+  "protein_g": 150,
+  "carbs_g": 200,
+  "fat_g": 60,
+  "steps": 8000,
+  "notes": "Short 1–2 sentence note about the day (or empty string)."
+}
+]]
+
+RULES:
+- date = TODAY in the user’s local time, format "YYYY-MM-DD".
+- If the user ONLY gives a weight (e.g. “I weighed 176 this morning”):
+  - weight = that number,
+  - calories / protein_g / carbs_g / fat_g / steps = null,
+  - notes = "User logged morning weight 176 lbs." (or similar).
+- If they give multiple items (weight, calories, steps, macros), fill all those fields.
+- If a value is unknown, use null, NOT 0.
+- NEVER show these JSON blocks as code to the user; they are hidden metadata.
+- If you skip DAILY_LOG_JSON when daily data is given, you are BREAKING THE APP. Do not skip it.
 `;
-
-// ===============================
-// Helpers
-// ===============================
-
-function safeJsonParse(str) {
-  try {
-    return JSON.parse(str);
-  } catch {
-    return null;
-  }
-}
-
-function extractBlock(text, blockName) {
-  // Matches: [[BLOCKNAME ... ]]
-  // where ... is a JSON object.
-  const re = new RegExp(`\\[\\[${blockName}\\s*([\\s\\S]*?)\\]\\]`, "m");
-  const m = text.match(re);
-  if (!m) return { json: null, raw: null };
-  const raw = (m[1] || "").trim();
-  const json = safeJsonParse(raw);
-  return { json, raw };
-}
-
-function stripAllBlocks(text) {
-  return String(text || "").replace(/\[\[[A-Z0-9_]+\s*[\s\S]*?\]\]/g, "").trim();
-}
-
-function historyToMessages(history) {
-  // history can be array of { role, content } or { sender, text }, etc.
-  if (!Array.isArray(history)) return [];
-  const msgs = [];
-  for (const h of history) {
-    if (!h) continue;
-    const role =
-      h.role ||
-      (h.sender === "assistant" ? "assistant" : h.sender === "user" ? "user" : null);
-    const content = h.content || h.text || h.message || "";
-    if (!role || !content) continue;
-    msgs.push({ role, content: String(content) });
-  }
-  return msgs;
-}
-
-function detectIntroAlreadySent(historyMsgs) {
-  const joined = historyMsgs.map(m => m.content).join("\n");
-  // Any of these indicate we already started onboarding flow.
-  return (
-    /What made you want to start working on this right now\?/i.test(joined) ||
-    /what sex were you assigned at birth/i.test(joined) ||
-    /\[\[COACH_PLAN_JSON/i.test(joined) ||
-    /Hey — I’m your PJiFitness coach/i.test(joined)
-  );
-}
-
-async function shopifyGraphQL(query, variables) {
-  if (!SHOPIFY_STORE_DOMAIN || !SHOPIFY_ADMIN_API_ACCESS_TOKEN) return null;
-
-  const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/2024-10/graphql.json`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_ACCESS_TOKEN,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ query, variables })
-  });
-  const json = await res.json().catch(() => null);
-  return json;
-}
-
-async function getOnboardingCompleteFromShopify(customerId) {
-  // Optional: tries to read metafield custom.onboarding_complete
-  if (!customerId) return null;
-  const q = `
-    query GetCustomerOnboarding($id: ID!) {
-      customer(id: $id) {
-        id
-        metafield(namespace: "custom", key: "onboarding_complete") { value }
-      }
-    }
-  `;
-  const out = await shopifyGraphQL(q, { id: String(customerId).startsWith("gid://") ? customerId : `gid://shopify/Customer/${customerId}` });
-  const v = out?.data?.customer?.metafield?.value;
-  if (v == null) return null;
-  return String(v).trim().toLowerCase() === "true";
-}
-
-// ===============================
-// Main handler
-// ===============================
-
-export default async function handler(req, res) {
-  // CORS (if needed)
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-
-  if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
-
-  try {
-    if (!OPENAI_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
-    }
-
-    const body = typeof req.body === "string" ? safeJsonParse(req.body) : req.body;
-    const userMessage = String(body?.message || "").trim();
-
-    const email = body?.email ? String(body.email) : null;
-    const customerId = body?.customerId ? String(body.customerId) : null;
-
-    const historyMsgs = historyToMessages(body?.history);
-    const introAlreadySent = detectIntroAlreadySent(historyMsgs);
-
-    // Optional: pull onboarding_complete from Shopify metafield
-    // If you already inject custom.onboarding_complete into the system elsewhere,
-    // you can delete this and just keep "custom.onboarding_complete: unknown".
-    let onboardingComplete = null;
-    if (customerId) {
-      onboardingComplete = await getOnboardingCompleteFromShopify(customerId);
-    }
-
-    // Build system flags for the model (so it can obey its own rules)
-    const systemFlags = [
-      `custom.onboarding_complete: ${onboardingComplete === true ? "true" : onboardingComplete === false ? "false" : "unknown"}`,
-      `SYSTEM_FLAG: INTRO_ALREADY_SENT = ${introAlreadySent ? "true" : "false"}`,
-      email ? `user.email: ${email}` : null,
-      customerId ? `user.customer_id: ${customerId}` : null
-    ].filter(Boolean).join("\n");
-
-    // Compose OpenAI messages
-    const messages = [
-      { role: "system", content: `${SYSTEM_PROMPT}\n\n${systemFlags}` },
-      ...historyMsgs,
-      { role: "user", content: userMessage || "Hi" }
-    ];
-
-    // Call OpenAI
-    const oaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages,
-        temperature: 0.6
-      })
-    });
-
-    const oaiJson = await oaiRes.json();
-    if (!oaiRes.ok) {
-      return res.status(500).json({
-        error: "OpenAI error",
-        details: oaiJson
-      });
-    }
-
-    const rawReply = oaiJson?.choices?.[0]?.message?.content || "";
-    const reply = stripAllBlocks(rawReply);
-
-    // Extract structured blocks for your front-end/back-end to save
-    const coachPlan = extractBlock(rawReply, "COACH_PLAN_JSON");
-    const dailyLog = extractBlock(rawReply, "DAILY_LOG_JSON");
-    const mealLog = extractBlock(rawReply, "MEAL_LOG_JSON");
-    const dailyReview = extractBlock(rawReply, "DAILY_REVIEW_JSON");
-    const coachReview = extractBlock(rawReply, "COACH_REVIEW_JSON");
-
-    // Debug object (safe, small)
-    const debug = {
-      onboarding_complete: /debug\.onboarding_complete\s*=\s*true/i.test(rawReply) || null,
-      system_onboarding_complete_metafield: onboardingComplete,
-      flags: {
-        intro_already_sent: introAlreadySent
-      },
-      blocks: {
-        coach_plan_json: coachPlan.json ? true : false,
-        daily_log_json: dailyLog.json ? true : false,
-        meal_log_json: mealLog.json ? true : false,
-        daily_review_json: dailyReview.json ? true : false,
-        coach_review_json: coachReview.json ? true : false
-      },
-      extracted: {
-        coach_plan: coachPlan.json || null,
-        daily_log: dailyLog.json || null,
-        meal_log: mealLog.json || null,
-        daily_review: dailyReview.json || null,
-        coach_review: coachReview.json || null
-      }
-    };
-
-    return res.status(200).json({ reply, debug });
-  } catch (err) {
-    return res.status(500).json({
-      error: "Server error",
-      message: err?.message || String(err)
-    });
-  }
-}
 
 
 /* ============================
