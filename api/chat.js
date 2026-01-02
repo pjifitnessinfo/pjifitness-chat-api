@@ -539,6 +539,12 @@ const PJ_POST_PLAN_MEAL_PROMPT =
   "3) Tap **Add** next to the meal you want to log\n" +
   "4) Tell me what you ate — I’ll give you calories + macros and log it.";
 
+const PJ_POST_PLAN_REFRESH =
+  "🔄 One quick step:\n" +
+  "Please refresh the page once so your plan loads correctly.\n\n" +
+  "After the refresh, you’ll see your daily calories, macros, and tabs.\n" +
+  "I’ll be right here when you’re back.";
+
 // ===============================
 // SAFETY: sanitize model output so internal blocks never leak into chat
 // Handles [[...]] and also broken single-bracket variants like [COACH_REVIEW_JSON ...]
