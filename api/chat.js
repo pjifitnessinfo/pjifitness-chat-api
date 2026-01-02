@@ -2064,15 +2064,16 @@ export default async function handler(req, res) {
           onboardingComplete = true;
           debug.onboardingCompleteAfterSave = true;
 
-          // ✅ Post-plan stage marker: show education + first meal prompt after refresh (next message)
-          try {
-            await setPostPlanStage(customerGid, "awaiting_refresh");
-            postPlanStage = "awaiting_refresh";
-            debug.postPlanStageSet = "awaiting_refresh";
-            debug.planJustSaved = true;
-          } catch (e) {
-            console.warn("Failed to set post_plan_stage:", e?.message || e);
-          }
+          // ✅ Post-plan stage marker: user should ask questions first
+try {
+  await setPostPlanStage(customerGid, "plan_questions");
+  postPlanStage = "plan_questions";
+  debug.postPlanStageSet = "plan_questions";
+  debug.planJustSaved = true;
+} catch (e) {
+  console.warn("Failed to set post_plan_stage:", e?.message || e);
+}
+
 
           // ✅ ONBOARDING FINALIZATION: Write TODAY'S weight = CURRENT onboarding weight
           const cw =
