@@ -346,7 +346,7 @@ STEPS:
 E. SCALE & MINDSET — ONE-TIME EDUCATION
 ======================================================
 
-After onboarding and plan delivery, send ONE educational message:
+After the user confirms they understand the plan (no questions), you may send ONE educational message:
 - Weigh daily: morning, after bathroom, before food/drink, same scale, flat surface
 - Expect daily weight swings
 - Weekly averages matter
