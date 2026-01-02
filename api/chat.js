@@ -545,6 +545,55 @@ Visible reply
 `;
 
 /* ============================
+   POST-PLAN (after refresh) MESSAGES
+   ============================ */
+const PJ_POST_PLAN_EDU =
+  "Quick coaching note so you don’t overthink this:\n\n" +
+  "✅ **This is flexible dieting (a numbers game).** You can still eat foods you love — we just fit them into your calorie + protein targets.\n" +
+  "✅ **Volume eating = stay full on fewer calories.** Think: lean protein + big servings of veggies/fruit + potatoes/rice in smart portions.\n" +
+  "✅ **Food swaps (not food bans):** same flavor, fewer calories. Example: grilled vs fried, leaner cuts, Greek-yogurt sauces, air-fryer versions.\n\n" +
+  "Why people fail: most crash diets are too aggressive → hunger ramps up, energy drops, adherence breaks, then the weight comes back. The goal here is **steady + repeatable**, not perfect.\n\n" +
+  "Tell me 2–3 foods you love (pizza, burgers, sweets, etc.) and I’ll show you how to keep them in — the smart way.";
+
+const PJ_POST_PLAN_MEAL_PROMPT =
+  "✅ Now let’s add your **first meal**.\n\n" +
+  "1) Tap the **Today** tab (first tab at the bottom)\n" +
+  "2) **Refresh** once if your dashboard didn’t load\n" +
+  "3) Tap **Add** next to the meal you want to log\n" +
+  "4) Tell me what you ate — I’ll give you calories + macros and log it.";
+
+// ===============================
+// SAFETY: sanitize model output so internal blocks never leak into chat
+// Handles [[...]] and also broken single-bracket variants like [COACH_REVIEW_JSON ...]
+// ===============================
+function pjSanitizeForUser(text) {
+  if (!text || typeof text !== "string") return "";
+
+  // Double bracket blocks
+  text = text.replace(/\[\[COACH_PLAN_JSON[\s\S]*?\]\]/g, "");
+  text = text.replace(/\[\[DAILY_LOG_JSON[\s\S]*?\]\]/g, "");
+  text = text.replace(/\[\[MEAL_LOG_JSON[\s\S]*?\]\]/g, "");
+  text = text.replace(/\[\[DAILY_REVIEW_JSON[\s\S]*?\]\]/g, "");
+  text = text.replace(/\[\[COACH_REVIEW_JSON[\s\S]*?\]\]/g, "");
+
+  // Single bracket broken variants
+  text = text.replace(/\[COACH_PLAN_JSON[\s\S]*?\]/g, "");
+  text = text.replace(/\[DAILY_LOG_JSON[\s\S]*?\]/g, "");
+  text = text.replace(/\[MEAL_LOG_JSON[\s\S]*?\]/g, "");
+  text = text.replace(/\[DAILY_REVIEW_JSON[\s\S]*?\]/g, "");
+  text = text.replace(/\[COACH_REVIEW_JSON[\s\S]*?\]/g, "");
+
+  // Tag words in case of partial/corrupted output
+  text = text.replace(/COACH_REVIEW_JSON/gi, "");
+  text = text.replace(/DAILY_LOG_JSON/gi, "");
+  text = text.replace(/MEAL_LOG_JSON/gi, "");
+  text = text.replace(/COACH_PLAN_JSON/gi, "");
+  text = text.replace(/DAILY_REVIEW_JSON/gi, "");
+
+  return text.trim();
+}
+
+/* ============================
    PJ PLAN VALIDATOR
    ============================ */
 function pjPlanIsValid(plan){
@@ -598,6 +647,42 @@ async function shopifyGraphQL(query, variables = {}) {
   }
 
   return json.data;
+}
+
+// ===============================
+// POST-PLAN STAGE (one-time post-refresh education + first meal prompt)
+// ===============================
+async function getPostPlanStage(customerGid) {
+  if (!customerGid) return null;
+  const q = `
+    query($id: ID!) {
+      customer(id: $id) {
+        metafield(namespace:"custom", key:"post_plan_stage") { value }
+      }
+    }
+  `;
+  const data = await shopifyGraphQL(q, { id: customerGid });
+  return data?.customer?.metafield?.value || null;
+}
+
+async function setPostPlanStage(customerGid, value) {
+  if (!customerGid) return;
+  const m = `
+    mutation($input: MetafieldsSetInput!) {
+      metafieldsSet(metafields: [$input]) {
+        userErrors { field message }
+      }
+    }
+  `;
+  return shopifyGraphQL(m, {
+    input: {
+      ownerId: customerGid,
+      namespace: "custom",
+      key: "post_plan_stage",
+      type: "single_line_text_field",
+      value: String(value)
+    }
+  });
 }
 
 // ============================================================
@@ -764,11 +849,6 @@ function finalizePlanJson(planJson) {
   };
 }
 
-function stripCoachPlanBlock(text) {
-  if (!text) return text;
-  return text.replace(/\[\[COACH_PLAN_JSON[\s\S]*?\]\]/, "").trim();
-}
-
 async function resolveCustomerGidFromBody(body) {
   let rawId =
     body.customerId ||
@@ -816,9 +896,7 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
 
   const ownerId = customerGid;
 
-  // ================================
   // ✅ LOCK EXISTING START/GOAL (SERVER-SIDE SAFETY)
-  // ================================
   let existingPlan = null;
   try {
     const existingData = await shopifyGraphQL(
@@ -864,9 +942,7 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
     planJson.goal_weight = existingGoal;
     planJson.goal_weight_lbs = existingGoal;
   }
-  // ================================
   // ✅ END LOCK
-  // ================================
 
   const startWeight = planJson.start_weight != null
     ? Number(planJson.start_weight)
@@ -1316,7 +1392,6 @@ function detectSimpleMealFromUser(userMsg) {
     return desc;
   };
 
-  // "for dinner, i had ..."
   let m = text.match(
     /for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*,?\s*i\s+(?:had|ate)\s+(.*)$/i
   );
@@ -1327,7 +1402,6 @@ function detectSimpleMealFromUser(userMsg) {
     return { meal_type: mealType, items: [desc] };
   }
 
-  // "log this as dinner: ..."
   m = text.match(
     /log\s+this\s+as\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*[:\-]?\s*(.*)$/i
   );
@@ -1338,7 +1412,6 @@ function detectSimpleMealFromUser(userMsg) {
     return { meal_type: mealType, items: [desc] };
   }
 
-  // "dinner: chicken and rice"  OR  "lunch - turkey sandwich"
   m = text.match(
     /^(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*[:\-]\s*(.+)$/i
   );
@@ -1349,7 +1422,6 @@ function detectSimpleMealFromUser(userMsg) {
     return { meal_type: mealType, items: [desc] };
   }
 
-  // "i had ... for dinner"
   m = text.match(
     /i\s+(?:had|ate)\s+(.*)\s+for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b/i
   );
@@ -1360,7 +1432,6 @@ function detectSimpleMealFromUser(userMsg) {
     return { meal_type: mealType, items: [desc] };
   }
 
-  // "chicken and rice for dinner" (no "I had/ate")
   m = text.match(
     /^(.*)\s+for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b/i
   );
@@ -1376,7 +1447,6 @@ function detectSimpleMealFromUser(userMsg) {
     return { meal_type: mealType, items: [desc] };
   }
 
-  // "i had ..." (no meal type) -> default snacks
   m = text.match(/i\s+(?:had|ate)\s+(.*)$/i);
   if (m) {
     const desc = cleanDesc(m[1] || "");
@@ -1674,9 +1744,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  // ===============================
   // ✅ PJ DATE SOURCE OF TRUTH (CLIENT LOCAL DATE)
-  // ===============================
   const clientDate = body?.clientDate;
   const dateKey = isYMD(clientDate) ? clientDate : localYMD();
 
@@ -1739,29 +1807,32 @@ export default async function handler(req, res) {
 
   let shopifyMetafieldReadStatus = "not_attempted";
   let onboardingComplete = null;
+  let postPlanStage = null;
 
   if (customerGid) {
     try {
       shopifyMetafieldReadStatus = "fetching";
       const data = await shopifyGraphQL(
         `
-        query GetCustomerOnboarding($id: ID!) {
+        query GetCustomerFlags($id: ID!) {
           customer(id: $id) {
-            metafield(namespace: "custom", key: "onboarding_complete") { value }
+            onboarding: metafield(namespace: "custom", key: "onboarding_complete") { value }
+            postStage: metafield(namespace: "custom", key: "post_plan_stage") { value }
           }
         }
         `,
         { id: customerGid }
       );
-      const val = data?.customer?.metafield?.value;
-      if (typeof val === "string") {
-        onboardingComplete = val === "true";
-        shopifyMetafieldReadStatus = "success";
-      } else {
-        shopifyMetafieldReadStatus = "no_metafield";
-      }
+
+      const val = data?.customer?.onboarding?.value;
+      const stageVal = data?.customer?.postStage?.value;
+
+      if (typeof val === "string") onboardingComplete = (val === "true");
+      postPlanStage = typeof stageVal === "string" ? stageVal : null;
+
+      shopifyMetafieldReadStatus = "success";
     } catch (e) {
-      console.error("Error fetching onboarding_complete metafield", e);
+      console.error("Error fetching customer metafields", e);
       shopifyMetafieldReadStatus = "error";
     }
   } else {
@@ -1775,6 +1846,7 @@ export default async function handler(req, res) {
     historyCount: history.length,
     appendUserMessage,
     onboarding_complete: onboardingComplete,
+    post_plan_stage: postPlanStage || null,
     shopifyMetafieldReadStatus,
     dateKey,
     clientDate: clientDate || null,
@@ -1782,13 +1854,10 @@ export default async function handler(req, res) {
     model: "gpt-4.1-mini",
   };
 
-  // ===============================
   // FREE PREVIEW MESSAGE GATE
-  // ===============================
   let remainingAfter = null;
   const FREE_START = 30;
 
-  // ✅ FIXED: use parsed body (not req.body)
   const isSubscriber = body?.isSubscriber === true;
 
   try {
@@ -2012,6 +2081,16 @@ export default async function handler(req, res) {
           onboardingComplete = true;
           debug.onboardingCompleteAfterSave = true;
 
+          // ✅ Post-plan stage marker: show education + first meal prompt after refresh (next message)
+          try {
+            await setPostPlanStage(customerGid, "awaiting_refresh");
+            postPlanStage = "awaiting_refresh";
+            debug.postPlanStageSet = "awaiting_refresh";
+            debug.planJustSaved = true;
+          } catch (e) {
+            console.warn("Failed to set post_plan_stage:", e?.message || e);
+          }
+
           // ✅ ONBOARDING FINALIZATION: Write TODAY'S weight = CURRENT onboarding weight
           const cw =
             planJson?.current_weight_lbs ??
@@ -2154,11 +2233,22 @@ export default async function handler(req, res) {
       }
     }
 
-    let cleanedReply = stripCoachPlanBlock(rawReply);
-    cleanedReply = cleanedReply.replace(/\[\[DAILY_LOG_JSON[\s\S]*?\]\]/g, "").trim();
-    cleanedReply = cleanedReply.replace(/\[\[MEAL_LOG_JSON[\s\S]*?\]\]/g, "").trim();
-    cleanedReply = cleanedReply.replace(/\[\[DAILY_REVIEW_JSON[\s\S]*?\]\]/g, "").trim();
-    cleanedReply = cleanedReply.replace(/\[\[COACH_REVIEW_JSON[\s\S]*?\]\]/g, "").trim();
+    // ✅ FINAL USER REPLY (sanitized)
+    let cleanedReply = pjSanitizeForUser(rawReply);
+
+    // ✅ After-refresh injection (one-time): education + first meal steps
+    try {
+      if (customerGid && onboardingComplete === true) {
+        const stage = postPlanStage || await getPostPlanStage(customerGid);
+        if (stage === "awaiting_refresh") {
+          cleanedReply = `${cleanedReply}\n\n${PJ_POST_PLAN_EDU}\n\n${PJ_POST_PLAN_MEAL_PROMPT}`;
+          await setPostPlanStage(customerGid, "done");
+          debug.postPlanStageAdvanced = "done";
+        }
+      }
+    } catch (e) {
+      console.log("Post-plan stage injection error:", e);
+    }
 
     res.status(200).json({
       reply: cleanedReply,
