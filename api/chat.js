@@ -1301,58 +1301,72 @@ function detectSimpleMealFromUser(userMsg) {
   const original = userMsg;
   const text = userMsg.toLowerCase();
 
+  const cleanDesc = (descLower) => {
+    if (!descLower) return "";
+    const startIndex = text.indexOf(descLower);
+    let desc = descLower;
+    if (startIndex !== -1) desc = original.substring(startIndex, startIndex + descLower.length);
+
+    desc = (desc || "")
+      .trim()
+      .replace(/^[“"']/g, "")
+      .replace(/[”"'.,!?]+$/g, "")
+      .trim();
+
+    return desc;
+  };
+
+  // "for dinner, i had ..."
   let m = text.match(
-    /for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*,?\s+i\s+(?:had|ate)\s+(.*)$/i
+    /for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*,?\s*i\s+(?:had|ate)\s+(.*)$/i
   );
   if (m) {
     const mealType = normalizeMealType(m[1]);
-    const descLower = m[2] || "";
-    const startIndex = text.indexOf(descLower);
-    let desc = descLower;
-    if (startIndex !== -1) desc = original.substring(startIndex, startIndex + descLower.length);
-
-    desc = (desc || "")
-      .trim()
-      .replace(/^[“"']/g, "")
-      .replace(/[”"'.,!?]+$/g, "")
-      .trim();
-
+    const desc = cleanDesc(m[2] || "");
     if (!desc) return null;
     return { meal_type: mealType, items: [desc] };
   }
 
+  // "log this as dinner: ..."
   m = text.match(
-    /log\s+this\s+as\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*[:\\-]?\\s*(.*)$/i
+    /log\s+this\s+as\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*[:\-]?\s*(.*)$/i
   );
   if (m) {
     const mealType = normalizeMealType(m[1]);
-    const descLower = m[2] || "";
-    const startIndex = text.indexOf(descLower);
-    let desc = descLower;
-    if (startIndex !== -1) desc = original.substring(startIndex, startIndex + descLower.length);
-
-    desc = (desc || "")
-      .trim()
-      .replace(/^[“"']/g, "")
-      .replace(/[”"'.,!?]+$/g, "")
-      .trim();
-
+    const desc = cleanDesc(m[2] || "");
     if (!desc) return null;
     return { meal_type: mealType, items: [desc] };
   }
 
+  // "dinner: chicken and rice"  OR  "lunch - turkey sandwich"
   m = text.match(
-    /i\\s+(?:had|ate)\\s+(.*)\\s+for\\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\\b/i
+    /^(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*[:\-]\s*(.+)$/i
   );
   if (m) {
-    const descLower = m[1] || "";
+    const mealType = normalizeMealType(m[1]);
+    const desc = cleanDesc(m[2] || "");
+    if (!desc) return null;
+    return { meal_type: mealType, items: [desc] };
+  }
+
+  // "i had ... for dinner"
+  m = text.match(
+    /i\s+(?:had|ate)\s+(.*)\s+for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b/i
+  );
+  if (m) {
+    const desc = cleanDesc(m[1] || "");
     const mealType = normalizeMealType(m[2]);
+    if (!desc) return null;
+    return { meal_type: mealType, items: [desc] };
+  }
 
-    const startIndex = text.indexOf(descLower);
-    let desc = descLower;
-    if (startIndex !== -1) desc = original.substring(startIndex, startIndex + descLower.length);
-
-    desc = (desc || "")
+  // "chicken and rice for dinner" (no "I had/ate")
+  m = text.match(
+    /^(.*)\s+for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b/i
+  );
+  if (m) {
+    const mealType = normalizeMealType(m[2]);
+    let desc = (m[1] || "")
       .trim()
       .replace(/^[“"']/g, "")
       .replace(/[”"'.,!?]+$/g, "")
@@ -1362,35 +1376,10 @@ function detectSimpleMealFromUser(userMsg) {
     return { meal_type: mealType, items: [desc] };
   }
 
-  // ✅ NEW: "chicken and rice for dinner" (no "I had/ate")
-  m = text.match(/^(.*)\\s+for\\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\\b/i);
+  // "i had ..." (no meal type) -> default snacks
+  m = text.match(/i\s+(?:had|ate)\s+(.*)$/i);
   if (m) {
-    const mealType = normalizeMealType(m[2]);
-    let desc = m[1];
-
-    desc = (desc || "")
-      .trim()
-      .replace(/^[“"']/g, "")
-      .replace(/[”"'.,!?]+$/g, "")
-      .trim();
-
-    if (!desc) return null;
-    return { meal_type: mealType, items: [desc] };
-  }
-
-  m = text.match(/i\\s+(?:had|ate)\\s+(.*)$/i);
-  if (m) {
-    const descLower = m[1] || "";
-    const startIndex = text.indexOf(descLower);
-    let desc = descLower;
-    if (startIndex !== -1) desc = original.substring(startIndex, startIndex + descLower.length);
-
-    desc = (desc || "")
-      .trim()
-      .replace(/^[“"']/g, "")
-      .replace(/[”"'.,!?]+$/g, "")
-      .trim();
-
+    const desc = cleanDesc(m[1] || "");
     if (!desc) return null;
     return { meal_type: "snacks", items: [desc] };
   }
