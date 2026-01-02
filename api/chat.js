@@ -2226,10 +2226,10 @@ try {
     const stage = postPlanStage || await getPostPlanStage(customerGid);
 
     const userSaidNoQuestions =
-      typeof userMessage === "string" &&
-      /\b(no|nope|nah|all good|good|im good|i'm good|ok|okay|sounds good|got it|makes sense|no questions|no question)\b/i.test(
-        userMessage.trim()
-      );
+  typeof userMessage === "string" &&
+  /(?:^|\b)(no questions?|nope|nah|all good|i(?:'|’)m good|im good|sounds good|got it|makes sense|ok(?:ay)?)(?:\b|$)/i.test(
+    userMessage.trim()
+  );
 
     if (stage === "plan_questions") {
       // Only move to tour/meal AFTER user confirms no questions
