@@ -1705,6 +1705,24 @@ function getLastMealTypeFromLogs(logs, dateKey) {
 }
 
 export default async function handler(req, res) {
+     // ===== EMERGENCY CORS (ALLOW STOREFRONT) =====
+  const origin = req.headers.origin || "";
+
+  res.setHeader("Access-Control-Allow-Origin", origin || "*");
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+
+  const reqHeaders = req.headers["access-control-request-headers"];
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    reqHeaders ? String(reqHeaders) : "Content-Type, Authorization, X-Requested-With, Accept"
+  );
+
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+  // ===== END EMERGENCY CORS =====
+
   // ===== CORS (SHOPIFY -> VERCEL) =====
   const origin = req.headers.origin || "";
 
