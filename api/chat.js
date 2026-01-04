@@ -1706,31 +1706,38 @@ function getLastMealTypeFromLogs(logs, dateKey) {
 
 
 export default async function handler(req, res) {
-  // ===== CORS FOR PJIFITNESS =====
+  // ===== CORS FOR PJIFITNESS (SHOPIFY -> VERCEL) =====
   const origin = req.headers.origin || "";
 
+  // IMPORTANT: must match EXACTLY what the browser sends as Origin
   const ALLOWED_ORIGINS = new Set([
-    "https://www.pjifitness.com",
-    "https://pjifitness.com",
-    "https://pjifitness.myshopify.com",
+    "https://www.pjfitness.com",
+    "https://pjfitness.com",
+    "https://pjfitness.myshopify.com",
   ]);
 
   if (ALLOWED_ORIGINS.has(origin)) {
+    // Echo the origin back (required for credentialed requests)
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
   }
 
+  // Prevent cache mixing across origins
   res.setHeader("Vary", "Origin");
+
+  // Preflight + allowed methods
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+
+  // Reflect requested headers (this fixes many preflight failures)
+  const reqHeaders = req.headers["access-control-request-headers"];
   res.setHeader(
     "Access-Control-Allow-Headers",
-    req.headers["access-control-request-headers"] ||
-      "Content-Type, Authorization, X-Requested-With, Accept"
+    reqHeaders ? String(reqHeaders) : "Content-Type, Authorization, X-Requested-With, Accept"
   );
 
+  // Fast preflight response
   if (req.method === "OPTIONS") {
-    res.status(200).end();
-    return;
+    return res.status(204).end();
   }
   // ===== END CORS =====
 
