@@ -1909,8 +1909,24 @@ export default async function handler(req, res) {
     }
   }
 
-  const overrideMeal = detectMealOverride(userMessage);
-  if (overrideMeal) debug.mealOverrideDetected = overrideMeal;
+  let overrideMeal = detectMealOverride(userMessage);
+if (overrideMeal) {
+  debug.mealOverrideDetected = overrideMeal;
+} else if (customerGid && detectMealCorrection(userMessage)) {
+  // ✅ Auto-replace last logged meal for today when user is correcting
+  try {
+    const { logs } = await getDailyLogsMetafield(customerGid);
+    const lastType = getLastMealTypeFromLogs(logs, dateKey);
+    if (lastType) {
+      overrideMeal = { meal_type: lastType };
+      debug.mealAutoCorrectionDetected = true;
+      debug.mealAutoReplaceMealType = lastType;
+    }
+  } catch (e) {
+    debug.mealAutoCorrectionError = String(e?.message || e);
+  }
+}
+
 
   let introAlreadySent = false;
   if (history.length) {
