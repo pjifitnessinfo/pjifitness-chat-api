@@ -1676,6 +1676,27 @@ function localYMD() {
   return local.toISOString().slice(0, 10);
 }
 
+function detectMealCorrection(userMsg) {
+  if (!userMsg || typeof userMsg !== "string") return false;
+  const t = userMsg.toLowerCase();
+
+  // Common correction language + calorie numbers
+  return (
+    /\b(wrong|incorrect|actually|should be|not right|label|nutrition label|it’s|its)\b/.test(t) ||
+    /\b(\d{1,4})\s*(cal|cals|calories|kcal)\b/.test(t)
+  );
+}
+
+function getLastMealTypeFromLogs(logs, dateKey) {
+  if (!Array.isArray(logs) || !dateKey) return null;
+  const day = logs.find(x => x && x.date === dateKey);
+  const meals = Array.isArray(day?.meals) ? day.meals : [];
+  if (!meals.length) return null;
+  const last = meals[meals.length - 1];
+  return normalizeMealType(last?.meal_type || null);
+}
+
+
 export default async function handler(req, res) {
   // ===== CORS FOR PJIFITNESS =====
   const origin = req.headers.origin || "";
