@@ -64,6 +64,119 @@ async function shopifyAdminFetch(query, variables = {}) {
 }
 
 /**
+ * Build an absolute URL to our own API on Vercel.
+ */
+function getBaseUrl(req) {
+  const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0].trim();
+  const host = req.headers["x-forwarded-host"] || req.headers.host;
+  return `${proto}://${host}`;
+}
+
+/**
+ * Call /api/nutrition to estimate calories/macros for a meal text.
+ * Never throws: returns null on failure.
+ */
+async function callNutrition(req, { text, customerId }) {
+  try {
+    const baseUrl = getBaseUrl(req);
+
+    const r = await fetch(`${baseUrl}/api/nutrition`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, customerId }),
+    });
+
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j?.ok) return null;
+
+    return j;
+  } catch (e) {
+    console.error("[save-daily-log] callNutrition failed:", e);
+    return null;
+  }
+}
+
+/**
+ * Enrich meals array:
+ * - If meal already has calories/macros => keep
+ * - Else if meal has nutrition.totals => copy to top-level fields
+ * - Else if meal has a text/description/name => call /api/nutrition and fill fields
+ *
+ * IMPORTANT:
+ * We "promote" nutrition totals to meal.calories/protein/carbs/fat so computeTotalsFromMeals works unchanged.
+ */
+async function enrichMealsWithNutrition(req, meals, customerId) {
+  if (!Array.isArray(meals) || meals.length === 0) return meals;
+
+  const out = [];
+  for (const m of meals) {
+    const meal = m && typeof m === "object" ? { ...m } : null;
+    if (!meal) continue;
+
+    // Already has macros at top-level or legacy _g fields
+    const hasTopMacros =
+      meal.calories != null ||
+      meal.protein != null ||
+      meal.carbs != null ||
+      meal.fat != null ||
+      meal.protein_g != null ||
+      meal.carbs_g != null ||
+      meal.fat_g != null;
+
+    if (hasTopMacros) {
+      out.push(meal);
+      continue;
+    }
+
+    // Already has stored nutrition totals -> promote
+    const nt = meal?.nutrition?.totals;
+    if (nt && typeof nt === "object") {
+      meal.calories = nt.calories ?? meal.calories ?? null;
+      meal.protein = nt.protein ?? meal.protein ?? null;
+      meal.carbs = nt.carbs ?? meal.carbs ?? null;
+      meal.fat = nt.fat ?? meal.fat ?? null;
+      out.push(meal);
+      continue;
+    }
+
+    // Find meal text
+    const text =
+      (typeof meal.text === "string" && meal.text.trim()) ||
+      (typeof meal.description === "string" && meal.description.trim()) ||
+      (typeof meal.name === "string" && meal.name.trim()) ||
+      "";
+
+    if (!text) {
+      out.push(meal);
+      continue;
+    }
+
+    // Call nutrition
+    const nut = await callNutrition(req, { text, customerId });
+
+    if (nut?.totals && typeof nut.totals === "object") {
+      // Store nutrition details (helps UI + debugging)
+      meal.text = meal.text || text;
+      meal.nutrition = {
+        items: Array.isArray(nut.items) ? nut.items : [],
+        totals: nut.totals || null,
+        needs_clarification: Array.isArray(nut.needs_clarification) ? nut.needs_clarification : [],
+      };
+
+      // Promote totals to top-level for compatibility with computeTotalsFromMeals
+      meal.calories = nut.totals.calories ?? null;
+      meal.protein = nut.totals.protein ?? null;
+      meal.carbs = nut.totals.carbs ?? null;
+      meal.fat = nut.totals.fat ?? null;
+    }
+
+    out.push(meal);
+  }
+
+  return out;
+}
+
+/**
  * Compute calories + macros from a meals array.
  * Supports both:
  *  - old logs:  calories, protein, carbs, fat
@@ -281,7 +394,7 @@ export default async function handler(req, res) {
   const dateStr = safeLog.date; // ✅ forced to dateKey
   const updatedLogs = Array.isArray(existingLogs) ? [...existingLogs] : [];
 
-  const foundIndex = updatedLogs.findIndex(l => l && l.date === dateStr);
+  const foundIndex = updatedLogs.findIndex((l) => l && l.date === dateStr);
 
   let finalLogForResponse = safeLog;
 
@@ -304,8 +417,10 @@ export default async function handler(req, res) {
       merged.meals = Array.isArray(existing.meals) ? existing.meals : [];
     }
 
-    // Recompute totals from merged.meals (only if meals exists as array)
+    // ✅ NEW: Enrich meals with nutrition before totals
     if (Array.isArray(merged.meals)) {
+      merged.meals = await enrichMealsWithNutrition(req, merged.meals, customerId);
+
       const totals = computeTotalsFromMeals(merged.meals);
       merged.calories = totals.calories || merged.calories || null;
       merged.total_calories = totals.calories || merged.total_calories || merged.calories || null;
@@ -319,7 +434,10 @@ export default async function handler(req, res) {
   } else {
     const newLog = { ...safeLog, date: dateStr };
 
+    // ✅ NEW: Enrich meals with nutrition before totals
     if (Array.isArray(newLog.meals)) {
+      newLog.meals = await enrichMealsWithNutrition(req, newLog.meals, customerId);
+
       const totals = computeTotalsFromMeals(newLog.meals);
       newLog.calories = totals.calories || newLog.calories || null;
       newLog.total_calories = totals.calories || newLog.total_calories || newLog.calories || null;
