@@ -1732,9 +1732,9 @@ export default async function handler(req, res) {
     "https://pjifitness.myshopify.com",
 
     // keep these too if you ever use the non-i domain anywhere
-    "https://www.pjfitness.com",
-    "https://pjfitness.com",
-    "https://pjfitness.myshopify.com",
+    "https://www.pjifitness.com",
+    "https://pjifitness.com",
+    "https://pjifitness.myshopify.com",
   ]);
 
   if (ALLOWED_ORIGINS.has(origin)) {
