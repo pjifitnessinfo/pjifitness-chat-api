@@ -5,11 +5,13 @@
 // - Uses OpenAI for structure/exercise selection
 // - Then applies deterministic progressive overload logic so it's ALWAYS useful
 //
-// Requires POST with last_workout.exercises[].
+// Requires POST with last_workout.exercises[].sets[].
 // Accepts current_workout (user-edited draft).
 //
-// FIXES:
-// ✅ Alias/canonical mapping so matches happen even when names differ
+// FIXES (THIS VERSION):
+// ✅ Reads set fields from w/r OR weight/reps OR lbs/reps (prevents empty history)
+// ✅ Preserves set count from last workout (or draft) instead of forcing 3/2
+// ✅ Canonical mapping so matches happen even when names differ
 // ✅ Enforces session_type so lower_body doesn't turn into bench/rows
 // ✅ Deload triggers only when enough completed weighted sets exist (prevents false deload)
 // ✅ Adds per-exercise last_time + rationale + overall rationale fields
@@ -88,6 +90,7 @@ export default async function handler(req, res) {
     // -----------------------------
     // Compact inputs
     // -----------------------------
+    // ✅ IMPORTANT: compacting MUST understand weight/reps key variants
     const compactLast = compactWorkoutCompletedOnly(lastWorkoutRaw);
 
     // ✅ Use MORE history so matches actually happen
@@ -224,7 +227,7 @@ Return NEXT workout JSON now.
       }
     }
 
-    // Normalize model output
+    // Normalize model output (also tolerates weight/reps)
     let workout = normalizeWorkout(workoutFromModel, { sessionType, timeMinutes });
 
     // ✅ ENFORCE session sanity (prevents "legs day" returning bench/rows)
@@ -327,6 +330,44 @@ function tokenOverlapScore(aName, bName) {
   let inter = 0;
   for (const t of a) if (b.has(t)) inter += 1;
   return inter;
+}
+
+// -----------------------------
+// ✅ Robust set field readers (THIS FIXES "HISTORY GONE")
+// -----------------------------
+function readWeight(s) {
+  if (!s || typeof s !== "object") return 0;
+  const candidates = [s.w, s.weight, s.lbs, s.load, s.kg];
+  let v = 0;
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n > 0) {
+      v = n;
+      break;
+    }
+  }
+  // If kg is used accidentally, you can decide to convert. For now keep as-is.
+  return v;
+}
+
+function readReps(s) {
+  if (!s || typeof s !== "object") return 0;
+  const candidates = [s.r, s.reps, s.rep, s.count];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
+}
+
+function readDone(s) {
+  if (!s || typeof s !== "object") return false;
+  const v = s.done ?? s.completed ?? s.is_done ?? s.checked;
+  return v === true || v === "true" || v === 1 || v === "1";
+}
+
+function normalizeSetShape(s) {
+  return { w: readWeight(s), r: readReps(s), done: readDone(s) };
 }
 
 // -----------------------------
@@ -458,7 +499,8 @@ function buildPerformanceLibrary(compactLast, compactHist) {
       const sets = Array.isArray(ex?.sets) ? ex.sets : [];
       const nm = canonicalizeExerciseName(ex?.name || "");
       const cleaned = sets
-        .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }))
+        .map((s) => normalizeSetShape(s))
+        .map((s) => ({ w: s.w, r: s.r }))
         .filter((s) => s.w > 0 && s.r > 0);
 
       if (!nm || !cleaned.length) continue;
@@ -502,7 +544,8 @@ function findBestInLibrary(libraryEntries, targetName) {
 function draftHasUsablePerformance(ex) {
   const sets = Array.isArray(ex?.sets) ? ex.sets : [];
   const cleaned = sets
-    .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }))
+    .map((s) => normalizeSetShape(s))
+    .map((s) => ({ w: s.w, r: s.r }))
     .filter((s) => s.w > 0 && s.r > 0);
   return cleaned.length ? cleaned : null;
 }
@@ -519,14 +562,16 @@ function compactWorkoutCompletedOnly(w) {
     const exs = Array.isArray(w?.exercises) ? w.exercises : [];
     out.exercises = exs.slice(0, 12).map((ex) => {
       const sets = Array.isArray(ex?.sets) ? ex.sets : [];
-      const done = sets.filter((s) => s && (s.done === true || s.done === "true"));
-      const use = done.length ? done : sets;
+      const normed = sets.map(normalizeSetShape);
+
+      const done = normed.filter((s) => s.done);
+      const use = done.length ? done : normed; // if no done flags, still keep sets
 
       return {
         name: collapseSpaces(canonicalizeExerciseName(ex?.name || "")),
         sets: use
           .filter(Boolean)
-          .slice(0, 10)
+          .slice(0, 20)
           .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }))
           .filter((s) => s.w > 0 && s.r > 0),
       };
@@ -551,11 +596,13 @@ function compactWorkoutAllSets(w) {
     const exs = Array.isArray(w?.exercises) ? w.exercises : [];
     out.exercises = exs.slice(0, 14).map((ex) => {
       const sets = Array.isArray(ex?.sets) ? ex.sets : [];
+      const normed = sets.map(normalizeSetShape);
+
       return {
         name: collapseSpaces(canonicalizeExerciseName(ex?.name || "")),
-        sets: sets
+        sets: normed
           .filter(Boolean)
-          .slice(0, 12)
+          .slice(0, 24)
           .map((s) => ({
             w: Number(s?.w) || 0,
             r: Number(s?.r) || 0,
@@ -598,10 +645,11 @@ function normalizeWorkout(workout, { sessionType, timeMinutes }) {
       if (typeof e.last_time !== "object" || e.last_time === null) e.last_time = null;
 
       if (!Array.isArray(e.sets)) e.sets = [];
+      // ✅ tolerate model output that uses weight/reps
       e.sets = e.sets
         .filter(Boolean)
-        .slice(0, 10)
-        .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }));
+        .slice(0, 24)
+        .map((s) => ({ w: readWeight(s), r: readReps(s) }));
 
       if (!e.sets.length) e.sets = [{ w: 0, r: 8 }, { w: 0, r: 8 }, { w: 0, r: 8 }];
       return e;
@@ -697,6 +745,10 @@ function applySmartProgression({
     const { entry: matched, score } = findBestInLibrary(perfLib, name);
     const draftPerf = draftHasUsablePerformance(ex);
 
+    // Use draft set count as a preference (keeps user’s set count)
+    const preferSetCount =
+      Array.isArray(ex?.sets) && ex.sets.length ? ex.sets.length : null;
+
     if (matched && matched.sets?.length) {
       dbg.matchedExercises += 1;
       dbg.matchPreview.resolved.push({
@@ -706,7 +758,12 @@ function applySmartProgression({
         score,
       });
 
-      const nextSets = prescribeNextSets({ name, lastSets: matched.sets, deload: dbg.deloaded });
+      const nextSets = prescribeNextSets({
+        name,
+        lastSets: matched.sets,
+        deload: dbg.deloaded,
+        preferSetCount,
+      });
 
       const rationale = buildExerciseRationale({
         name,
@@ -726,7 +783,7 @@ function applySmartProgression({
         last_time: {
           date: matched.date || "",
           workout_name: matched.workoutName || "",
-          sets: matched.sets.slice(0, 6).map((s) => ({ w: s.w, r: s.r })),
+          sets: matched.sets.slice(0, 10).map((s) => ({ w: s.w, r: s.r })),
         },
       };
     }
@@ -740,7 +797,12 @@ function applySmartProgression({
         score: 100,
       });
 
-      const nextSets = prescribeNextSets({ name, lastSets: draftPerf, deload: dbg.deloaded });
+      const nextSets = prescribeNextSets({
+        name,
+        lastSets: draftPerf,
+        deload: dbg.deloaded,
+        preferSetCount,
+      });
 
       const rationale = buildExerciseRationale({
         name,
@@ -760,7 +822,7 @@ function applySmartProgression({
         last_time: {
           date: "",
           workout_name: "current draft",
-          sets: draftPerf.slice(0, 6).map((s) => ({ w: s.w, r: s.r })),
+          sets: draftPerf.slice(0, 10).map((s) => ({ w: s.w, r: s.r })),
         },
       };
     }
@@ -769,13 +831,15 @@ function applySmartProgression({
     dbg.matchPreview.resolved.push({ current: name, matchedName: "", matchedFrom: "", score: 0 });
 
     const base = baselineForNewExercise(name, sessionType, experience, {
-      preferSetCount: (ex?.sets || []).length || null,
+      preferSetCount: preferSetCount || null,
     });
 
-    const setsOut = (ex?.sets?.length ? ex.sets : base.sets).slice(0, 10).map((s) => ({
-      w: 0,
-      r: Number(s?.r) || base.defaultReps,
-    }));
+    const setsOut = (Array.isArray(ex?.sets) && ex.sets.length ? ex.sets : base.sets)
+      .slice(0, 10)
+      .map((s) => ({
+        w: 0,
+        r: readReps(s) || base.defaultReps,
+      }));
 
     return {
       name,
@@ -810,7 +874,7 @@ function applySmartProgression({
 function cloneDraftSetsOrBlank(draftEx, { defaultReps = 8 } = {}) {
   const sets = Array.isArray(draftEx?.sets) ? draftEx.sets : [];
   if (!sets.length) return [{ w: 0, r: defaultReps }, { w: 0, r: defaultReps }, { w: 0, r: defaultReps }];
-  return sets.slice(0, 10).map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || defaultReps }));
+  return sets.slice(0, 24).map((s) => ({ w: readWeight(s) || 0, r: readReps(s) || defaultReps }));
 }
 
 // ✅ Better deload trigger: needs enough completed weighted sets to justify
@@ -825,12 +889,14 @@ function computeFatigueSignal(lastWorkout, currentDraft) {
     totalSets += sets.length;
 
     for (const s of sets) {
-      if (Number(s?.w) > 0 && Number(s?.r) > 0) completedWeightedSets += 1;
+      const ww = readWeight(s);
+      const rr = readReps(s);
+      if (ww > 0 && rr > 0) completedWeightedSets += 1;
     }
 
     if (sets.length >= 3) {
-      const first = Number(sets[0]?.r) || 0;
-      const last = Number(sets[sets.length - 1]?.r) || 0;
+      const first = readReps(sets[0]) || 0;
+      const last = readReps(sets[sets.length - 1]) || 0;
       if (first >= 6 && last > 0 && first - last >= 3) bigDropCount += 1;
     }
   }
@@ -903,7 +969,7 @@ function buildExerciseRationale({ name, sourceLabel, lastSets, nextSets, deload,
 
 function normalizeSets(sets) {
   return (Array.isArray(sets) ? sets : [])
-    .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }))
+    .map((s) => ({ w: readWeight(s), r: readReps(s) }))
     .filter((s) => s.w > 0 && s.r > 0);
 }
 
@@ -918,57 +984,54 @@ function formatDelta(n) {
   return (x >= 0 ? "+" : "") + Math.round(x * 10) / 10;
 }
 
-function prescribeNextSets({ name, lastSets, deload }) {
+/**
+ * ✅ PRESERVE SET COUNT (THIS FIXES YOUR BENCH 5 SETS -> 3 SETS PROBLEM)
+ * - Uses the same number of sets as last time (or preferSetCount if provided)
+ * - Reps-first: +1 rep to first set, +1 rep to second set (if exists), others unchanged
+ * - If you want more aggressive progression later, adjust bump rule here.
+ */
+function prescribeNextSets({ name, lastSets, deload, preferSetCount = null }) {
   const cleaned = (lastSets || [])
-    .map((s) => ({ w: Number(s?.w) || 0, r: Number(s?.r) || 0 }))
-    .filter((s) => s.w > 0 && s.r > 0)
-    .slice(0, 8);
-
-  const isCompound = isCompoundLift(name);
-  const targetSetCount = isCompound ? 3 : 2;
+    .map((s) => ({ w: Number(s?.w) || readWeight(s) || 0, r: Number(s?.r) || readReps(s) || 0 }))
+    .filter((s) => s.w > 0 && s.r > 0);
 
   if (!cleaned.length) {
-    const reps = isCompound ? 6 : 12;
-    const sets = isCompound ? 3 : 2;
+    const compound = isCompoundLift(name);
+    const reps = compound ? 6 : 12;
+    const sets = clampInt(preferSetCount || (compound ? 3 : 2), 1, 8);
     return Array.from({ length: sets }).map(() => ({ w: 0, r: reps }));
   }
 
+  // Set count preference order:
+  // 1) preferSetCount (draft)
+  // 2) last workout set count
+  const targetSetCount = clampInt(preferSetCount || cleaned.length, 1, 10);
+
+  // If last time had fewer logged sets than target, repeat last known set pattern
+  const baseSets = [];
+  for (let i = 0; i < targetSetCount; i++) {
+    baseSets.push(cleaned[i] || cleaned[cleaned.length - 1] || cleaned[0]);
+  }
+
+  const isCompound = isCompoundLift(name);
+
   if (deload) {
     const dropPct = isCompound ? 0.10 : 0.08;
-    const take = Math.min(targetSetCount, cleaned.length);
-    return cleaned.slice(0, take).map((s) => ({
+    return baseSets.map((s) => ({
       w: roundToIncrement(s.w * (1 - dropPct), isCompound ? 5 : 2.5),
       r: clampInt(s.r, isCompound ? 5 : 8, isCompound ? 10 : 15),
     }));
   }
 
-  const ws = cleaned.map((s) => s.w);
-  const wMin = Math.min(...ws);
-  const wMax = Math.max(...ws);
-  const isRamp = wMax - wMin >= 5;
-
-  const take = Math.min(targetSetCount, cleaned.length);
-  const out = [];
-  for (let i = 0; i < take; i++) {
-    const base = cleaned[i] || cleaned[0];
-    const bump = i < 2 ? 1 : 0;
-    const newR = clampInt(base.r + bump, isCompound ? 4 : 8, isCompound ? 12 : 15);
-    out.push({ w: base.w, r: newR });
-  }
-
-  if (!isRamp) {
-    const repRangeTop = isCompound ? 10 : 15;
-    const avgR = Math.round(out.reduce((a, b) => a + b.r, 0) / Math.max(1, out.length));
-    if (avgR >= repRangeTop) {
-      const baseW = cleaned[0].w;
-      const inc = isCompound ? pickIncrement(baseW, 5, 10) : pickIncrement(baseW, 2.5, 5);
-      const newW = roundToIncrement(baseW + inc, isCompound ? 5 : 2.5);
-      const targetR = isCompound ? 6 : 10;
-      return Array.from({ length: take }).map(() => ({ w: newW, r: targetR }));
-    }
-  }
-
-  return out;
+  // Reps-first bumps:
+  // - Set 1: +1
+  // - Set 2: +1 (if exists)
+  // Others unchanged (keeps you consistent and avoids chaos)
+  return baseSets.map((s, idx) => {
+    const bump = idx <= 1 ? 1 : 0;
+    const newR = clampInt(s.r + bump, isCompound ? 4 : 8, isCompound ? 12 : 15);
+    return { w: s.w, r: newR };
+  });
 }
 
 function improveExerciseNote(note, name, deload, completionMode) {
@@ -985,7 +1048,7 @@ function baselineForNewExercise(name, sessionType, experience, { preferSetCount 
   const reps = compound ? 6 : 12;
   const defaultSets = compound ? 3 : 2;
 
-  const sets = clampInt(preferSetCount || defaultSets, 1, 6);
+  const sets = clampInt(preferSetCount || defaultSets, 1, 10);
   return {
     rest_seconds: rest,
     notes: "New/untracked movement: start conservative, keep form strict, and enter a weight you can complete cleanly for all sets.",
@@ -1020,10 +1083,4 @@ function roundToIncrement(w, inc) {
   const step = Number(inc) || 2.5;
   if (!Number.isFinite(x) || x <= 0) return 0;
   return Math.round(x / step) * step;
-}
-
-function pickIncrement(currentW, lo, hi) {
-  const w = Number(currentW) || 0;
-  if (w >= 225) return hi;
-  return lo;
 }
