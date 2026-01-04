@@ -2208,7 +2208,7 @@ try {
             customerGid,
             fallbackMeal,
             dateKey,
-            overrideMeal ? { replaceMealType: finalMealType } : {}
+            overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
           );
           debug.mealLogsSavedToDailyLogs = true;
         } catch (e) {
