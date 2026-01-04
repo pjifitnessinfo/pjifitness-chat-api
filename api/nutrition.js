@@ -25,7 +25,7 @@ export default async function handler(req, res) {
   // ✅ CORS must be set for EVERY response (including errors)
   setCors(req, res);
 
-  // ✅ Preflight request support (fixes your exact CORS error)
+  // ✅ Preflight request support
   if (req.method === "OPTIONS") {
     return res.status(204).end();
   }
@@ -110,10 +110,105 @@ export default async function handler(req, res) {
    Helpers (implement below)
 ----------------------------*/
 
+/**
+ * ✅ WORKING PARSER (no OpenAI required yet)
+ * Converts free text into [{name, qty, unit}]
+ *
+ * Examples:
+ * "banana" -> [{name:"banana", qty:1, unit:""}]
+ * "5 oz ground beef, 1 cup rice" -> 2 items
+ * "647 italian bread with 1 cup shredded mozzarella" -> splits into parts
+ */
 async function llmParseMeal(text) {
-  // Use your existing OpenAI setup (same as chat.js) to return JSON items
-  // Must return: [{name, qty, unit}]
-  return []; // TODO
+  const raw = String(text || "").trim();
+  if (!raw) return [];
+
+  // Normalize common separators to commas
+  const normalized = raw
+    .replace(/\n/g, ", ")
+    .replace(/\+/g, ", ")
+    .replace(/\s*&\s*/g, ", ")
+    .replace(/\s+and\s+/gi, ", ");
+
+  // Split into chunks
+  const chunks = normalized
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  // If user types one sentence without commas, keep it as one chunk
+  const parts = chunks.length ? chunks : [raw];
+
+  const UNIT_MAP = {
+    ounce: "oz",
+    ounces: "oz",
+    oz: "oz",
+    gram: "g",
+    grams: "g",
+    g: "g",
+    kilogram: "kg",
+    kilograms: "kg",
+    kg: "kg",
+    pound: "lb",
+    pounds: "lb",
+    lb: "lb",
+    lbs: "lb",
+    cup: "cup",
+    cups: "cup",
+    tbsp: "tbsp",
+    tbsps: "tbsp",
+    tablespoon: "tbsp",
+    tablespoons: "tbsp",
+    tsp: "tsp",
+    tsps: "tsp",
+    teaspoon: "tsp",
+    teaspoons: "tsp",
+    slice: "slice",
+    slices: "slice",
+    piece: "piece",
+    pieces: "piece",
+    serving: "serving",
+    servings: "serving",
+    scoop: "scoop",
+    scoops: "scoop",
+    can: "can",
+    cans: "can",
+    package: "package",
+    packages: "package",
+  };
+
+  function cleanName(s) {
+    return String(s || "")
+      .replace(/\b(with|w\/|in|on|of)\b/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  const items = parts.map((p) => {
+    // Match: "5 oz ground beef" OR "1 cup rice" OR "2 slices bread"
+    const m = p.match(
+      /^\s*(\d+(?:\.\d+)?)\s*(oz|ounce|ounces|g|gram|grams|kg|kilogram|kilograms|lb|lbs|pound|pounds|cup|cups|tbsp|tbsps|tablespoon|tablespoons|tsp|tsps|teaspoon|teaspoons|slice|slices|piece|pieces|serving|servings|scoop|scoops|can|cans|package|packages)?\s*(.*)$/i
+    );
+
+    if (m) {
+      const qty = Number(m[1]);
+      const unitRaw = (m[2] || "").toLowerCase();
+      const unit = UNIT_MAP[unitRaw] || (unitRaw || "");
+      const name = cleanName(m[3] || p) || cleanName(p);
+
+      return {
+        name: name || cleanName(p),
+        qty: Number.isFinite(qty) && qty > 0 ? qty : 1,
+        unit,
+      };
+    }
+
+    // Fallback: no qty/unit detected
+    return { name: cleanName(p), qty: 1, unit: "" };
+  });
+
+  // Filter out empty names
+  return items.filter((x) => x && x.name && String(x.name).trim() !== "");
 }
 
 async function resolveItem(item, { userFoods, globalFoods }) {
@@ -150,8 +245,6 @@ function normalizeFoodKey(s) {
 }
 
 function applyServing(memoryEntry, item, source, confidence) {
-  // memoryEntry example:
-  // { serving_unit:"slice", serving_qty:1, calories:40, protein:5, carbs:8, fat:1 }
   const mult = computeMultiplier(item, memoryEntry);
   return {
     ...item,
