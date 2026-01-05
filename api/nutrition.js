@@ -419,7 +419,49 @@ async function usdaLookup(item, debug = false) {
     }
 
     const foods = Array.isArray(sj?.foods) ? sj.foods : [];
-    const best = foods[0];
+if (!foods.length) return null;
+
+function scoreFood(f) {
+  const desc = String(f?.description || "").toLowerCase();
+  const brand = String(f?.brandName || "").toLowerCase();
+  const text = `${desc} ${brand}`;
+
+  let score = 0;
+
+  // Prefer generic / foundation-ish items
+  const dt = String(f?.dataType || "").toLowerCase();
+  if (dt.includes("foundation")) score += 50;
+  if (dt.includes("sr legacy")) score += 30;
+  if (dt.includes("survey")) score += 15;
+  if (dt.includes("branded")) score -= 10;
+
+  // Prefer plain/raw bananas
+  if (text.includes("raw")) score += 25;
+  if (text.includes("fresh")) score += 15;
+  if (text.includes("banana")) score += 10;
+
+  // Avoid common wrong matches
+  const bad = ["chips", "dried", "dehydrated", "powder", "flour", "puree", "babyfood", "frozen", "smoothie", "bread", "muffin"];
+  for (const w of bad) {
+    if (text.includes(w)) score -= 40;
+  }
+
+  // Slight preference for shorter descriptions (often more generic)
+  score -= Math.min(desc.length, 200) / 20;
+
+  return score;
+}
+
+let best = foods[0];
+let bestScore = scoreFood(best);
+
+for (const f of foods.slice(1, 10)) {
+  const sc = scoreFood(f);
+  if (sc > bestScore) {
+    best = f;
+    bestScore = sc;
+  }
+}
     if (!best?.fdcId) {
       if (debug) {
         return {
