@@ -24,7 +24,9 @@ function setCors(req, res) {
 
 async function shopifyGraphQL(query, variables) {
   if (!SHOPIFY_STORE_DOMAIN || !SHOPIFY_ADMIN_API_ACCESS_TOKEN) {
-    throw new Error("Missing Shopify env vars: SHOPIFY_STORE_DOMAIN / SHOPIFY_ADMIN_API_ACCESS_TOKEN");
+    throw new Error(
+      "Missing Shopify env vars: SHOPIFY_STORE_DOMAIN / SHOPIFY_ADMIN_API_ACCESS_TOKEN"
+    );
   }
 
   const r = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2024-10/graphql.json`, {
@@ -75,6 +77,9 @@ export default async function handler(req, res) {
     const { text, customerId } = req.body || {};
     if (!text) return res.status(400).json({ ok: false, error: "Missing text" });
 
+    // Debug flag (safe)
+    const debug = String(req.query?.debug || "") === "1";
+
     // 1) Load foods from DB (Shopify metafields)
     const userFoods = await loadUserCustomFoods(customerId); // customer metafield
     const globalFoods = await loadGlobalFoods(); // shop metafield
@@ -87,7 +92,7 @@ export default async function handler(req, res) {
     const needs_clarification = [];
 
     for (const item of items) {
-      const r = await resolveItem(item, { userFoods, globalFoods });
+      const r = await resolveItem(item, { userFoods, globalFoods, debug });
       resolved.push(r);
 
       if (r.confidence < 0.65) {
@@ -214,14 +219,14 @@ async function llmParseMeal(text) {
 /* ---------------------------
    Resolution
 ----------------------------*/
-async function resolveItem(item, { userFoods, globalFoods }) {
+async function resolveItem(item, { userFoods, globalFoods, debug }) {
   const key = normalizeFoodKey(item.name);
 
   if (userFoods && userFoods[key]) return applyServing(userFoods[key], item, "user", 0.95);
   if (globalFoods && globalFoods[key]) return applyServing(globalFoods[key], item, "global", 0.9);
 
-  // You said you have every food item, so USDA is optional:
-  const usda = await usdaLookup(item);
+  // USDA fallback (NOW IMPLEMENTED)
+  const usda = await usdaLookup(item, debug);
   if (usda) return usda;
 
   return {
@@ -274,9 +279,6 @@ function round(n) {
 
 /* ---------------------------
    Shopify-backed loaders
-   IMPORTANT: you must store JSON objects in these metafields:
-   - Shop metafield:   custom.global_foods
-   - Customer metafield: custom.user_foods
 ----------------------------*/
 async function loadGlobalFoods() {
   const q = `
@@ -329,10 +331,6 @@ async function loadUserCustomFoods(customerId) {
 }
 
 function normalizeFoodObjectKeys(obj) {
-  // Accept either:
-  // (A) already-keyed-by-normalized-name: { "banana": {...} }
-  // (B) array of foods: [{name:"banana", ...}]
-  // (C) object keyed by raw names: { "Banana (medium)": {...} }
   if (!obj) return {};
 
   if (Array.isArray(obj)) {
@@ -358,7 +356,206 @@ function normalizeFoodObjectKeys(obj) {
   return {};
 }
 
-// Optional: add later if you want fallback
-async function usdaLookup(item) {
-  return null;
+/* ---------------------------
+   USDA Lookup (REAL CALORIES)
+   Uses process.env.USDA_API_KEY
+----------------------------*/
+async function usdaLookup(item, debug = false) {
+  const apiKey = process.env.USDA_API_KEY;
+
+  // Safe debug: confirm key exists at runtime (never print key)
+  if (!apiKey) {
+    if (debug) {
+      return {
+        ...item,
+        source: "usda",
+        confidence: 0.0,
+        calories: null,
+        protein: null,
+        carbs: null,
+        fat: null,
+        question: null,
+        _debug: { hasUsdaKey: false, reason: "USDA_API_KEY missing at runtime" },
+      };
+    }
+    return null;
+  }
+
+  const name = String(item?.name || "").trim();
+  if (!name) return null;
+
+  try {
+    const searchUrl =
+      "https://api.nal.usda.gov/fdc/v1/foods/search?" +
+      new URLSearchParams({
+        api_key: apiKey,
+        query: name,
+        pageSize: "5",
+      }).toString();
+
+    const s = await fetch(searchUrl);
+    const searchStatus = s.status;
+    const sj = await s.json().catch(() => null);
+
+    if (!s.ok) {
+      if (debug) {
+        return {
+          ...item,
+          source: "usda",
+          confidence: 0.0,
+          calories: null,
+          protein: null,
+          carbs: null,
+          fat: null,
+          question: null,
+          _debug: {
+            hasUsdaKey: true,
+            searchStatus,
+            searchError: sj || "(no json)",
+          },
+        };
+      }
+      return null;
+    }
+
+    const foods = Array.isArray(sj?.foods) ? sj.foods : [];
+    const best = foods[0];
+    if (!best?.fdcId) {
+      if (debug) {
+        return {
+          ...item,
+          source: "usda",
+          confidence: 0.0,
+          calories: null,
+          protein: null,
+          carbs: null,
+          fat: null,
+          question: null,
+          _debug: { hasUsdaKey: true, searchStatus, reason: "No foods returned" },
+        };
+      }
+      return null;
+    }
+
+    const detailUrl =
+      `https://api.nal.usda.gov/fdc/v1/food/${best.fdcId}?` +
+      new URLSearchParams({ api_key: apiKey }).toString();
+
+    const d = await fetch(detailUrl);
+    const detailStatus = d.status;
+    const dj = await d.json().catch(() => null);
+
+    if (!d.ok) {
+      if (debug) {
+        return {
+          ...item,
+          source: "usda",
+          confidence: 0.0,
+          calories: null,
+          protein: null,
+          carbs: null,
+          fat: null,
+          question: null,
+          _debug: {
+            hasUsdaKey: true,
+            detailStatus,
+            detailError: dj || "(no json)",
+          },
+        };
+      }
+      return null;
+    }
+
+    const nutrients = Array.isArray(dj?.foodNutrients) ? dj.foodNutrients : [];
+
+    function getNutrientAmount(id) {
+      for (const n of nutrients) {
+        if (n?.nutrient?.id === id && n?.amount != null && isFinite(n.amount)) {
+          return Number(n.amount);
+        }
+      }
+      return null;
+    }
+
+    const kcalPer100g = getNutrientAmount(1008);
+    const proteinPer100g = getNutrientAmount(1003);
+    const carbsPer100g = getNutrientAmount(1005);
+    const fatPer100g = getNutrientAmount(1004);
+
+    if (kcalPer100g == null) {
+      if (debug) {
+        return {
+          ...item,
+          source: "usda",
+          confidence: 0.3,
+          calories: null,
+          protein: null,
+          carbs: null,
+          fat: null,
+          question: null,
+          _debug: {
+            hasUsdaKey: true,
+            reason: "No calorie nutrient (1008) found",
+            matched: dj?.description || best?.description,
+          },
+        };
+      }
+      return null;
+    }
+
+    // Scaling: if unit is weight-based, scale accurately, else treat qty as multiplier of 100g
+    const qty = Number(item?.qty || 1);
+    const unitKey = normalizeFoodKey(item?.unit || "");
+
+    function toGrams(q, unit) {
+      if (!isFinite(q) || q <= 0) return null;
+      if (unit === "g") return q;
+      if (unit === "kg") return q * 1000;
+      if (unit === "oz") return q * 28.349523125;
+      if (unit === "lb") return q * 453.59237;
+      return null;
+    }
+
+    const grams = toGrams(qty, unitKey);
+    const mult = grams != null ? grams / 100 : qty;
+
+    const out = {
+      ...item,
+      source: "usda",
+      confidence: grams != null ? 0.85 : 0.7,
+      calories: round((kcalPer100g || 0) * mult),
+      protein: round((proteinPer100g || 0) * mult),
+      carbs: round((carbsPer100g || 0) * mult),
+      fat: round((fatPer100g || 0) * mult),
+      matched_to: dj?.description || best?.description || item.name,
+      ...(debug ? { _debug: { hasUsdaKey: true, searchStatus, detailStatus } } : {}),
+    };
+
+    // If they used volume units, ask for grams/oz for accuracy
+    if (
+      grams == null &&
+      unitKey &&
+      (unitKey === "cup" || unitKey === "tbsp" || unitKey === "tsp" || unitKey === "slice")
+    ) {
+      out.confidence = 0.55;
+      out.question = `USDA nutrition is per 100g. For "${item.name}", can you give grams or ounces (ex: 200g, 5oz) so I can be accurate?`;
+    }
+
+    return out;
+  } catch (err) {
+    if (debug) {
+      return {
+        ...item,
+        source: "usda",
+        confidence: 0.0,
+        calories: null,
+        protein: null,
+        carbs: null,
+        fat: null,
+        question: null,
+        _debug: { hasUsdaKey: true, reason: "Exception", message: String(err?.message || err) },
+      };
+    }
+    return null;
+  }
 }
