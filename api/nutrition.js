@@ -390,7 +390,7 @@ async function usdaLookup(item, debug = false) {
       new URLSearchParams({
         api_key: apiKey,
         query: name,
-        pageSize: "5",
+        pageSize: "10",
       }).toString();
 
     const s = await fetch(searchUrl);
