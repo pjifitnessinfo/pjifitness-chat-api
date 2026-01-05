@@ -435,10 +435,20 @@ function scoreFood(f) {
   if (dt.includes("survey")) score += 15;
   if (dt.includes("branded")) score -= 10;
 
-  // Prefer plain/raw bananas
-  if (text.includes("raw")) score += 25;
-  if (text.includes("fresh")) score += 15;
-  if (text.includes("banana")) score += 10;
+  // Prefer plain/raw versions
+if (text.includes("raw")) score += 25;
+if (text.includes("fresh")) score += 15;
+
+// Prefer matches that contain the query words
+const qWords = String(item?.name || "")
+  .toLowerCase()
+  .split(/\s+/)
+  .filter(Boolean);
+
+for (const w of qWords) {
+  if (w.length >= 3 && text.includes(w)) score += 8;
+}
+
 
   // Avoid common wrong matches
   const bad = ["chips", "dried", "dehydrated", "powder", "flour", "puree", "babyfood", "frozen", "smoothie", "bread", "muffin"];
