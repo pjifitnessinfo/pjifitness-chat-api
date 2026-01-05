@@ -200,7 +200,7 @@ async function llmParseMeal(text) {
     if (m) {
       const qty = Number(m[1]);
       const unitRaw = (m[2] || "").toLowerCase();
-      const unit = UNIT_MAP[unitRaw] || (unitRaw || "");
+      const unit = UNIT_MAP[unitRaw] || unitRaw || "";
       const name = cleanName(m[3] || p) || cleanName(p);
 
       return {
@@ -225,7 +225,6 @@ async function resolveItem(item, { userFoods, globalFoods, debug }) {
   if (userFoods && userFoods[key]) return applyServing(userFoods[key], item, "user", 0.95);
   if (globalFoods && globalFoods[key]) return applyServing(globalFoods[key], item, "global", 0.9);
 
-  // USDA fallback (NOW IMPLEMENTED)
   const usda = await usdaLookup(item, debug);
   if (usda) return usda;
 
@@ -419,59 +418,77 @@ async function usdaLookup(item, debug = false) {
     }
 
     const foods = Array.isArray(sj?.foods) ? sj.foods : [];
-if (!foods.length) return null;
+    if (!foods.length) return null;
 
-function scoreFood(f) {
-  const desc = String(f?.description || "").toLowerCase();
-  const brand = String(f?.brandName || "").toLowerCase();
-  const text = `${desc} ${brand}`;
+    // Rank best match (avoid chips/dried/flour/etc.)
+    function scoreFood(f) {
+      const desc = String(f?.description || "").toLowerCase();
+      const brand = String(f?.brandName || "").toLowerCase();
+      const text = `${desc} ${brand}`.trim();
 
-  let score = 0;
+      let score = 0;
 
-  // Prefer generic / foundation-ish items
-  const dt = String(f?.dataType || "").toLowerCase();
-  if (dt.includes("foundation")) score += 50;
-  if (dt.includes("sr legacy")) score += 30;
-  if (dt.includes("survey")) score += 15;
-  if (dt.includes("branded")) score -= 10;
+      // Prefer generic / foundation-ish items
+      const dt = String(f?.dataType || "").toLowerCase();
+      if (dt.includes("foundation")) score += 50;
+      if (dt.includes("sr legacy")) score += 30;
+      if (dt.includes("survey")) score += 15;
+      if (dt.includes("branded")) score -= 10;
 
-  // Prefer plain/raw versions
-if (text.includes("raw")) score += 25;
-if (text.includes("fresh")) score += 15;
+      // Prefer plain/raw versions
+      if (text.includes("raw")) score += 25;
+      if (text.includes("fresh")) score += 15;
 
-// Prefer matches that contain the query words
-const qWords = String(item?.name || "")
-  .toLowerCase()
-  .split(/\s+/)
-  .filter(Boolean);
+      // Prefer matches containing the query words
+      const qWords = String(item?.name || "")
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(Boolean);
 
-for (const w of qWords) {
-  if (w.length >= 3 && text.includes(w)) score += 8;
-}
+      for (const w of qWords) {
+        if (w.length >= 3 && text.includes(w)) score += 8;
+      }
 
+      // Avoid common wrong matches
+      const bad = [
+        "chips",
+        "dried",
+        "dehydrated",
+        "powder",
+        "flour",
+        "puree",
+        "babyfood",
+        "frozen",
+        "smoothie",
+        "bread",
+        "muffin",
+        "cake",
+        "cookie",
+        "candy",
+        "shake",
+        "juice",
+      ];
+      for (const w of bad) {
+        if (text.includes(w)) score -= 40;
+      }
 
-  // Avoid common wrong matches
-  const bad = ["chips", "dried", "dehydrated", "powder", "flour", "puree", "babyfood", "frozen", "smoothie", "bread", "muffin"];
-  for (const w of bad) {
-    if (text.includes(w)) score -= 40;
-  }
+      // Slight preference for shorter descriptions (often more generic)
+      score -= Math.min(desc.length, 200) / 20;
 
-  // Slight preference for shorter descriptions (often more generic)
-  score -= Math.min(desc.length, 200) / 20;
+      return score;
+    }
 
-  return score;
-}
+    let best = foods[0];
+    let bestScore = scoreFood(best);
 
-let best = foods[0];
-let bestScore = scoreFood(best);
+    for (const f of foods.slice(1, 10)) {
+      const sc = scoreFood(f);
+      if (sc > bestScore) {
+        best = f;
+        bestScore = sc;
+      }
+    }
 
-for (const f of foods.slice(1, 10)) {
-  const sc = scoreFood(f);
-  if (sc > bestScore) {
-    best = f;
-    bestScore = sc;
-  }
-}
     if (!best?.fdcId) {
       if (debug) {
         return {
@@ -483,7 +500,7 @@ for (const f of foods.slice(1, 10)) {
           carbs: null,
           fat: null,
           question: null,
-          _debug: { hasUsdaKey: true, searchStatus, reason: "No foods returned" },
+          _debug: { hasUsdaKey: true, searchStatus, reason: "No fdcId on best match" },
         };
       }
       return null;
@@ -580,7 +597,7 @@ for (const f of foods.slice(1, 10)) {
       carbs: round((carbsPer100g || 0) * mult),
       fat: round((fatPer100g || 0) * mult),
       matched_to: dj?.description || best?.description || item.name,
-      ...(debug ? { _debug: { hasUsdaKey: true, searchStatus, detailStatus } } : {}),
+      ...(debug ? { _debug: { hasUsdaKey: true, searchStatus, detailStatus, bestScore } } : {}),
     };
 
     // If they used volume units, ask for grams/oz for accuracy
