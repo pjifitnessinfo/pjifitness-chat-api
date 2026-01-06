@@ -2457,7 +2457,7 @@ try {
           debug.mealLogsSavedToDailyLogs = false;
           debug.mealLogsSaveError = String(e?.message || e);
         }
-      } else if (detectSimpleMealFromUser(userMessage)) {
+      } else if (!debug.autoMealLog?.ok && detectSimpleMealFromUser(userMessage)) {
         debug.mealLogsFound = 1;
         debug.mealLogsFallbackUsed = true;
 
