@@ -2127,9 +2127,13 @@ export default async function handler(req, res) {
 // ===============================
 if (customerGid && userMessage && pjLooksLikeFoodText(userMessage)) {
   try {
-    const base =
-      (req.headers && req.headers.origin && String(req.headers.origin)) ||
-      "https://www.pjifitness.com";
+    const proto =
+  (req.headers["x-forwarded-proto"] && String(req.headers["x-forwarded-proto"]).split(",")[0]) ||
+  "https";
+
+const host = req.headers["x-forwarded-host"] || req.headers.host;
+const base = host ? `${proto}://${host}` : "https://www.pjifitness.com";
+
 
     const nutRes = await fetch(`${base}/api/nutrition`, {
       method: "POST",
