@@ -736,6 +736,87 @@ async function parseBody(req) {
     }
   });
 }
+// ===============================
+// ONBOARDING OVERLAY HELPERS
+// ===============================
+function extractTagBlock(str, tagName) {
+  if (!str || typeof str !== "string") return null;
+  const re = new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, "i");
+  const m = str.match(re);
+  return m ? m[1].trim() : null;
+}
+
+function clamp(n, lo, hi) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return lo;
+  return Math.max(lo, Math.min(hi, x));
+}
+
+function computePlanFromOverlayOnboarding(ob, dateKey) {
+  const n = (v) => {
+    const x = Number(v);
+    return Number.isFinite(x) ? x : null;
+  };
+
+  const name = String(ob?.name || "").trim();
+  const sex = String(ob?.gender || ob?.sex || "male").toLowerCase() === "female" ? "female" : "male";
+
+  const startW = n(ob?.start_weight) ?? n(ob?.current_weight) ?? n(ob?.weight) ?? null;
+  const goalW  = n(ob?.goal_weight) ?? n(ob?.goal) ?? null;
+
+  const activity = String(ob?.activity || "moderate").toLowerCase();
+  const pace = String(ob?.pace || "moderate").toLowerCase();
+
+  const bw = startW ?? 180;
+
+  // Maintenance multipliers per your prompt rules
+  const mult =
+    activity === "low" ? 11.5 :
+    activity === "high" ? 13.5 :
+    12.5; // moderate
+
+  const maintenance = Math.round(bw * mult);
+
+  // Pace -> deficit (simple + stable)
+  const weeklyLoss =
+    pace === "conservative" ? 0.75 :
+    pace === "aggressive" ? 1.5 :
+    1.0;
+
+  const deficit =
+    weeklyLoss <= 0.8 ? 300 :
+    weeklyLoss >= 1.4 ? 500 :
+    400;
+
+  let calories = Math.round((maintenance - deficit) / 50) * 50;
+  calories = clamp(calories, 1400, 2600);
+
+  // Protein 0.8–1.0 g/lb (use 0.9)
+  let protein = Math.round(clamp(bw * 0.9, 120, 220));
+
+  // Fats 0.3–0.4 g/lb (use 0.35)
+  let fat = Math.round(clamp(bw * 0.35, 45, 90));
+
+  // Carbs fill remainder
+  let carbs = Math.round((calories - (protein * 4) - (fat * 9)) / 4);
+  if (!Number.isFinite(carbs) || carbs < 50) carbs = 50;
+
+  return {
+    user_name: name || null,
+    sex,
+    current_weight_lbs: startW || null,
+    goal_weight_lbs: goalW || null,
+    age: n(ob?.age) || null,
+    activity_level: (activity === "low" || activity === "high") ? activity : "moderate",
+    weekly_loss_target_lbs: weeklyLoss,
+    calories_target: calories,
+    protein_target: protein,
+    fat_target: fat,
+    carbs,
+    plan_start_date: dateKey,
+    notes: String(ob?.notes || "").trim() || ""
+  };
+}
 
 /* ===============================
    HELPERS FOR PLAN SAVING & ID
