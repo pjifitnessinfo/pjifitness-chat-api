@@ -2105,6 +2105,7 @@ export default async function handler(req, res) {
     remainingAfter = null;
   }
 
+   let overrideMeal = detectMealOverride(userMessage);
   // DAILY TOTAL CALORIES FROM USER MESSAGE
   if (customerGid && userMessage) {
     const parsedDailyCals = parseDailyCaloriesFromMessage(userMessage);
@@ -2185,7 +2186,6 @@ if (customerGid && userMessage && pjLooksLikeFoodText(userMessage)) {
   }
 }
 
-  let overrideMeal = detectMealOverride(userMessage);
 if (overrideMeal) {
   debug.mealOverrideDetected = overrideMeal;
 } else if (customerGid && detectMealCorrection(userMessage)) {
