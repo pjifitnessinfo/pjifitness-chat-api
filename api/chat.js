@@ -1134,6 +1134,23 @@ function parseDailyCaloriesFromMessage(msg) {
   }
   return null;
 }
+function pjGuessMealTypeFromUserText(text){
+  const t = (text || "").toLowerCase();
+  if (/\bbreakfast\b|\bbfast\b/.test(t)) return "breakfast";
+  if (/\blunch\b/.test(t)) return "lunch";
+  if (/\bdinner\b|\bsupper\b/.test(t)) return "dinner";
+  if (/\bsnack\b|\bsnacks\b|\bdessert\b/.test(t)) return "snacks";
+  return "snacks"; // default if unknown
+}
+
+function pjLooksLikeFoodText(text){
+  const t = (text || "").toLowerCase();
+  return (
+    /\b(i\s*(ate|had)|ate|had|for\s+(breakfast|bfast|lunch|dinner|snack)|log (this|my) (meal|food))\b/.test(t) ||
+    /\b(oz|ounce|ounces|tbsp|tsp|cup|cups|g|gram|grams|slice|slices|wrap|bar|shake)\b/.test(t) ||
+    /\b(cal(orie|ories)|cals|protein|carb|carbs|fat|macros)\b/.test(t)
+  );
+}
 
 async function getDailyLogsMetafield(customerGid) {
   if (!customerGid) return { logs: [], metafieldId: null };
