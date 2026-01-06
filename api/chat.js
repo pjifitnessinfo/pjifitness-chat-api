@@ -1946,6 +1946,112 @@ export default async function handler(req, res) {
     messagesCount: null,
     model: "gpt-4.1-mini",
   };
+  // ============================================================
+  // ✅ OVERLAY ONBOARDING SHORT-CIRCUIT
+  // If <ONBOARDING_JSON> is present, generate + SAVE plan now.
+  // This bypasses OpenAI onboarding "ask name" behavior.
+  // ============================================================
+  const onboardingJsonText = extractTagBlock(userMessage, "ONBOARDING_JSON");
+  const hasOnboardingJson = !!onboardingJsonText;
+
+  if (hasOnboardingJson) {
+    if (!customerGid) {
+      return res.status(200).json({
+        reply: "Please sign in so I can save your plan to your account.",
+        debug: { ...debug, onboardingOverlay: true, error: "no_customerGid" },
+        free_chat_remaining: null
+      });
+    }
+
+    let ob;
+    try {
+      ob = JSON.parse(onboardingJsonText);
+    } catch (e) {
+      return res.status(200).json({
+        reply: "I couldn’t read those answers. Please click Generate Plan again.",
+        debug: { ...debug, onboardingOverlay: true, onboarding_parse_failed: true },
+        free_chat_remaining: null
+      });
+    }
+
+    const plan = computePlanFromOverlayOnboarding(ob, dateKey);
+
+    try {
+      // Save plan (uses your existing saver)
+      await saveCoachPlanForCustomer(customerGid, plan);
+
+      // Mark post-plan stage (your existing flow)
+      try {
+        await setPostPlanStage(customerGid, "plan_questions");
+        postPlanStage = "plan_questions";
+      } catch (e) {
+        console.warn("Failed to set post_plan_stage:", e?.message || e);
+      }
+
+      // Write initial weight as today's weight log (your existing rule)
+      if (plan.current_weight_lbs != null) {
+        const w = Number(plan.current_weight_lbs);
+        if (Number.isFinite(w) && w > 0) {
+          try {
+            await upsertDailyLog(
+              customerGid,
+              {
+                date: dateKey,
+                weight: w,
+                calories: null,
+                protein_g: null,
+                carbs_g: null,
+                fat_g: null,
+                steps: null,
+                notes: "Initial weight from onboarding."
+              },
+              dateKey
+            );
+          } catch (e) {
+            console.warn("Failed to write initial daily weight:", e?.message || e);
+          }
+        }
+      }
+
+    } catch (e) {
+      console.error("Overlay onboarding save failed:", e);
+      return res.status(200).json({
+        reply: "I had trouble saving your plan. Please try again.",
+        debug: { ...debug, onboardingOverlay: true, save_failed: true, save_error: String(e?.message || e) },
+        free_chat_remaining: null
+      });
+    }
+
+    const firstName = (String(plan.user_name || "").trim().split(" ")[0]) || "there";
+
+    const reply =
+      `Hey ${firstName} — I’m your PJiFitness coach 👋\n\n` +
+      `✅ Your plan is saved.\n\n` +
+      `Daily targets:\n` +
+      `• ${plan.calories_target} calories/day\n` +
+      `• ${plan.protein_target}g protein • ${plan.carbs}g carbs • ${plan.fat_target}g fat\n\n` +
+      `One next action: log today’s weight + one meal so we start your streak.\n\n` +
+      `Any questions about your plan?`;
+
+    // (Optional) return remaining without decrement so plan creation never gets blocked
+    let remainingNow = null;
+    try {
+      let r = await getFreeChatRemaining(customerGid);
+      if (r === null) {
+        r = 30;
+        await setFreeChatRemaining(customerGid, r);
+      }
+      remainingNow = r; // don't decrement for plan generation
+    } catch(e) {}
+
+    return res.status(200).json({
+      reply,
+      plan_json: plan,          // ✅ overlay reads this
+      coach_plan: plan,         // ✅ backup
+      free_chat_remaining: remainingNow,
+      debug: { ...debug, onboardingOverlay: true, planSavedToShopify: true, plan_json: plan }
+    });
+  }
 
   // FREE PREVIEW MESSAGE GATE
   let remainingAfter = null;
