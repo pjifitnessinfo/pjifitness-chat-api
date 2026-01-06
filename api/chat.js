@@ -2120,6 +2120,70 @@ export default async function handler(req, res) {
       }
     }
   }
+// ===============================
+// AUTO MEAL LOG FROM NATURAL CHAT
+// (so meals log even without MEAL_LOG_JSON)
+// ===============================
+if (customerGid && userMessage && pjLooksLikeFoodText(userMessage)) {
+  try {
+    const base =
+      (req.headers && req.headers.origin && String(req.headers.origin)) ||
+      "https://www.pjifitness.com";
+
+    const nutRes = await fetch(`${base}/api/nutrition`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: userMessage })
+    });
+
+    if (nutRes.ok) {
+      const nut = await nutRes.json().catch(() => null);
+
+      const items = Array.isArray(nut?.items) ? nut.items : [];
+      const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
+
+      // Only log if nutrition actually found foods
+      if (items.length && totals) {
+        const mealType = pjGuessMealTypeFromUserText(userMessage);
+
+        const meal = {
+          date: dateKey,
+          meal_type: mealType,
+          items: items.map(it => {
+            const name = it?.name || it?.matched_to || "Food";
+            const qty = it?.qty ? String(it.qty) : "";
+            const unit = it?.unit ? String(it.unit) : "";
+            return (qty || unit) ? `${qty} ${unit} ${name}`.trim() : String(name);
+          }),
+          calories: Number(totals.calories) || 0,
+          protein: Number(totals.protein) || 0,
+          carbs: Number(totals.carbs) || 0,
+          fat: Number(totals.fat) || 0
+        };
+
+        await upsertMealLog(
+          customerGid,
+          meal,
+          dateKey,
+          overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
+        );
+
+        debug.autoMealLog = {
+          ok: true,
+          meal_type: mealType,
+          calories: meal.calories,
+          itemsCount: meal.items.length
+        };
+      } else {
+        debug.autoMealLog = { ok: false, reason: "nutrition_no_items" };
+      }
+    } else {
+      debug.autoMealLog = { ok: false, reason: "nutrition_http_not_ok" };
+    }
+  } catch (e) {
+    debug.autoMealLog = { ok: false, error: String(e?.message || e) };
+  }
+}
 
   let overrideMeal = detectMealOverride(userMessage);
 if (overrideMeal) {
