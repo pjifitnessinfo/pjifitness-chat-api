@@ -2166,73 +2166,99 @@ export default async function handler(req, res) {
     }
   }
 // ===============================
-// AUTO MEAL LOG FROM NATURAL CHAT
-// (so meals log even without MEAL_LOG_JSON)
+// AUTO MEAL LOG FROM NATURAL CHAT (MULTI-MEAL SAFE)
+// Logs even without MEAL_LOG_JSON
 // ===============================
 if (customerGid && userMessage && pjLooksLikeFoodText(userMessage)) {
   try {
     const proto =
-  (req.headers["x-forwarded-proto"] && String(req.headers["x-forwarded-proto"]).split(",")[0]) ||
-  "https";
+      (req.headers["x-forwarded-proto"] && String(req.headers["x-forwarded-proto"]).split(",")[0]) ||
+      "https";
 
-const host = req.headers["x-forwarded-host"] || req.headers.host;
-const base = host ? `${proto}://${host}` : "https://www.pjifitness.com";
+    const host = req.headers["x-forwarded-host"] || req.headers.host;
+    const base = host ? `${proto}://${host}` : "https://www.pjifitness.com";
 
+    // ✅ Split message into multiple meal chunks when user types "breakfast ... lunch ... dinner ..."
+    const chunks = pjSplitMealsFromUserMessage(userMessage);
+    const partsToLog = (chunks && chunks.length) ? chunks : [{ text: userMessage, meal_type: pjGuessMealTypeFromUserText(userMessage) }];
 
-    const nutRes = await fetch(`${base}/api/nutrition`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: userMessage })
-    });
+    debug.autoMealLog = { ok: false, reason: "not_run" };
 
-    if (nutRes.ok) {
+    // If they are overriding a meal type, we should only log ONE chunk (the full message) and replace that meal type
+    if (overrideMeal && overrideMeal.meal_type) {
+      partsToLog.length = 0;
+      partsToLog.push({ text: userMessage, meal_type: overrideMeal.meal_type });
+    }
+
+    const results = [];
+
+    for (const part of partsToLog) {
+      const partText = (part?.text || "").trim();
+      if (!partText) continue;
+
+      const nutRes = await fetch(`${base}/api/nutrition`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: partText })
+      });
+
+      if (!nutRes.ok) {
+        results.push({ ok: false, reason: "nutrition_http_not_ok" });
+        continue;
+      }
+
       const nut = await nutRes.json().catch(() => null);
-
       const items = Array.isArray(nut?.items) ? nut.items : [];
       const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
 
       // Only log if nutrition actually found foods
-      if (items.length && totals) {
-        const mealType = pjGuessMealTypeFromUserText(userMessage);
-
-        const meal = {
-          date: dateKey,
-          meal_type: mealType,
-          items: items.map(it => {
-            const name = it?.name || it?.matched_to || "Food";
-            const qty = it?.qty ? String(it.qty) : "";
-            const unit = it?.unit ? String(it.unit) : "";
-            return (qty || unit) ? `${qty} ${unit} ${name}`.trim() : String(name);
-          }),
-          calories: Number(totals.calories) || 0,
-          protein: Number(totals.protein) || 0,
-          carbs: Number(totals.carbs) || 0,
-          fat: Number(totals.fat) || 0
-        };
-
-        await upsertMealLog(
-          customerGid,
-          meal,
-          dateKey,
-          overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
-        );
-
-        debug.autoMealLog = {
-          ok: true,
-          meal_type: mealType,
-          calories: meal.calories,
-          itemsCount: meal.items.length
-        };
-      } else {
-        debug.autoMealLog = { ok: false, reason: "nutrition_no_items" };
+      if (!items.length || !totals) {
+        results.push({ ok: false, reason: "nutrition_no_items" });
+        continue;
       }
-    } else {
-      debug.autoMealLog = { ok: false, reason: "nutrition_http_not_ok" };
+
+      const mealType = normalizeMealType(part?.meal_type || pjGuessMealTypeFromUserText(partText));
+
+      const meal = {
+        date: dateKey,
+        meal_type: mealType,
+        items: items.map(it => {
+          const name = it?.name || it?.matched_to || "Food";
+          const qty = it?.qty ? String(it.qty) : "";
+          const unit = it?.unit ? String(it.unit) : "";
+          return (qty || unit) ? `${qty} ${unit} ${name}`.trim() : String(name);
+        }),
+        calories: Number(totals.calories) || 0,
+        protein: Number(totals.protein) || 0,
+        carbs: Number(totals.carbs) || 0,
+        fat: Number(totals.fat) || 0
+      };
+
+      await upsertMealLog(
+        customerGid,
+        meal,
+        dateKey,
+        overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
+      );
+
+      results.push({
+        ok: true,
+        meal_type: mealType,
+        calories: meal.calories,
+        itemsCount: meal.items.length
+      });
     }
+
+    debug.autoMealLog = {
+      ok: results.some(r => r.ok),
+      results
+    };
+
   } catch (e) {
     debug.autoMealLog = { ok: false, error: String(e?.message || e) };
   }
 }
+
 
 if (overrideMeal) {
   debug.mealOverrideDetected = overrideMeal;
