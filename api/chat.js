@@ -1151,6 +1151,50 @@ function pjLooksLikeFoodText(text){
     /\b(cal(orie|ories)|cals|protein|carb|carbs|fat|macros)\b/.test(t)
   );
 }
+function pjSplitMealsFromUserMessage(text) {
+  const raw = String(text || "");
+  const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return [];
+
+  const sections = [];
+  let current = { label: null, text: "" };
+
+  const headingRe = /^(breakfast|bfast|lunch|dinner|supper|snack|snacks|dessert)\b\s*[:\-–]?\s*(.*)$/i;
+
+  function pushCurrent() {
+    if (current && current.text && current.text.trim()) {
+      sections.push({
+        meal_type: normalizeMealType(current.label || "snacks"),
+        text: current.text.trim()
+      });
+    }
+  }
+
+  for (const line of lines) {
+    const m = line.match(headingRe);
+    if (m) {
+      // new section
+      pushCurrent();
+      current = { label: m[1], text: (m[2] || "").trim() };
+    } else {
+      // continue current section, or if none started yet, treat as one block
+      if (!current.label && !current.text) {
+        current.text = line;
+      } else {
+        current.text += (current.text ? " " : "") + line;
+      }
+    }
+  }
+
+  pushCurrent();
+
+  // If they didn't use headings, just return whole message as one "snacks" block
+  if (!sections.length && raw.trim()) {
+    return [{ meal_type: "snacks", text: raw.trim() }];
+  }
+
+  return sections;
+}
 
 async function getDailyLogsMetafield(customerGid) {
   if (!customerGid) return { logs: [], metafieldId: null };
