@@ -1156,47 +1156,48 @@ function pjLooksLikeFoodText(text){
   );
 }
 function pjSplitMealsFromUserMessage(text) {
-  const raw = String(text || "");
+  const raw = String(text || "").trim();
+  if (!raw) return [];
+
+  // Split by newlines OR common separators like "Lunch:" inline, etc.
   const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  if (!lines.length) return [];
 
   const sections = [];
   let current = { label: null, text: "" };
 
-  const headingRe = /^(breakfast|bfast|lunch|dinner|supper|snack|snacks|dessert)\b\s*[:\-–]?\s*(.*)$/i;
+  // Detect headings like:
+  // "Breakfast: ...", "Lunch - ...", "Dinner ...", "Snack: ..."
+  const headingRe = /^(breakfast|bfast|lunch|dinner|supper|snack|snacks|snaks|dessert)\b\s*[:\-–]?\s*(.*)$/i;
 
   function pushCurrent() {
-    if (current && current.text && current.text.trim()) {
-      sections.push({
-        meal_type: normalizeMealType(current.label || "snacks"),
-        text: current.text.trim()
-      });
-    }
+    const txt = (current.text || "").trim();
+    if (!txt) return;
+
+    // ✅ If no explicit heading, leave meal_type null so caller can decide (or keep as one block)
+    sections.push({
+      meal_type: current.label ? normalizeMealType(current.label) : null,
+      text: txt
+    });
   }
 
   for (const line of lines) {
     const m = line.match(headingRe);
     if (m) {
-      // new section
       pushCurrent();
       current = { label: m[1], text: (m[2] || "").trim() };
     } else {
-      // continue current section, or if none started yet, treat as one block
-      if (!current.label && !current.text) {
-        current.text = line;
-      } else {
-        current.text += (current.text ? " " : "") + line;
-      }
+      current.text += (current.text ? " " : "") + line;
     }
   }
 
   pushCurrent();
 
-  // If they didn't use headings, just return whole message as one "snacks" block
-  if (!sections.length && raw.trim()) {
-    return [{ meal_type: "snacks", text: raw.trim() }];
+  // ✅ If they never used headings, return ONE chunk only (no forced snack)
+  if (sections.length === 1 && sections[0].meal_type === null) {
+    return [{ meal_type: null, text: raw }];
   }
 
+  // ✅ If multiple chunks exist, keep them (meal_type might still be null for some)
   return sections;
 }
 
