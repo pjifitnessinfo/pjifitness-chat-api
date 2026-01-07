@@ -2237,7 +2237,12 @@ if (customerGid && userMessage && pjLooksLikeFoodText(userMessage)) {
         if (!partText) continue;
 
         // ✅ Enforce: must have a meal type unless we're overriding
-        let mt = part?.meal_type || pjGuessMealTypeFromUserText(partText);
+        // Force meal type from the full user message first
+let mt =
+  part?.meal_type ||
+  pjGuessMealTypeFromUserText(partText) ||
+  pjGuessMealTypeFromUserText(userMessage);
+
         if (!mt && !(overrideMeal && overrideMeal.meal_type)) {
           results.push({ ok: false, reason: "unknown_meal_type_part_skipped" });
           continue;
