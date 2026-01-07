@@ -1135,13 +1135,17 @@ function parseDailyCaloriesFromMessage(msg) {
   return null;
 }
 function pjGuessMealTypeFromUserText(text){
-  const t = (text || "").toLowerCase();
-  if (/\bbreakfast\b|\bbfast\b/.test(t)) return "breakfast";
+  const t = String(text || "").toLowerCase();
+
+  if (/\b(breakfast|bfast)\b/.test(t)) return "breakfast";
   if (/\blunch\b/.test(t)) return "lunch";
-  if (/\bdinner\b|\bsupper\b/.test(t)) return "dinner";
-  if (/\bsnack\b|\bsnacks\b|\bdessert\b/.test(t)) return "snacks";
-  return "snacks"; // default if unknown
+  if (/\b(dinner|supper)\b/.test(t)) return "dinner";
+  if (/\b(snack|snacks|dessert)\b/.test(t)) return "snack";
+
+  // ✅ CRITICAL: do NOT default to snack here
+  return null;
 }
+
 
 function pjLooksLikeFoodText(text){
   const t = (text || "").toLowerCase();
