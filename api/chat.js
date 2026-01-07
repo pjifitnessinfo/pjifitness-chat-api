@@ -2193,7 +2193,9 @@ if (customerGid && userMessage && pjLooksLikeFoodText(userMessage)) {
 
     // ✅ Split message into multiple meal chunks when user types "breakfast ... lunch ... dinner ..."
     const chunks = pjSplitMealsFromUserMessage(userMessage);
-    const partsToLog = (chunks && chunks.length) ? chunks : [{ text: userMessage, meal_type: pjGuessMealTypeFromUserText(userMessage) }];
+    const partsToLog = (chunks && chunks.length)
+      ? chunks
+      : [{ text: userMessage, meal_type: pjGuessMealTypeFromUserText(userMessage) }];
 
     debug.autoMealLog = { ok: false, reason: "not_run" };
 
@@ -2201,77 +2203,96 @@ if (customerGid && userMessage && pjLooksLikeFoodText(userMessage)) {
     if (overrideMeal && overrideMeal.meal_type) {
       partsToLog.length = 0;
       partsToLog.push({ text: userMessage, meal_type: overrideMeal.meal_type });
+    } else {
+      // ✅ IMPORTANT: If the user didn't specify a meal type anywhere, skip auto-log
+      // so we don't default everything to "snack".
+      const anyKnownMealType = partsToLog.some(p => !!p?.meal_type);
+      if (!anyKnownMealType) {
+        debug.autoMealLog = { ok: false, reason: "unknown_meal_type_skip_auto_log" };
+        // Do not return; we just skip auto meal logging and let OpenAI handle the message.
+      }
     }
 
-    const results = [];
+    // If we decided to skip, bail out of this block cleanly
+    if (debug.autoMealLog?.reason === "unknown_meal_type_skip_auto_log") {
+      // nothing
+    } else {
+      const results = [];
 
-    for (const part of partsToLog) {
-      const partText = (part?.text || "").trim();
-      if (!partText) continue;
+      for (const part of partsToLog) {
+        const partText = (part?.text || "").trim();
+        if (!partText) continue;
 
-      const nutRes = await fetch(`${base}/api/nutrition`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: partText })
-      });
+        // ✅ Enforce: must have a meal type unless we're overriding
+        let mt = part?.meal_type || pjGuessMealTypeFromUserText(partText);
+        if (!mt && !(overrideMeal && overrideMeal.meal_type)) {
+          results.push({ ok: false, reason: "unknown_meal_type_part_skipped" });
+          continue;
+        }
 
-      if (!nutRes.ok) {
-        results.push({ ok: false, reason: "nutrition_http_not_ok" });
-        continue;
+        const nutRes = await fetch(`${base}/api/nutrition`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: partText })
+        });
+
+        if (!nutRes.ok) {
+          results.push({ ok: false, reason: "nutrition_http_not_ok" });
+          continue;
+        }
+
+        const nut = await nutRes.json().catch(() => null);
+        const items = Array.isArray(nut?.items) ? nut.items : [];
+        const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
+
+        // Only log if nutrition actually found foods
+        if (!items.length || !totals) {
+          results.push({ ok: false, reason: "nutrition_no_items" });
+          continue;
+        }
+
+        const mealType = normalizeMealType(mt);
+
+        const meal = {
+          date: dateKey,
+          meal_type: mealType,
+          items: items.map(it => {
+            const name = it?.name || it?.matched_to || "Food";
+            const qty = it?.qty ? String(it.qty) : "";
+            const unit = it?.unit ? String(it.unit) : "";
+            return (qty || unit) ? `${qty} ${unit} ${name}`.trim() : String(name);
+          }),
+          calories: Number(totals.calories) || 0,
+          protein: Number(totals.protein) || 0,
+          carbs: Number(totals.carbs) || 0,
+          fat: Number(totals.fat) || 0
+        };
+
+        await upsertMealLog(
+          customerGid,
+          meal,
+          dateKey,
+          overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
+        );
+
+        results.push({
+          ok: true,
+          meal_type: mealType,
+          calories: meal.calories,
+          itemsCount: meal.items.length
+        });
       }
 
-      const nut = await nutRes.json().catch(() => null);
-      const items = Array.isArray(nut?.items) ? nut.items : [];
-      const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
-
-      // Only log if nutrition actually found foods
-      if (!items.length || !totals) {
-        results.push({ ok: false, reason: "nutrition_no_items" });
-        continue;
-      }
-
-      const mealType = normalizeMealType(part?.meal_type || pjGuessMealTypeFromUserText(partText));
-
-      const meal = {
-        date: dateKey,
-        meal_type: mealType,
-        items: items.map(it => {
-          const name = it?.name || it?.matched_to || "Food";
-          const qty = it?.qty ? String(it.qty) : "";
-          const unit = it?.unit ? String(it.unit) : "";
-          return (qty || unit) ? `${qty} ${unit} ${name}`.trim() : String(name);
-        }),
-        calories: Number(totals.calories) || 0,
-        protein: Number(totals.protein) || 0,
-        carbs: Number(totals.carbs) || 0,
-        fat: Number(totals.fat) || 0
+      debug.autoMealLog = {
+        ok: results.some(r => r.ok),
+        results
       };
-
-      await upsertMealLog(
-        customerGid,
-        meal,
-        dateKey,
-        overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
-      );
-
-      results.push({
-        ok: true,
-        meal_type: mealType,
-        calories: meal.calories,
-        itemsCount: meal.items.length
-      });
     }
-
-    debug.autoMealLog = {
-      ok: results.some(r => r.ok),
-      results
-    };
 
   } catch (e) {
     debug.autoMealLog = { ok: false, error: String(e?.message || e) };
   }
 }
-
 
 if (overrideMeal) {
   debug.mealOverrideDetected = overrideMeal;
