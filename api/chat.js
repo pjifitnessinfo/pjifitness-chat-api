@@ -2551,13 +2551,19 @@ try {
         debug.mealLogsSample = mealLogs.slice(0, 2);
         try {
           for (const meal of mealLogs) {
-            await upsertMealLog(
-              customerGid,
-              meal,
-              dateKey,
-              overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
-            );
-          }
+  // ✅ FIRST FIX: if we're replacing a meal, force the meal_type to match
+  if (overrideMeal && overrideMeal.meal_type) {
+    meal.meal_type = overrideMeal.meal_type;
+  }
+
+  await upsertMealLog(
+    customerGid,
+    meal,
+    dateKey,
+    overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
+  );
+}
+
           debug.mealLogsSavedToDailyLogs = true;
         } catch (e) {
           console.error("Error saving meal logs from chat", e);
