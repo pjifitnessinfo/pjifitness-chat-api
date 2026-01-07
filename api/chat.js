@@ -1778,12 +1778,20 @@ async function upsertCoachReview(customerGid, coachReview, dateKey) {
    ========================================== */
 
 function normalizeMealType(raw) {
-  const t = (raw || "").toLowerCase().trim();
+  const t = String(raw || "").toLowerCase().trim();
+
   if (t === "bfast" || t === "breakfast") return "breakfast";
   if (t === "lunch") return "lunch";
   if (t === "dinner" || t === "supper") return "dinner";
-  if (t === "snack" || t === "snacks" || t === "snaks" || t === "dessert") return "snacks";
-  return raw || "other";
+
+  // ✅ IMPORTANT: always store snack as singular "snack"
+  if (t === "snack" || t === "snacks" || t === "snaks" || t === "dessert") return "snack";
+
+  // Handle capitalized values coming from AI like "Breakfast", "Snacks"
+  if (t === "breakfast") return "breakfast";
+  if (t === "snack") return "snack";
+
+  return "snack"; // safe fallback for food logging (NOT "other")
 }
 
 function detectMealOverride(userMsg) {
