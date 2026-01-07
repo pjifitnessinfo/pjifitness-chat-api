@@ -2178,6 +2178,23 @@ export default async function handler(req, res) {
       }
     }
   }
+   if (overrideMeal) {
+  debug.mealOverrideDetected = overrideMeal;
+} else if (customerGid && detectMealCorrection(userMessage)) {
+  // ✅ Auto-replace last logged meal for today when user is correcting
+  try {
+    const { logs } = await getDailyLogsMetafield(customerGid);
+    const lastType = getLastMealTypeFromLogs(logs, dateKey);
+    if (lastType) {
+      overrideMeal = { meal_type: lastType };
+      debug.mealAutoCorrectionDetected = true;
+      debug.mealAutoReplaceMealType = lastType;
+    }
+  } catch (e) {
+    debug.mealAutoCorrectionError = String(e?.message || e);
+  }
+}
+
 // ===============================
 // AUTO MEAL LOG FROM NATURAL CHAT (MULTI-MEAL SAFE)
 // Logs even without MEAL_LOG_JSON
@@ -2293,24 +2310,6 @@ if (customerGid && userMessage && pjLooksLikeFoodText(userMessage)) {
     debug.autoMealLog = { ok: false, error: String(e?.message || e) };
   }
 }
-
-if (overrideMeal) {
-  debug.mealOverrideDetected = overrideMeal;
-} else if (customerGid && detectMealCorrection(userMessage)) {
-  // ✅ Auto-replace last logged meal for today when user is correcting
-  try {
-    const { logs } = await getDailyLogsMetafield(customerGid);
-    const lastType = getLastMealTypeFromLogs(logs, dateKey);
-    if (lastType) {
-      overrideMeal = { meal_type: lastType };
-      debug.mealAutoCorrectionDetected = true;
-      debug.mealAutoReplaceMealType = lastType;
-    }
-  } catch (e) {
-    debug.mealAutoCorrectionError = String(e?.message || e);
-  }
-}
-
 
   let introAlreadySent = false;
   if (history.length) {
