@@ -1609,7 +1609,9 @@ async function upsertMealLog(customerGid, meal, dateKey, options = {}) {
   const carbs = Number(meal.carbs) || 0;
   const fat = Number(meal.fat) || 0;
 
-  const mealType = normalizeMealType(meal.meal_type || "other");
+  const mealType = normalizeMealType(meal.meal_type);
+if (!mealType) return; // ✅ if no known type, don't save it into the wrong bucket
+
 
   let items = meal.items;
   if (!Array.isArray(items)) {
