@@ -1628,9 +1628,16 @@ const replaceLast = options.replaceLast === true;
     const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
 
     let baseMeals = existingMeals;
-    if (replaceMealType && mealType === replaceMealType) {
-      baseMeals = existingMeals.filter(m => !m || normalizeMealType(m.meal_type) !== replaceMealType);
-    }
+
+if (replaceLast && existingMeals.length) {
+  // ✅ correction mode: replace the LAST logged meal (no duplicates)
+  baseMeals = existingMeals.slice(0, -1);
+} else if (replaceMealType) {
+  // ✅ replace all meals of that type (manual "replace my lunch" etc)
+  const rt = normalizeMealType(replaceMealType) || replaceMealType;
+  baseMeals = existingMeals.filter(m => normalizeMealType(m?.meal_type) !== rt);
+}
+
 
     const newMeal = { meal_type: mealType, items, calories: cals, protein, carbs, fat };
     const updatedMeals = baseMeals.concat([newMeal]);
