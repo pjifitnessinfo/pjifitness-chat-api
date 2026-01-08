@@ -2554,73 +2554,44 @@ try {
     }
 
     // MEAL LOGS
-    if (customerGid) {
-      const mealLogs = extractMealLogsFromText(rawReply);
-      console.log("[PJ DEBUG] extractMealLogsFromText:", mealLogs);
+if (customerGid) {
+  // ✅ If we already logged via nutrition auto-log, DO NOT log again from MEAL_LOG_JSON
+  if (debug.autoMealLog && debug.autoMealLog.ok) {
+    debug.mealLogsSkippedBecauseAutoMealLog = true;
+  } else {
+    const mealLogs = extractMealLogsFromText(rawReply);
+    console.log("[PJ DEBUG] extractMealLogsFromText:", mealLogs);
 
-      if (mealLogs && mealLogs.length) {
-        debug.mealLogsFound = mealLogs.length;
-        debug.mealLogsSample = mealLogs.slice(0, 2);
-        try {
-          for (const meal of mealLogs) {
-  // ✅ FIRST FIX: if we're replacing a meal, force the meal_type to match
-  if (overrideMeal && overrideMeal.meal_type) {
-    meal.meal_type = overrideMeal.meal_type;
-  }
+    if (mealLogs && mealLogs.length) {
+      debug.mealLogsFound = mealLogs.length;
+      debug.mealLogsSample = mealLogs.slice(0, 2);
 
-  await upsertMealLog(
-    customerGid,
-    meal,
-    dateKey,
-    overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
-  );
-}
+      try {
+        for (const meal of mealLogs) {
+          // ✅ If we're replacing a meal, force meal_type to match the override bucket
+          if (overrideMeal && overrideMeal.meal_type) {
+            meal.meal_type = overrideMeal.meal_type;
+          }
 
-          debug.mealLogsSavedToDailyLogs = true;
-        } catch (e) {
-          console.error("Error saving meal logs from chat", e);
-          debug.mealLogsSavedToDailyLogs = false;
-          debug.mealLogsSaveError = String(e?.message || e);
-        }
-      } else if (!debug.autoMealLog?.ok && detectSimpleMealFromUser(userMessage)) {
-        debug.mealLogsFound = 1;
-        debug.mealLogsFallbackUsed = true;
-
-        const simpleMeal = detectSimpleMealFromUser(userMessage);
-        const calFromUser = parseCaloriesFromUserText(userMessage);
-        const calFromReply = parseCaloriesFromReplyText(rawReply);
-        const cal = calFromUser || calFromReply || 0;
-
-        const prot = parseProteinFromReplyText(rawReply) || 0;
-        const finalMealType = inferMealTypeFromReply(simpleMeal.meal_type, rawReply);
-
-        const fallbackMeal = {
-          date: dateKey,
-          meal_type: finalMealType,
-          items: simpleMeal.items,
-          calories: cal,
-          protein: prot,
-          carbs: 0,
-          fat: 0
-        };
-
-        try {
           await upsertMealLog(
             customerGid,
-            fallbackMeal,
+            meal,
             dateKey,
             overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
           );
-          debug.mealLogsSavedToDailyLogs = true;
-        } catch (e) {
-          console.error("Error saving fallback meal log from chat", e);
-          debug.mealLogsSavedToDailyLogs = false;
-          debug.mealLogsSaveError = String(e?.message || e);
         }
-      } else {
-        debug.mealLogsFound = 0;
+
+        debug.mealLogsSavedToDailyLogs = true;
+      } catch (e) {
+        console.error("Error saving meal logs from chat", e);
+        debug.mealLogsSavedToDailyLogs = false;
+        debug.mealLogsSaveError = String(e?.message || e);
       }
+    } else {
+      debug.mealLogsFound = 0;
     }
+  }
+}
 
     // DAILY_REVIEW_JSON
     if (customerGid) {
