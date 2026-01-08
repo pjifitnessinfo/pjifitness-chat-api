@@ -1865,6 +1865,57 @@ function getLastMealTypeFromLogs(logs, dateKey) {
   const last = meals[meals.length - 1];
   return normalizeMealType(last?.meal_type || null);
 }
+// ===============================
+// PENDING MEAL HELPERS (simple 2-step meal logging)
+// ===============================
+
+function isMealTypeOnly(text) {
+  const t = String(text || "").trim().toLowerCase();
+  return ["breakfast","bfast","lunch","dinner","supper","snack","snacks","dessert"].includes(t);
+}
+
+async function getPendingMeal(customerGid) {
+  if (!customerGid) return null;
+  const q = `
+    query($id: ID!) {
+      customer(id: $id) {
+        metafield(namespace:"custom", key:"pending_meal") { value }
+      }
+    }
+  `;
+  const data = await shopifyGraphQL(q, { id: customerGid });
+  const v = data?.customer?.metafield?.value;
+  if (!v) return null;
+  try { return JSON.parse(v); } catch { return null; }
+}
+
+async function setPendingMeal(customerGid, payloadOrNull) {
+  if (!customerGid) return;
+  const mutation = `
+    mutation($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) { userErrors { field message } }
+    }
+  `;
+  const value = payloadOrNull ? JSON.stringify(payloadOrNull) : "";
+
+  const data = await shopifyGraphQL(mutation, {
+    metafields: [
+      {
+        ownerId: customerGid,
+        namespace: "custom",
+        key: "pending_meal",
+        type: "json",
+        value
+      }
+    ]
+  });
+
+  const userErrors = data?.metafieldsSet?.userErrors || [];
+  if (userErrors.length) {
+    console.error("metafieldsSet userErrors (pending_meal):", userErrors);
+  }
+}
+
 function pjBuildMealPickerAction({ dateKey, rawText }) {
   return {
     type: "MEAL_PICKER",
