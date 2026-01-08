@@ -2247,9 +2247,12 @@ if (customerGid && userMessage && pjLooksLikeFoodText(userMessage)) {
       // so we don't default everything to "snack".
       const anyKnownMealType = partsToLog.some(p => !!p?.meal_type);
       if (!anyKnownMealType) {
-        debug.autoMealLog = { ok: false, reason: "unknown_meal_type_skip_auto_log" };
-        // Do not return; we just skip auto meal logging and let OpenAI handle the message.
-      }
+  debug.autoMealLog = { ok: false, reason: "unknown_meal_type_needs_picker" };
+
+  ui_action = pjBuildMealPickerAction({ dateKey, rawText: userMessage });
+  ui_reply = "Quick check — what meal is this? Tap one so I log it correctly.";
+  ui_pending_reason = "missing_meal_type";
+}
     }
 
     // If we decided to skip, bail out of this block cleanly
