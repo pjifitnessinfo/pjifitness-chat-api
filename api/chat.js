@@ -2374,10 +2374,10 @@ if (customerGid && userMessage && pjLooksLikeFoodText(userMessage)) {
       // so we don't default everything to "snack".
       const anyKnownMealType = partsToLog.some(p => !!p?.meal_type);
       if (!anyKnownMealType) {
-  debug.autoMealLog = { ok: false, reason: "unknown_meal_type_needs_picker" };
+  debug.autoMealLog = { ok: false, reason: "unknown_meal_type_pending" };
 
-  ui_action = pjBuildMealPickerAction({ dateKey, rawText: userMessage });
-  ui_reply = "Quick check — what meal is this? Tap one so I log it correctly.";
+  // Ask in plain text, do NOT trigger UI picker
+  ui_reply = "Got it — what meal was this? (breakfast, lunch, dinner, or snacks)";
   ui_pending_reason = "missing_meal_type";
 }
     }
