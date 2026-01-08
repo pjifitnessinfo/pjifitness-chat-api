@@ -2499,44 +2499,41 @@ try {
       }
     }
 
-    // MEAL LOGS
+   // MEAL LOGS (ONLY from model MEAL_LOG_JSON)
 if (customerGid) {
-  // ✅ If we already logged via nutrition auto-log, DO NOT log again from MEAL_LOG_JSON
-  if (debug.autoMealLog && debug.autoMealLog.ok) {
-    debug.mealLogsSkippedBecauseAutoMealLog = true;
-  } else {
-    const mealLogs = extractMealLogsFromText(rawReply);
-    console.log("[PJ DEBUG] extractMealLogsFromText:", mealLogs);
+  const mealLogs = extractMealLogsFromText(rawReply);
 
-    if (mealLogs && mealLogs.length) {
-      debug.mealLogsFound = mealLogs.length;
-      debug.mealLogsSample = mealLogs.slice(0, 2);
+  if (mealLogs && mealLogs.length) {
+    debug.mealLogsFound = mealLogs.length;
+    debug.mealLogsSample = mealLogs.slice(0, 2);
 
-      try {
-        for (const meal of mealLogs) {
-          // ✅ If we're replacing a meal, force meal_type to match the override bucket
-          if (overrideMeal && overrideMeal.meal_type) {
-            meal.meal_type = overrideMeal.meal_type;
-          }
-
-          await upsertMealLog(
-            customerGid,
-            meal,
-            dateKey,
-            overrideMeal ? { replaceMealType: overrideMeal.meal_type } : {}
-          );
+    try {
+      for (const meal of mealLogs) {
+        // If we're replacing a meal, force the bucket
+        if (overrideMeal && overrideMeal.meal_type) {
+          meal.meal_type = overrideMeal.meal_type;
         }
 
-        debug.mealLogsSavedToDailyLogs = true;
-      } catch (e) {
-        console.error("Error saving meal logs from chat", e);
-        debug.mealLogsSavedToDailyLogs = false;
-        debug.mealLogsSaveError = String(e?.message || e);
+        await upsertMealLog(
+          customerGid,
+          meal,
+          dateKey,
+          overrideMeal
+            ? (overrideMeal.__replaceLast ? { replaceLast: true } : { replaceMealType: overrideMeal.meal_type })
+            : {}
+        );
       }
-    } else {
-      debug.mealLogsFound = 0;
+
+      debug.mealLogsSavedToDailyLogs = true;
+    } catch (e) {
+      console.error("Error saving meal logs from chat", e);
+      debug.mealLogsSavedToDailyLogs = false;
+      debug.mealLogsSaveError = String(e?.message || e);
     }
+  } else {
+    debug.mealLogsFound = 0;
   }
+}
 }
 
     // DAILY_REVIEW_JSON
