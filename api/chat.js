@@ -1620,6 +1620,8 @@ if (!mealType) return; // ✅ if no known type, don't save it into the wrong buc
   }
 
   const replaceMealType = options.replaceMealType || null;
+const replaceLast = options.replaceLast === true;
+
 
   if (idx >= 0) {
     const existing = logs[idx] || {};
