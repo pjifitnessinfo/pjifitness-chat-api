@@ -2037,6 +2037,11 @@ export default async function handler(req, res) {
     messagesCount: null,
     model: "gpt-4.1-mini",
   };
+   // ✅ STEP 1B — UI ACTION STATE (meal picker)
+let ui_action = null;
+let ui_reply = null;
+let ui_pending_reason = null;
+
   // ============================================================
   // ✅ OVERLAY ONBOARDING SHORT-CIRCUIT
   // If <ONBOARDING_JSON> is present, generate + SAVE plan now.
