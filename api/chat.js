@@ -2193,7 +2193,7 @@ export default async function handler(req, res) {
     const { logs } = await getDailyLogsMetafield(customerGid);
     const lastType = getLastMealTypeFromLogs(logs, dateKey);
     if (lastType) {
-      overrideMeal = { meal_type: lastType };
+      overrideMeal = { meal_type: lastType, __replaceLast: true };
       debug.mealAutoCorrectionDetected = true;
       debug.mealAutoReplaceMealType = lastType;
     }
