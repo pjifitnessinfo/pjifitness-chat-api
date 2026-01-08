@@ -2269,31 +2269,6 @@ let ui_pending_reason = null;
   }
 }
 
-  // ===============================
-  // UI ACTION EARLY RETURN (meal picker)
-  // If we need the user to choose the meal type, stop here.
-  // ===============================
-  if (ui_action && ui_reply) {
-    try {
-      // Save the pending meal text so the next reply ("Lunch") can log it
-      await setPendingMeal(customerGid, {
-        date: dateKey,
-        raw_text: String(userMessage || "").trim()
-      });
-      debug.pendingMealSaved = true;
-    } catch (e) {
-      debug.pendingMealSaved = false;
-      debug.pendingMealSaveError = String(e?.message || e);
-    }
-
-    return res.status(200).json({
-      reply: ui_reply,
-      ui_action,
-      free_chat_remaining: remainingAfter,
-      debug: { ...debug, ui_pending_reason }
-    });
-  }
-
   let introAlreadySent = false;
   if (history.length) {
     const recentForIntro = history.slice(-40);
