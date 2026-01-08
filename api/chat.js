@@ -1155,6 +1155,24 @@ function pjLooksLikeFoodText(text){
     /\b(cal(orie|ories)|cals|protein|carb|carbs|fat|macros)\b/.test(t)
   );
 }
+function extractFoodLikeText(text) {
+  if (!text) return null;
+
+  let cleaned = String(text)
+    .replace(/^(hey|hi|coach|please|can you|could you|i hope you can|really hope you can)/i, "")
+    .replace(/\b(log|track|add|save|my)\b/gi, "")
+    .trim();
+
+  // Must contain a real food signal
+  const looksLikeFood =
+    /\b(oz|ounce|cup|cups|slice|slices|tbsp|tsp|gram|g|ml|shake|chicken|rice|pizza|egg|eggs|protein|milk|bar)\b/i
+      .test(cleaned);
+
+  if (!looksLikeFood) return null;
+
+  return cleaned;
+}
+
 function pjSplitMealsFromUserMessage(text) {
   const raw = String(text || "").trim();
   if (!raw) return [];
