@@ -1589,7 +1589,7 @@ function detectSimpleMealFromUser(userMsg) {
   if (m) {
     const desc = cleanDesc(m[1] || "");
     if (!desc) return null;
-    return { meal_type: "snacks", items: [desc] };
+    return { meal_type: null, items: [desc] };
   }
 
   return null;
