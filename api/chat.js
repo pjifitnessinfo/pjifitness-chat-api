@@ -2534,7 +2534,6 @@ if (customerGid) {
     debug.mealLogsFound = 0;
   }
 }
-}
 
     // DAILY_REVIEW_JSON
     if (customerGid) {
