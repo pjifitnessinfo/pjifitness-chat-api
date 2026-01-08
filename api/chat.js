@@ -1984,6 +1984,7 @@ export default async function handler(req, res) {
   const dateKey = isYMD(clientDate) ? clientDate : localYMD();
 
   const userMessage = body.message || "";
+   const isInitPing = String(userMessage || "").trim() === "__PJ_INIT__";
   const history = Array.isArray(body.history) ? body.history : [];
   const appendUserMessage = !!body.appendUserMessage;
   const email = body.email || null;
