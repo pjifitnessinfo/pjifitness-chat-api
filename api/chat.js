@@ -2322,6 +2322,7 @@ let mt =
     debug.autoMealLog = { ok: false, error: String(e?.message || e) };
   }
 }
+const PJ_AUTO_MEAL_LOGGED = !!(debug.autoMealLog && debug.autoMealLog.ok);
 
   let introAlreadySent = false;
   if (history.length) {
