@@ -2328,65 +2328,71 @@ if (customerGid) {
 
 // ===============================
 // AUTO MEAL LOG FROM NATURAL CHAT (simple + reliable)
-// If food text but NO meal type, ask & store pending
-// If meal type exists, log immediately via nutrition
+// Only send REAL food-like text to nutrition (prevents logging: "hope you can log my breakfast")
 // ===============================
 if (customerGid && userMessage && pjLooksLikeFoodText(userMessage)) {
   try {
-    const guessed = pjGuessMealTypeFromUserText(userMessage);
+    const foodText = extractFoodLikeText(userMessage);
 
-    // If they didn't specify the meal type, ask and save pending text
-    if (!guessed) {
-      await setPendingMeal(customerGid, {
-        date: dateKey,
-        raw_text: String(userMessage || "").trim()
-      });
-      debug.pendingMealSaved = true;
-
-      return res.status(200).json({
-        reply: "Got it — what meal was this? (breakfast, lunch, dinner, or snacks)",
-        free_chat_remaining: remainingAfter,
-        debug: { ...debug, ui_pending_reason: "missing_meal_type" }
-      });
-    }
-
-    // Meal type exists -> run nutrition + log now
-    const proto =
-      (req.headers["x-forwarded-proto"] && String(req.headers["x-forwarded-proto"]).split(",")[0]) ||
-      "https";
-    const host = req.headers["x-forwarded-host"] || req.headers.host;
-    const base = host ? `${proto}://${host}` : "https://www.pjifitness.com";
-
-    const nutRes = await fetch(`${base}/api/nutrition`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: String(userMessage || "").trim() })
-    });
-
-    const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
-    const items = Array.isArray(nut?.items) ? nut.items : [];
-    const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
-
-    if (items.length && totals) {
-      const meal = {
-        date: dateKey,
-        meal_type: normalizeMealType(guessed),
-        items: items.map(it => {
-          const name = it?.name || it?.matched_to || "Food";
-          const qty = it?.qty ? String(it.qty) : "";
-          const unit = it?.unit ? String(it.unit) : "";
-          return (qty || unit) ? `${qty} ${unit} ${name}`.trim() : String(name);
-        }),
-        calories: Number(totals.calories) || 0,
-        protein: Number(totals.protein) || 0,
-        carbs: Number(totals.carbs) || 0,
-        fat: Number(totals.fat) || 0
-      };
-
-      await upsertMealLog(customerGid, meal, dateKey);
-      debug.autoMealLog = { ok: true, meal_type: meal.meal_type, calories: meal.calories, itemsCount: meal.items.length };
+    // If it doesn't look like real food text, do nothing (let normal chat handle it)
+    if (!foodText) {
+      debug.autoMealLog = { ok: false, reason: "not_real_food_text" };
     } else {
-      debug.autoMealLog = { ok: false, reason: "nutrition_no_items" };
+      const guessed = pjGuessMealTypeFromUserText(userMessage);
+
+      // If they didn't specify the meal type, ask and save pending text
+      if (!guessed) {
+        await setPendingMeal(customerGid, {
+          date: dateKey,
+          raw_text: String(foodText || "").trim()   // ✅ use cleaned food text
+        });
+        debug.pendingMealSaved = true;
+
+        return res.status(200).json({
+          reply: "Got it — what meal was this? (breakfast, lunch, dinner, or snacks)",
+          free_chat_remaining: remainingAfter,
+          debug: { ...debug, ui_pending_reason: "missing_meal_type" }
+        });
+      }
+
+      // Meal type exists -> run nutrition + log now
+      const proto =
+        (req.headers["x-forwarded-proto"] && String(req.headers["x-forwarded-proto"]).split(",")[0]) ||
+        "https";
+      const host = req.headers["x-forwarded-host"] || req.headers.host;
+      const base = host ? `${proto}://${host}` : "https://www.pjifitness.com";
+
+      const nutRes = await fetch(`${base}/api/nutrition`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: String(foodText || "").trim() }) // ✅ use cleaned food text
+      });
+
+      const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
+      const items = Array.isArray(nut?.items) ? nut.items : [];
+      const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
+
+      if (items.length && totals) {
+        const meal = {
+          date: dateKey,
+          meal_type: normalizeMealType(guessed),
+          items: items.map(it => {
+            const name = it?.name || it?.matched_to || "Food";
+            const qty = it?.qty ? String(it.qty) : "";
+            const unit = it?.unit ? String(it.unit) : "";
+            return (qty || unit) ? `${qty} ${unit} ${name}`.trim() : String(name);
+          }),
+          calories: Number(totals.calories) || 0,
+          protein: Number(totals.protein) || 0,
+          carbs: Number(totals.carbs) || 0,
+          fat: Number(totals.fat) || 0
+        };
+
+        await upsertMealLog(customerGid, meal, dateKey);
+        debug.autoMealLog = { ok: true, meal_type: meal.meal_type, calories: meal.calories, itemsCount: meal.items.length };
+      } else {
+        debug.autoMealLog = { ok: false, reason: "nutrition_no_items" };
+      }
     }
   } catch (e) {
     debug.autoMealLog = { ok: false, error: String(e?.message || e) };
