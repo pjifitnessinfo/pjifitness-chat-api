@@ -2341,15 +2341,6 @@ let mt =
   }
 }
 const PJ_AUTO_MEAL_LOGGED = !!(debug.autoMealLog && debug.autoMealLog.ok);
-// ✅ STEP D — If meal picker is needed, stop here and return UI action
-if (ui_action && ui_reply) {
-  return res.status(200).json({
-    reply: ui_reply,
-    ui_action,
-    free_chat_remaining: remainingAfter,
-    debug: { ...debug, ui_pending_reason }
-  });
-}
 
   let introAlreadySent = false;
   if (history.length) {
