@@ -1865,6 +1865,16 @@ function getLastMealTypeFromLogs(logs, dateKey) {
   const last = meals[meals.length - 1];
   return normalizeMealType(last?.meal_type || null);
 }
+function pjBuildMealPickerAction({ dateKey, rawText }) {
+  return {
+    type: "MEAL_PICKER",
+    pending: {
+      date: dateKey,
+      raw_text: String(rawText || "").trim(),
+      options: ["Breakfast", "Lunch", "Dinner", "Snacks"]
+    }
+  };
+}
 
 export default async function handler(req, res) {
   // ===== CORS (SHOPIFY -> VERCEL) =====
