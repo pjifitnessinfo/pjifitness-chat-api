@@ -1698,7 +1698,8 @@ async function upsertMealLog(customerGid, meal, dateKey, options = {}) {
 if (!mealType) return; // ✅ if no known type, don't save it into the wrong bucket
 
 
-  let items = pjCleanMealItems(meal.items, null);
+  let items = pjCleanMealItems(meal.items);
+
 
 // ✅ If items got wiped (because they were sentences), do NOT save the meal.
 if (!items.length) return;
