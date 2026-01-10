@@ -2044,6 +2044,10 @@ function pjBuildMealPickerAction({ dateKey, rawText }) {
     }
   };
 }
+function pjHasPortionsOrUnits(text) {
+  const t = String(text || "").toLowerCase();
+  return /\b(\d+(\.\d+)?\s*(oz|ounce|ounces|cup|cups|tbsp|tsp|g|gram|grams|ml|serving|slice|slices|piece|pieces))\b/.test(t);
+}
 
 export default async function handler(req, res) {
   // ===== CORS (SHOPIFY -> VERCEL) =====
