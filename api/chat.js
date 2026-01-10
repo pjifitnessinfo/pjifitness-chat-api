@@ -2455,22 +2455,6 @@ if (customerGid && userMessage && pjLooksLikeFoodText(userMessage)) {
         });
       }
 
-      // Meal type exists -> run nutrition + log now
-       // ✅ STEP 2: If NO portions were given, ask once instead of guessing calories
-if (!pjHasPortionsOrUnits(foodText)) {
-  await setPendingMeal(customerGid, {
-    date: dateKey,
-    raw_text: String(foodText || "").trim()
-  });
-
-  return res.status(200).json({
-    reply:
-      "Quick portion check so this is accurate — about how much of each? (examples: 1 cup skyr, 1/4 cup granola, 1 tbsp honey)",
-    free_chat_remaining: remainingAfter,
-    debug: { ...debug, ui_pending_reason: "missing_portions" }
-  });
-}
-
       const proto =
         (req.headers["x-forwarded-proto"] && String(req.headers["x-forwarded-proto"]).split(",")[0]) ||
         "https";
