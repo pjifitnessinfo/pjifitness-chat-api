@@ -1664,12 +1664,11 @@ function pjCleanMealItems(items) {
 
     if (!s) continue;
 
-    // Must look like FOOD
-    const looksFoodish =
-      /\b(\d+(\.\d+)?\s*(oz|ounce|ounces|cup|cups|tbsp|tsp|g|gram|grams|slice|slices))\b/i.test(s) ||
-      /\b(chicken|rice|egg|eggs|shake|protein|milk|bar|wrap|bread|cheese|pizza|beef|turkey|yogurt)\b/i.test(s);
+    // ✅ Allow almost any food phrase.
+// Only reject if it's basically empty / not meaningful.
+const hasLetters = /[a-zA-Z]/.test(s);
+if (!hasLetters) continue;
 
-    if (!looksFoodish) continue;
 
     const key = s.toLowerCase();
     if (seen.has(key)) continue;
