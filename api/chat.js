@@ -1158,23 +1158,29 @@ function pjLooksLikeFoodText(text){
 function extractFoodLikeText(text) {
   if (!text) return null;
 
-  let cleaned = String(text)
-    .replace(/^(hey|hi|coach|please|can you|could you|i hope you can|really hope you can)/i, "")
+  let cleaned = String(text).trim();
+
+  // ✅ Remove common leading wrappers so nutrition doesn’t treat them as “food”
+  cleaned = cleaned
+    .replace(/^\s*(hey|hi|coach|please|can you|could you|i hope you can|really hope you can)\b[:,]?\s*/i, "")
+    .replace(/^\s*(for\s+)?(breakfast|bfast|lunch|dinner|supper|snacks?)\b\s*[:,\-]?\s*/i, "")
+    .replace(/^\s*i\s*(ate|had)\b\s*/i, "")
     .replace(/\b(log|track|add|save|my)\b/gi, "")
+    .replace(/\s+/g, " ")
     .trim();
 
   // Must contain a real food signal (expanded for restaurant meals)
-const looksLikeFood =
-  /\b(oz|ounce|ounces|cup|cups|slice|slices|tbsp|tsp|gram|grams|g|ml)\b/i.test(cleaned) ||
-  /\b(i\s*(ate|had)|ate|had|for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks))\b/i.test(text) ||
-  /\b(omelet|omelette|toast|hash\s*brown|hashbrown|pancake|waffle|bacon|sausage|egg|eggs|cheese|chicken|beef|steak|rice|potato|fries|burger|sandwich|wrap|salad|pizza|pasta|taco|burrito|protein|milk|shake|bar)\b/i.test(cleaned) ||
-  /\b(ihop|chipotle|mcdonald'?s|chick[\s-]?fil[\s-]?a|subway|starbucks|wendy'?s|burger\s*king|taco\s*bell)\b/i.test(cleaned);
+  const looksLikeFood =
+    /\b(oz|ounce|ounces|cup|cups|slice|slices|tbsp|tsp|gram|grams|g|ml)\b/i.test(cleaned) ||
+    /\b(i\s*(ate|had)|ate|had)\b/i.test(text) ||
+    /\b(omelet|omelette|toast|hash\s*brown|hashbrown|pancake|waffle|bacon|sausage|egg|eggs|cheese|chicken|beef|steak|rice|potato|fries|burger|sandwich|wrap|salad|pizza|pasta|taco|burrito|protein|milk|shake|bar)\b/i.test(cleaned) ||
+    /\b(ihop|chipotle|mcdonald'?s|chick[\s-]?fil[\s-]?a|subway|starbucks|wendy'?s|burger\s*king|taco\s*bell)\b/i.test(cleaned);
 
-if (!looksLikeFood) return null;
-
+  if (!looksLikeFood) return null;
 
   return cleaned;
 }
+
 
 function pjSplitMealsFromUserMessage(text) {
   const raw = String(text || "").trim();
