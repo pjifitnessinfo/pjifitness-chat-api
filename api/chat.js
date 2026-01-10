@@ -1728,7 +1728,19 @@ if (replaceLast && existingMeals.length) {
 }
 
 
-    const newMeal = { meal_type: mealType, items, calories: cals, protein, carbs, fat };
+    const desc = Array.isArray(items) ? items.join(", ") : "";
+
+const newMeal = {
+  meal_type: mealType,
+  items,
+  description: desc,   // ✅ for UI display
+  text: desc,          // ✅ fallback display field
+  calories: cals,
+  protein,
+  carbs,
+  fat
+};
+
     const updatedMeals = baseMeals.concat([newMeal]);
 
     let sumCals = 0, sumP = 0, sumC = 0, sumF = 0;
