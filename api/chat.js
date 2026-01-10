@@ -1763,7 +1763,19 @@ const newMeal = {
       coach_focus: existing.coach_focus || "Meals logged from chat."
     };
   } else {
-    const newMeals = [{ meal_type: mealType, items, calories: cals, protein, carbs, fat }];
+    const desc = Array.isArray(items) ? items.join(", ") : "";
+
+const newMeals = [{
+  meal_type: mealType,
+  items,
+  description: desc,
+  text: desc,
+  calories: cals,
+  protein,
+  carbs,
+  fat
+}];
+
 
     logs.push({
       date: cleanDate,
