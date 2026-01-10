@@ -1612,67 +1612,73 @@ function detectSimpleMealFromUser(userMsg) {
 
   return null;
 }
-function pjCleanMealItems(items, fallbackText) {
-  // Force array of strings
+function pjCleanMealItems(items) {
   let arr = [];
   if (Array.isArray(items)) arr = items;
   else if (typeof items === "string" && items.trim()) arr = [items.trim()];
 
+  // If a single string contains commas, split it into separate items
+  if (arr.length === 1 && typeof arr[0] === "string" && arr[0].includes(",")) {
+    const parts = arr[0].split(",").map(s => s.trim()).filter(Boolean);
+    if (parts.length >= 2) arr = parts;
+  }
+
   const cleaned = [];
   const seen = new Set();
-
-  const badPhrases = [
-    "got it", "perfect", "awesome", "sounds good", "no worries", "i’m", "i'm",
-    "tap the", "today tab", "refresh", "do you have any questions",
-    "what meal was this", "breakfast, lunch, dinner", "logged from chat",
-    "here’s", "here is", "let’s", "lets", "next action"
-  ];
 
   for (let raw of arr) {
     let s = String(raw || "").replace(/\s+/g, " ").trim();
     if (!s) continue;
 
-    // Drop if it's clearly sentence-y or app instructions
     const lower = s.toLowerCase();
 
-    // Too long = likely a sentence/paragraph
-    if (s.length > 90) continue;
+    // ❌ Kill sentence-style entries like "Lunch was..."
+    if (/\b(lunch|dinner|breakfast|snacks?)\s+was\b/i.test(s)) continue;
 
-    // Contains newline markers or heavy punctuation (often coach text)
-    if (/[.?!]{2,}/.test(s)) continue;
+    // ❌ Kill meal-type words unless it's "lunch meat"
+    if (
+      /\b(breakfast|bfast|lunch|dinner|supper|snack|snacks|dessert)\b/i.test(s) &&
+      !/\blunch meat\b/i.test(s)
+    ) continue;
 
-    // If it looks like a whole sentence (ends with punctuation)
+    // ❌ Coaching / UI language
+    if (/\b(got it|perfect|awesome|sounds good|no worries|tap|refresh|questions|next action|logged)\b/i.test(s)) {
+      continue;
+    }
+
+    // ❌ Too long = sentence
+    if (s.length > 80) continue;
+
+    // ❌ Ends like a sentence
     if (/[.?!]$/.test(s)) continue;
 
-    // If it contains obvious coaching/system words
-    if (badPhrases.some(p => lower.includes(p))) continue;
-
-    // If it contains macro summary language rather than a food item
-    if (/\b(calories|cals|protein|carbs|fat|macros)\b/.test(lower)) continue;
-
-    // Light cleanup of common leading junk
+    // Cleanup leading junk
     s = s
       .replace(/^(i\s*(ate|had)\s+)/i, "")
-      .replace(/^(for\s+(breakfast|bfast|lunch|dinner|snacks?)\s*[:\-]?\s*)/i, "")
+      .replace(/^(for\s+)?(breakfast|bfast|lunch|dinner|supper|snacks?)\s*(was)?\s*[:\-]?\s*/i, "")
       .replace(/^(log( this)?( meal)?\s*[:\-]?\s*)/i, "")
       .trim();
 
     if (!s) continue;
 
-    // Avoid duplicates
+    // Must look like FOOD
+    const looksFoodish =
+      /\b(\d+(\.\d+)?\s*(oz|ounce|ounces|cup|cups|tbsp|tsp|g|gram|grams|slice|slices))\b/i.test(s) ||
+      /\b(chicken|rice|egg|eggs|shake|protein|milk|bar|wrap|bread|cheese|pizza|beef|turkey|yogurt)\b/i.test(s);
+
+    if (!looksFoodish) continue;
+
     const key = s.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
 
     cleaned.push(s);
-    if (cleaned.length >= 12) break; // keep meals short
+    if (cleaned.length >= 12) break;
   }
-
-  // If nothing valid remains, do NOT save garbage
-  if (!cleaned.length) return [];
 
   return cleaned;
 }
+
 
 // ✅ FIXED: force meals to save to dateKey (client-local day), not server UTC
 async function upsertMealLog(customerGid, meal, dateKey, options = {}) {
