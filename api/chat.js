@@ -1612,6 +1612,67 @@ function detectSimpleMealFromUser(userMsg) {
 
   return null;
 }
+function pjCleanMealItems(items, fallbackText) {
+  // Force array of strings
+  let arr = [];
+  if (Array.isArray(items)) arr = items;
+  else if (typeof items === "string" && items.trim()) arr = [items.trim()];
+
+  const cleaned = [];
+  const seen = new Set();
+
+  const badPhrases = [
+    "got it", "perfect", "awesome", "sounds good", "no worries", "i’m", "i'm",
+    "tap the", "today tab", "refresh", "do you have any questions",
+    "what meal was this", "breakfast, lunch, dinner", "logged from chat",
+    "here’s", "here is", "let’s", "lets", "next action"
+  ];
+
+  for (let raw of arr) {
+    let s = String(raw || "").replace(/\s+/g, " ").trim();
+    if (!s) continue;
+
+    // Drop if it's clearly sentence-y or app instructions
+    const lower = s.toLowerCase();
+
+    // Too long = likely a sentence/paragraph
+    if (s.length > 90) continue;
+
+    // Contains newline markers or heavy punctuation (often coach text)
+    if (/[.?!]{2,}/.test(s)) continue;
+
+    // If it looks like a whole sentence (ends with punctuation)
+    if (/[.?!]$/.test(s)) continue;
+
+    // If it contains obvious coaching/system words
+    if (badPhrases.some(p => lower.includes(p))) continue;
+
+    // If it contains macro summary language rather than a food item
+    if (/\b(calories|cals|protein|carbs|fat|macros)\b/.test(lower)) continue;
+
+    // Light cleanup of common leading junk
+    s = s
+      .replace(/^(i\s*(ate|had)\s+)/i, "")
+      .replace(/^(for\s+(breakfast|bfast|lunch|dinner|snacks?)\s*[:\-]?\s*)/i, "")
+      .replace(/^(log( this)?( meal)?\s*[:\-]?\s*)/i, "")
+      .trim();
+
+    if (!s) continue;
+
+    // Avoid duplicates
+    const key = s.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    cleaned.push(s);
+    if (cleaned.length >= 12) break; // keep meals short
+  }
+
+  // If nothing valid remains, do NOT save garbage
+  if (!cleaned.length) return [];
+
+  return cleaned;
+}
 
 // ✅ FIXED: force meals to save to dateKey (client-local day), not server UTC
 async function upsertMealLog(customerGid, meal, dateKey, options = {}) {
