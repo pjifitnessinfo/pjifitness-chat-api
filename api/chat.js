@@ -2484,6 +2484,37 @@ if (customerGid && userMessage && pjLooksLikeFoodText(userMessage)) {
 
         await upsertMealLog(customerGid, meal, dateKey);
         debug.autoMealLog = { ok: true, meal_type: meal.meal_type, calories: meal.calories, itemsCount: meal.items.length };
+         // ✅ RETURN EARLY so OpenAI doesn't overwrite with a different estimate
+const itemsList = meal.items.map(x => `• ${x}`).join("\n");
+
+const replyText =
+  `Logged your ${meal.meal_type.toLowerCase()}:\n${itemsList}\n\n` +
+  `Estimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`;
+
+try {
+  // optional but recommended: keep coach review updating even when we skip OpenAI
+  await upsertCoachReview(customerGid, {
+    date: dateKey,
+    summary: `Meal logged via nutrition: ${meal.meal_type}.`,
+    wins: ["Logged a meal promptly"],
+    opportunities: [],
+    struggles: [],
+    next_focus: "If portions were different, tell me and I’ll adjust it.",
+    food_pattern: "",
+    mindset_pattern: ""
+  }, dateKey);
+  debug.coachReviewSavedToDailyLogs = true;
+} catch (e) {
+  debug.coachReviewSavedToDailyLogs = false;
+  debug.coachReviewSaveError = String(e?.message || e);
+}
+
+return res.status(200).json({
+  reply: replyText,
+  debug,
+  free_chat_remaining: remainingAfter
+});
+
       } else {
         debug.autoMealLog = { ok: false, reason: "nutrition_no_items" };
       }
