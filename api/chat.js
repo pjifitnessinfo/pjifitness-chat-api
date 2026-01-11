@@ -2374,6 +2374,7 @@ if (customerGid) {
       isMealTypeOnly(userMessage)
     ) {
       const mtRaw = String(userMessage || "").trim().toLowerCase();
+
       const mt =
         mtRaw === "bfast" ? "Breakfast" :
         mtRaw === "breakfast" ? "Breakfast" :
@@ -2382,53 +2383,60 @@ if (customerGid) {
         (mtRaw === "snack" || mtRaw === "snacks" || mtRaw === "dessert") ? "Snacks" :
         null;
 
-      if (mt) {
-        const proto =
-          (req.headers["x-forwarded-proto"] && String(req.headers["x-forwarded-proto"]).split(",")[0]) ||
-          "https";
-        const host = req.headers["x-forwarded-host"] || req.headers.host;
-        const base = host ? `${proto}://${host}` : "https://www.pjifitness.com";
-
-        const nutRes = await fetch(`${base}/api/nutrition`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: pending.raw_text })
-        });
-
-        const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
-        const items = Array.isArray(nut?.items) ? nut.items : [];
-        const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
-
-        if (items.length && totals) {
-          const meal = {
-            date: dateKey,
-            meal_type: mt,
-            items: items.map(it => String(it?.name || it?.matched_to || "Food")),
-
-            calories: Number(totals.calories) || 0,
-            protein: Number(totals.protein) || 0,
-            carbs: Number(totals.carbs) || 0,
-            fat: Number(totals.fat) || 0
-          };
-
-          await upsertMealLog(customerGid, meal, dateKey);
-          debug.pendingMealResolved = true;
-          debug.pendingMealResolvedType = mt;
-        } else {
-          debug.pendingMealResolved = false;
-          debug.pendingMealResolvedReason = "nutrition_no_items";
-        }
+      // If invalid meal type, clear pending and stop
+      if (!mt) {
+        await setPendingMeal(customerGid, null);
+        debug.pendingMealResolved = false;
+        debug.pendingMealResolvedReason = "invalid_meal_type";
+        return;
       }
 
-      // Always clear pending so you never get stuck
-      await setPendingMeal(customerGid, null);
-    }
-     return res.status(200).json({
-  reply: `Thanks — logged your ${mt.toLowerCase()}.`,
-  debug,
-  free_chat_remaining: remainingAfter
-});
+      const proto =
+        (req.headers["x-forwarded-proto"] && String(req.headers["x-forwarded-proto"]).split(",")[0]) ||
+        "https";
+      const host = req.headers["x-forwarded-host"] || req.headers.host;
+      const base = host ? `${proto}://${host}` : "https://www.pjifitness.com";
 
+      const nutRes = await fetch(`${base}/api/nutrition`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: pending.raw_text })
+      });
+
+      const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
+      const items = Array.isArray(nut?.items) ? nut.items : [];
+      const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
+
+      if (items.length && totals) {
+        const meal = {
+          date: dateKey,
+          meal_type: mt,
+          items: items.map(it => String(it?.name || it?.matched_to || "Food")),
+          calories: Number(totals.calories) || 0,
+          protein: Number(totals.protein) || 0,
+          carbs: Number(totals.carbs) || 0,
+          fat: Number(totals.fat) || 0
+        };
+
+        await upsertMealLog(customerGid, meal, dateKey);
+
+        debug.pendingMealResolved = true;
+        debug.pendingMealResolvedType = mt;
+      } else {
+        debug.pendingMealResolved = false;
+        debug.pendingMealResolvedReason = "nutrition_no_items";
+      }
+
+      // ✅ Always clear pending
+      await setPendingMeal(customerGid, null);
+
+      // ✅ Safe return (mt is guaranteed defined here)
+      return res.status(200).json({
+        reply: `Thanks — logged your ${mt.toLowerCase()}.`,
+        debug,
+        free_chat_remaining: remainingAfter
+      });
+    }
   } catch (e) {
     debug.pendingMealResolveError = String(e?.message || e);
   }
