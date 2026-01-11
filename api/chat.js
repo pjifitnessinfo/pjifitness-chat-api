@@ -2520,7 +2520,7 @@ debug.autoMealLog.capApplied = cap;
 }
 
         await upsertMealLog(customerGid, meal, dateKey);
-        debug.autoMealLog = { ok: true, meal_type: meal.meal_type, calories: meal.calories, itemsCount: meal.items.length };
+        debug.autoMealLog = { ...(debug.autoMealLog || {}), ok: true, meal_type: meal.meal_type, calories: meal.calories, itemsCount: meal.items.length };
          // ✅ RETURN EARLY so OpenAI doesn't overwrite with a different estimate
 const itemsList = meal.items.map(x => `• ${x}`).join("\n");
 
