@@ -751,6 +751,12 @@ function clamp(n, lo, hi) {
   if (!Number.isFinite(x)) return lo;
   return Math.max(lo, Math.min(hi, x));
 }
+// ✅ Helper: stable rounding (prevents 33.599999999999994)
+function pjRound1(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  return Math.round(x * 10) / 10;
+}
 
 function computePlanFromOverlayOnboarding(ob, dateKey) {
   const n = (v) => {
