@@ -2503,8 +2503,9 @@ if (!hasPortions) {
     meal.protein = Math.round(meal.protein * scale * 10) / 10;
     meal.carbs   = Math.round(meal.carbs * scale * 10) / 10;
     meal.fat     = Math.round(meal.fat * scale * 10) / 10;
-    debug.autoMealLog.capped = true;
-    debug.autoMealLog.capApplied = cap;
+    debug.autoMealLog = debug.autoMealLog || {};
+debug.autoMealLog.capped = true;
+debug.autoMealLog.capApplied = cap;
   }
 }
 
