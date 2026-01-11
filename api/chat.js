@@ -2446,7 +2446,7 @@ if (customerGid) {
 // AUTO MEAL LOG FROM NATURAL CHAT (simple + reliable)
 // Only send REAL food-like text to nutrition (prevents logging: "hope you can log my breakfast")
 // ===============================
-if (customerGid && userMessage && pjLooksLikeFoodText(userMessage)) {
+if (customerGid && userMessage) {
   try {
     const foodText = extractFoodLikeText(userMessage);
 
