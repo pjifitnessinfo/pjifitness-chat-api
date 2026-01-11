@@ -2488,6 +2488,25 @@ if (customerGid && userMessage && pjLooksLikeFoodText(userMessage)) {
           carbs: Number(totals.carbs) || 0,
           fat: Number(totals.fat) || 0
         };
+         // ✅ No-portion sanity cap (ChatGPT-style estimates)
+const hasPortions = pjHasPortionsOrUnits(foodText);
+if (!hasPortions) {
+  const cap =
+    meal.meal_type === "Breakfast" ? 750 :
+    meal.meal_type === "Lunch" ? 950 :
+    meal.meal_type === "Dinner" ? 1100 :
+    500; // Snacks
+
+  if (meal.calories > cap) {
+    const scale = cap / meal.calories;
+    meal.calories = cap;
+    meal.protein = Math.round(meal.protein * scale * 10) / 10;
+    meal.carbs   = Math.round(meal.carbs * scale * 10) / 10;
+    meal.fat     = Math.round(meal.fat * scale * 10) / 10;
+    debug.autoMealLog.capped = true;
+    debug.autoMealLog.capApplied = cap;
+  }
+}
 
         await upsertMealLog(customerGid, meal, dateKey);
         debug.autoMealLog = { ok: true, meal_type: meal.meal_type, calories: meal.calories, itemsCount: meal.items.length };
