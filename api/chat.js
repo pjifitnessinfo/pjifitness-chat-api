@@ -2429,16 +2429,23 @@ if (customerGid) {
       }
 
       const meal = {
-        date: dateKey,
-        meal_type: mt,
-        items: items.map(it => String(it?.name || it?.matched_to || "Food")),
-        calories: Number(totals.calories) || 0,
-        protein: Number(totals.protein) || 0,
-        carbs: Number(totals.carbs) || 0,
-        fat: Number(totals.fat) || 0
-      };
+  date: dateKey,
+  meal_type: mt,
+  items: items.map(it => String(it?.name || it?.matched_to || "Food")),
+  calories: Number(totals.calories) || 0,
+  protein: Number(totals.protein) || 0,
+  carbs: Number(totals.carbs) || 0,
+  fat: Number(totals.fat) || 0
+};
 
-      await upsertMealLog(customerGid, meal, dateKey);
+// ✅ clean numbers
+meal.calories = Math.round(Number(meal.calories) || 0);
+meal.protein  = pjRound1(meal.protein);
+meal.carbs    = pjRound1(meal.carbs);
+meal.fat      = pjRound1(meal.fat);
+
+await upsertMealLog(customerGid, meal, dateKey);
+
 
       debug.pendingMealResolved = true;
       debug.pendingMealResolvedType = mt;
