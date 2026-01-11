@@ -2361,42 +2361,44 @@ let ui_pending_reason = null;
   }
   // ===============================
 // PENDING MEAL RESOLUTION (runtime)
-// If we previously asked "what meal was this?" and user replies "lunch"
+// If we previously asked "what meal was this?" and user replies "lunch/dinner/etc"
 // ===============================
 if (customerGid) {
   try {
     const pending = await getPendingMeal(customerGid);
 
-    if (
+    const hasPending =
       pending &&
       typeof pending.raw_text === "string" &&
-      pending.raw_text.trim() &&
-      isMealTypeOnly(userMessage)
-    ) {
-      const mtRaw = String(userMessage || "").trim().toLowerCase();
+      pending.raw_text.trim();
 
+    if (hasPending && isMealTypeOnly(userMessage)) {
+      const mtRaw = String(userMessage || "").trim().toLowerCase();
       const mt =
-        mtRaw === "bfast" ? "Breakfast" :
-        mtRaw === "breakfast" ? "Breakfast" :
+        mtRaw === "bfast" || mtRaw === "breakfast" ? "Breakfast" :
         mtRaw === "lunch" ? "Lunch" :
         (mtRaw === "dinner" || mtRaw === "supper") ? "Dinner" :
         (mtRaw === "snack" || mtRaw === "snacks" || mtRaw === "dessert") ? "Snacks" :
         null;
 
-      // If invalid meal type, clear pending and stop
+      // If they typed something weird, don't get stuck
       if (!mt) {
         await setPendingMeal(customerGid, null);
-        debug.pendingMealResolved = false;
-        debug.pendingMealResolvedReason = "invalid_meal_type";
-        return;
+        return res.status(200).json({
+          reply: "Got it — can you pick one: breakfast, lunch, dinner, or snacks?",
+          debug: { ...debug, pendingMealResolved: false, pendingMealResolvedReason: "invalid_meal_type" },
+          free_chat_remaining: remainingAfter
+        });
       }
 
+      // Build base URL for internal call
       const proto =
         (req.headers["x-forwarded-proto"] && String(req.headers["x-forwarded-proto"]).split(",")[0]) ||
         "https";
       const host = req.headers["x-forwarded-host"] || req.headers.host;
       const base = host ? `${proto}://${host}` : "https://www.pjifitness.com";
 
+      // Run nutrition on the saved raw_text
       const nutRes = await fetch(`${base}/api/nutrition`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2407,32 +2409,41 @@ if (customerGid) {
       const items = Array.isArray(nut?.items) ? nut.items : [];
       const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
 
-      if (items.length && totals) {
-        const meal = {
-          date: dateKey,
-          meal_type: mt,
-          items: items.map(it => String(it?.name || it?.matched_to || "Food")),
-          calories: Number(totals.calories) || 0,
-          protein: Number(totals.protein) || 0,
-          carbs: Number(totals.carbs) || 0,
-          fat: Number(totals.fat) || 0
-        };
-
-        await upsertMealLog(customerGid, meal, dateKey);
-
-        debug.pendingMealResolved = true;
-        debug.pendingMealResolvedType = mt;
-      } else {
-        debug.pendingMealResolved = false;
-        debug.pendingMealResolvedReason = "nutrition_no_items";
-      }
-
-      // ✅ Always clear pending
+      // Always clear pending so you never get stuck
       await setPendingMeal(customerGid, null);
 
-      // ✅ Safe return (mt is guaranteed defined here)
+      if (!items.length || !totals) {
+        debug.pendingMealResolved = false;
+        debug.pendingMealResolvedReason = "nutrition_no_items";
+        return res.status(200).json({
+          reply: "I couldn’t estimate that one — can you resend the food details with amounts? (example: 6oz chicken + 1 cup rice)",
+          debug,
+          free_chat_remaining: remainingAfter
+        });
+      }
+
+      const meal = {
+        date: dateKey,
+        meal_type: mt,
+        items: items.map(it => String(it?.name || it?.matched_to || "Food")),
+        calories: Number(totals.calories) || 0,
+        protein: Number(totals.protein) || 0,
+        carbs: Number(totals.carbs) || 0,
+        fat: Number(totals.fat) || 0
+      };
+
+      await upsertMealLog(customerGid, meal, dateKey);
+
+      debug.pendingMealResolved = true;
+      debug.pendingMealResolvedType = mt;
+
+      const itemsList = meal.items.map(x => `• ${x}`).join("\n");
+      const replyText =
+        `Logged your ${mt.toLowerCase()}:\n${itemsList}\n\n` +
+        `Estimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`;
+
       return res.status(200).json({
-        reply: `Thanks — logged your ${mt.toLowerCase()}.`,
+        reply: replyText,
         debug,
         free_chat_remaining: remainingAfter
       });
