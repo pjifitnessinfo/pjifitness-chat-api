@@ -2451,9 +2451,9 @@ if (customerGid && userMessage) {
     const foodText = extractFoodLikeText(userMessage);
 
     // If it doesn't look like real food text, do nothing (let normal chat handle it)
-    if (!foodText) {
-      debug.autoMealLog = { ok: false, reason: "not_real_food_text" };
-    } else {
+   if (!foodText) {
+  // not food -> let normal chat handle it
+} else {
       const guessed = pjGuessMealTypeFromUserText(userMessage);
 
       // If they didn't specify the meal type, ask and save pending text
