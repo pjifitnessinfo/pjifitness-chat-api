@@ -3014,7 +3014,7 @@ try {
 
     const userSaidNoQuestions =
   typeof userMessage === "string" &&
-  /(?:^|\b)(no questions?|nope|nah|all good|i(?:'|’)m good|im good|sounds good|got it|makes sense|ok(?:ay)?)(?:\b|$)/i.test(
+  /^(?:no questions?|nope,?\s*no questions?|nah,?\s*no questions?|no,?\s*i(?:'|’)m good|no,?\s*im good|no,?\s*all good)\s*$/i.test(
     userMessage.trim()
   );
 
