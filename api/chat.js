@@ -1155,6 +1155,12 @@ function pjLooksLikeFoodText(text){
     /\b(cal(orie|ories)|cals|protein|carb|carbs|fat|macros)\b/.test(t)
   );
 }
+function pjHasPortionsOrUnits(text) {
+  const t = String(text || "").toLowerCase();
+  return /\b(\d+(\.\d+)?)\s*(oz|ounce|ounces|g|gram|grams|kg|lb|lbs|cup|cups|tbsp|tablespoon|tsp|teaspoon|slice|slices|serving|srv|piece|pcs)\b/i.test(t)
+    || /\b(one|two|three|half|quarter)\b\s*(cup|cups|tbsp|tablespoon|tsp|teaspoon|slice|slices|serving|piece)\b/i.test(t);
+}
+
 function extractFoodLikeText(text) {
   if (!text) return null;
 
