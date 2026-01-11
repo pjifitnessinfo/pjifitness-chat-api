@@ -3010,40 +3010,6 @@ if (customerGid) {
       }
     }
 
-    // ✅ FINAL USER REPLY (sanitized)
-    let cleanedReply = pjSanitizeForUser(rawReply);
-
-   // ✅ Post-plan flow (only after user says "no questions / ok")
-try {
-  if (customerGid && onboardingComplete === true) {
-    const stage = postPlanStage || await getPostPlanStage(customerGid);
-
-    const userSaidNoQuestions =
-  typeof userMessage === "string" &&
-  /^(?:no questions?|nope,?\s*no questions?|nah,?\s*no questions?|no,?\s*i(?:'|’)m good|no,?\s*im good|no,?\s*all good)\s*$/i.test(
-    userMessage.trim()
-  );
-
-    if (stage === "plan_questions") {
-      // Only move to tour/meal AFTER user confirms no questions
-      if (userSaidNoQuestions) {
-        cleanedReply =
-          `${cleanedReply}\n\n` +
-          `${PJ_POST_PLAN_REFRESH}\n\n` +
-          `${PJ_POST_PLAN_EDU}\n\n` +
-          `${PJ_POST_PLAN_MEAL_PROMPT}`;
-
-        await setPostPlanStage(customerGid, "done");
-        debug.postPlanStageAdvanced = "done";
-      } else {
-        // Keep them in Q&A mode; don't inject tour/meal yet
-        debug.postPlanStageAdvanced = "plan_questions_still";
-      }
-    }
-  }
-} catch (e) {
-  console.log("Post-plan stage injection error:", e);
-}
 
 
     res.status(200).json({
