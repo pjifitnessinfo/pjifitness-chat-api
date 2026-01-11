@@ -1176,8 +1176,7 @@ function extractFoodLikeText(text) {
   const lower = original.toLowerCase();
 
   // ------------------------------------------------------------
-  // HARD STOP: if it looks like a normal coaching sentence, DO NOT log
-  // (prevents: "ok sounds good... stay under calories... you can log it out for breakfast")
+  // HARD STOP: common conversational / coaching phrases
   // ------------------------------------------------------------
   const convoPhrases = [
     "sounds good",
@@ -1195,84 +1194,91 @@ function extractFoodLikeText(text) {
     "plan",
     "targets",
     "calories left",
-    "how many calories left"
+    "how many calories left",
+    "log it out",
+    "log out for"
   ];
   const convoHit = convoPhrases.some(p => lower.includes(p));
 
-  // long messages are almost always conversation; only allow if clearly food-dense
+  // ------------------------------------------------------------
+  // HARD STOP: "I'm going to have..." / "I will have..."
+  // This is the exact pattern in your screenshot that should NOT auto-log.
+  // (User is talking, not logging clean food input.)
+  // ------------------------------------------------------------
+  const futureIntent =
+    /\b(i(?:'|’)m|im)\s+going\s+to\s+have\b/i.test(original) ||
+    /\b(i(?:'|’)ll|ill)\s+have\b/i.test(original) ||
+    /\bi\s+will\s+have\b/i.test(original);
+
+  // Long messages are almost always conversation
   const isLong = original.length > 180;
 
-  // If it's a question, usually NOT a log request. (Questions like "what are calories for that?")
-  // We still allow if they start with "i ate/had" and it's short & food-dense.
+  // Questions are usually NOT a log request (unless very food-dense)
   const hasQuestionMark = original.includes("?");
 
+  if (futureIntent) return null;
+  if ((convoHit && isLong) || (hasQuestionMark && isLong)) return null;
+
   // ------------------------------------------------------------
-  // Try to EXTRACT a food clause when user wraps it in a sentence:
-  // - "I had X" / "I ate X" / "For breakfast: X" / "Breakfast was X"
+  // Try to extract a food clause ONLY when user clearly ate/had it
   // ------------------------------------------------------------
   let candidate = original;
 
-  // Prefer the part AFTER "I ate"/"I had"
+  // Prefer text after "I ate"/"I had"
   const ateHad = lower.match(/\b(i\s*(ate|had))\b/);
   if (ateHad && ateHad.index != null) {
     candidate = original.slice(ateHad.index);
   }
 
-  // Or after "for breakfast/lunch/dinner/snack"
-  const forMeal = lower.match(/\bfor\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b/);
-  if (forMeal && forMeal.index != null) {
-    candidate = original.slice(forMeal.index);
+  // Or after "breakfast:" style headers
+  const mealHeader = lower.match(/\b(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b\s*[:\-–]/);
+  if (mealHeader && mealHeader.index != null) {
+    candidate = original.slice(mealHeader.index);
   }
 
-  // Remove common leading wrapper words from candidate
+  // Clean wrappers
   candidate = candidate
-    .replace(/^\s*(hey|hi|coach|please|can you|could you|i hope you can|really hope you can)\b[:,]?\s*/i, "")
-    .replace(/^\s*(log|track|add|save)\b/gi, "")
-    .replace(/^\s*(this|my)\b/gi, "")
-    .replace(/^\s*(meal|food)\b/gi, "")
-    .replace(/^\s*[:\-–,]+\s*/g, "")
-    .trim();
-
-  // Strip meal-type headings but KEEP food
-  candidate = candidate
+    .replace(/^\s*(hey|hi|coach|please|can you|could you)\b[:,]?\s*/i, "")
+    .replace(/^\s*(log|track|add|save)\b\s*/i, "")
     .replace(/^\s*(for\s+)?(breakfast|bfast|lunch|dinner|supper|snacks?)\b\s*(was)?\s*[:\-–,]?\s*/i, "")
     .trim();
 
-  // If candidate is still basically the same long conversational paragraph, stop.
-  // (This is the exact bug you showed.)
-  if ((convoHit && isLong) || (hasQuestionMark && isLong)) return null;
+  // ------------------------------------------------------------
+  // FOOD SIGNALS: must have a food word AND (a quantity/unit OR a brand/item)
+  // This prevents "Kirkland protein brownie bar I think it's 190 cal..." from becoming garbage input.
+  // ------------------------------------------------------------
+  const foodWordsRe =
+    /\b(egg|eggs|toast|bread|butter|cheese|chicken|beef|steak|rice|potato|fries|burger|sandwich|wrap|salad|pizza|pasta|taco|burrito|protein|shake|bar|yogurt|oat|oats|banana|apple|berries|granola|cereal|milk|coffee)\b/i;
 
-  // ------------------------------------------------------------
-  // FOOD SIGNAL SCORING: must look like actual foods, not vague talk
-  // ------------------------------------------------------------
-  const foodWordsRe = /\b(egg|eggs|toast|bread|butter|cheese|chicken|beef|steak|rice|potato|fries|burger|sandwich|wrap|salad|pizza|pasta|taco|burrito|protein|shake|bar|yogurt|oat|oats|banana|apple|berries|granola|cereal|milk|coffee)\b/i;
-  const unitsRe = /\b(\d+(\.\d+)?)\s*(oz|ounce|ounces|g|gram|grams|kg|lb|lbs|cup|cups|tbsp|tablespoon|tsp|teaspoon|slice|slices|serving|piece|pcs)\b/i;
+  const unitsRe =
+    /\b(\d+(\.\d+)?)\s*(oz|ounce|ounces|g|gram|grams|kg|lb|lbs|cup|cups|tbsp|tablespoon|tsp|teaspoon|slice|slices|serving|piece|pcs)\b/i;
+
+  const brandRe =
+    /\b(kirkland|premier|fairlife|quest|chipotle|mcdonalds|starbucks)\b/i;
 
   const hasFoodWord = foodWordsRe.test(candidate);
   const hasUnits = unitsRe.test(candidate);
+  const hasBrand = brandRe.test(candidate);
 
-  // If it doesn't have a food word OR a unit, it's too risky.
-  // (prevents logging: "ok sounds good" / "stay under calories" / etc)
-  if (!hasFoodWord && !hasUnits) return null;
+  // Require actual food mention
+  if (!hasFoodWord) return null;
 
-  // If it’s still super long, reject unless it contains multiple food signals
-  if (candidate.length > 220) {
-    // Require BOTH a unit and a food word if long
-    if (!(hasFoodWord && hasUnits)) return null;
-  }
+  // Require either units/quantity OR a known packaged brand/item marker
+  if (!hasUnits && !hasBrand) return null;
 
-  // Final cleanup: remove leftover coaching filler phrases that sometimes sneak in
+  // If still too long, reject (prevents logging paragraphs)
+  if (candidate.length > 220) return null;
+
+  // Final cleanup (strip filler)
   candidate = candidate
-    .replace(/\b(ok|okay|sounds good|thank you|thanks|yeah|yep|nope|nah)\b/gi, "")
+    .replace(/\b(ok|okay|sounds good|thank you|thanks|yeah|yep|nope|nah|i think|probably|maybe)\b/gi, "")
     .replace(/\s+/g, " ")
     .trim();
 
-  // If we cleaned it down to nothing, stop
   if (!candidate) return null;
 
   return candidate;
 }
-
 
 
 function pjSplitMealsFromUserMessage(text) {
