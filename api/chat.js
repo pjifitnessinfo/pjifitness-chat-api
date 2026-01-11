@@ -2423,6 +2423,12 @@ if (customerGid) {
       // Always clear pending so you never get stuck
       await setPendingMeal(customerGid, null);
     }
+     return res.status(200).json({
+  reply: `Thanks — logged your ${mt.toLowerCase()}.`,
+  debug,
+  free_chat_remaining: remainingAfter
+});
+
   } catch (e) {
     debug.pendingMealResolveError = String(e?.message || e);
   }
