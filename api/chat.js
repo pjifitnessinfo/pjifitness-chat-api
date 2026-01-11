@@ -1170,28 +1170,109 @@ function pjHasPortionsOrUnits(text) {
 function extractFoodLikeText(text) {
   if (!text) return null;
 
-  let cleaned = String(text).trim();
+  const original = String(text).trim();
+  if (!original) return null;
 
-  // ✅ Remove common leading wrappers so nutrition doesn’t treat them as “food”
-  cleaned = cleaned
+  const lower = original.toLowerCase();
+
+  // ------------------------------------------------------------
+  // HARD STOP: if it looks like a normal coaching sentence, DO NOT log
+  // (prevents: "ok sounds good... stay under calories... you can log it out for breakfast")
+  // ------------------------------------------------------------
+  const convoPhrases = [
+    "sounds good",
+    "bad day",
+    "yesterday",
+    "stay under",
+    "trying to",
+    "i’m trying",
+    "im trying",
+    "can you help",
+    "what should i",
+    "do you think",
+    "do you have",
+    "question",
+    "plan",
+    "targets",
+    "calories left",
+    "how many calories left"
+  ];
+  const convoHit = convoPhrases.some(p => lower.includes(p));
+
+  // long messages are almost always conversation; only allow if clearly food-dense
+  const isLong = original.length > 180;
+
+  // If it's a question, usually NOT a log request. (Questions like "what are calories for that?")
+  // We still allow if they start with "i ate/had" and it's short & food-dense.
+  const hasQuestionMark = original.includes("?");
+
+  // ------------------------------------------------------------
+  // Try to EXTRACT a food clause when user wraps it in a sentence:
+  // - "I had X" / "I ate X" / "For breakfast: X" / "Breakfast was X"
+  // ------------------------------------------------------------
+  let candidate = original;
+
+  // Prefer the part AFTER "I ate"/"I had"
+  const ateHad = lower.match(/\b(i\s*(ate|had))\b/);
+  if (ateHad && ateHad.index != null) {
+    candidate = original.slice(ateHad.index);
+  }
+
+  // Or after "for breakfast/lunch/dinner/snack"
+  const forMeal = lower.match(/\bfor\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b/);
+  if (forMeal && forMeal.index != null) {
+    candidate = original.slice(forMeal.index);
+  }
+
+  // Remove common leading wrapper words from candidate
+  candidate = candidate
     .replace(/^\s*(hey|hi|coach|please|can you|could you|i hope you can|really hope you can)\b[:,]?\s*/i, "")
-    .replace(/^\s*(for\s+)?(breakfast|bfast|lunch|dinner|supper|snacks?)\b\s*[:,\-]?\s*/i, "")
-    .replace(/^\s*i\s*(ate|had)\b\s*/i, "")
-    .replace(/\b(log|track|add|save|my)\b/gi, "")
+    .replace(/^\s*(log|track|add|save)\b/gi, "")
+    .replace(/^\s*(this|my)\b/gi, "")
+    .replace(/^\s*(meal|food)\b/gi, "")
+    .replace(/^\s*[:\-–,]+\s*/g, "")
+    .trim();
+
+  // Strip meal-type headings but KEEP food
+  candidate = candidate
+    .replace(/^\s*(for\s+)?(breakfast|bfast|lunch|dinner|supper|snacks?)\b\s*(was)?\s*[:\-–,]?\s*/i, "")
+    .trim();
+
+  // If candidate is still basically the same long conversational paragraph, stop.
+  // (This is the exact bug you showed.)
+  if ((convoHit && isLong) || (hasQuestionMark && isLong)) return null;
+
+  // ------------------------------------------------------------
+  // FOOD SIGNAL SCORING: must look like actual foods, not vague talk
+  // ------------------------------------------------------------
+  const foodWordsRe = /\b(egg|eggs|toast|bread|butter|cheese|chicken|beef|steak|rice|potato|fries|burger|sandwich|wrap|salad|pizza|pasta|taco|burrito|protein|shake|bar|yogurt|oat|oats|banana|apple|berries|granola|cereal|milk|coffee)\b/i;
+  const unitsRe = /\b(\d+(\.\d+)?)\s*(oz|ounce|ounces|g|gram|grams|kg|lb|lbs|cup|cups|tbsp|tablespoon|tsp|teaspoon|slice|slices|serving|piece|pcs)\b/i;
+
+  const hasFoodWord = foodWordsRe.test(candidate);
+  const hasUnits = unitsRe.test(candidate);
+
+  // If it doesn't have a food word OR a unit, it's too risky.
+  // (prevents logging: "ok sounds good" / "stay under calories" / etc)
+  if (!hasFoodWord && !hasUnits) return null;
+
+  // If it’s still super long, reject unless it contains multiple food signals
+  if (candidate.length > 220) {
+    // Require BOTH a unit and a food word if long
+    if (!(hasFoodWord && hasUnits)) return null;
+  }
+
+  // Final cleanup: remove leftover coaching filler phrases that sometimes sneak in
+  candidate = candidate
+    .replace(/\b(ok|okay|sounds good|thank you|thanks|yeah|yep|nope|nah)\b/gi, "")
     .replace(/\s+/g, " ")
     .trim();
 
-  // Must contain a real food signal (expanded for restaurant meals)
-  const looksLikeFood =
-    /\b(oz|ounce|ounces|cup|cups|slice|slices|tbsp|tsp|gram|grams|g|ml)\b/i.test(cleaned) ||
-    /\b(i\s*(ate|had)|ate|had)\b/i.test(text) ||
-    /\b(omelet|omelette|toast|hash\s*brown|hashbrown|pancake|waffle|bacon|sausage|egg|eggs|cheese|chicken|beef|steak|rice|potato|fries|burger|sandwich|wrap|salad|pizza|pasta|taco|burrito|protein|milk|shake|bar)\b/i.test(cleaned) ||
-    /\b(ihop|chipotle|mcdonald'?s|chick[\s-]?fil[\s-]?a|subway|starbucks|wendy'?s|burger\s*king|taco\s*bell)\b/i.test(cleaned);
+  // If we cleaned it down to nothing, stop
+  if (!candidate) return null;
 
-  if (!looksLikeFood) return null;
-
-  return cleaned;
+  return candidate;
 }
+
 
 
 function pjSplitMealsFromUserMessage(text) {
