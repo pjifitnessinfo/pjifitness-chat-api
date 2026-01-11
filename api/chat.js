@@ -2522,6 +2522,12 @@ if (customerGid && userMessage) {
           carbs: Number(totals.carbs) || 0,
           fat: Number(totals.fat) || 0
         };
+         // ✅ clean numbers BEFORE any caps/scaling
+meal.calories = Math.round(Number(meal.calories) || 0);
+meal.protein  = pjRound1(meal.protein);
+meal.carbs    = pjRound1(meal.carbs);
+meal.fat      = pjRound1(meal.fat);
+
          // ✅ No-portion sanity cap (ChatGPT-style estimates)
 const hasPortions = pjHasPortionsOrUnits(foodText);
 if (!hasPortions) {
