@@ -2565,7 +2565,13 @@ if (customerGid && userMessage) {
    if (!foodText) {
   // not food -> let normal chat handle it
 } else {
-      const guessed = pjGuessMealTypeFromUserText(userMessage);
+      let guessed = pjGuessMealTypeFromUserText(userMessage);
+
+// ✅ If they used "Meal:" header, infer a meal type from NY clock
+if (!guessed && /^\s*meal\s*[:\-–]/i.test(String(userMessage || ""))) {
+  guessed = pjInferMealTypeFromClock().toLowerCase();
+}
+
 
       // If they didn't specify the meal type, ask and save pending text
       if (!guessed) {
