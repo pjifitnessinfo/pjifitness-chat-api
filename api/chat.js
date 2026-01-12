@@ -2062,6 +2062,29 @@ function localYMD() {
   const local = new Date(d.getTime() - off * 60000);
   return local.toISOString().slice(0, 10);
 }
+function pjGetHourInNY() {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      hour: "numeric",
+      hour12: false
+    }).formatToParts(new Date());
+
+    const h = Number(parts.find(p => p.type === "hour")?.value);
+    return Number.isFinite(h) ? h : null;
+  } catch {
+    return null;
+  }
+}
+
+function pjInferMealTypeFromClock() {
+  const h = pjGetHourInNY();
+  if (h === null) return "Snacks";
+  if (h >= 5 && h < 11) return "Breakfast";
+  if (h >= 11 && h < 16) return "Lunch";
+  if (h >= 16 && h < 21) return "Dinner";
+  return "Snacks";
+}
 
 function detectMealCorrection(userMsg) {
   if (!userMsg || typeof userMsg !== "string") return false;
