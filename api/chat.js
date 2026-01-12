@@ -1175,9 +1175,6 @@ function extractFoodLikeText(text) {
 
   const lower = original.toLowerCase();
 
-  // ------------------------------------------------------------
-  // HARD STOP: common conversational / coaching phrases
-  // ------------------------------------------------------------
   const convoPhrases = [
     "sounds good",
     "bad day",
@@ -1200,53 +1197,38 @@ function extractFoodLikeText(text) {
   ];
   const convoHit = convoPhrases.some(p => lower.includes(p));
 
-  // ------------------------------------------------------------
-  // HARD STOP: "I'm going to have..." / "I will have..."
-  // This is the exact pattern in your screenshot that should NOT auto-log.
-  // (User is talking, not logging clean food input.)
-  // ------------------------------------------------------------
   const futureIntent =
     /\b(i(?:'|’)m|im)\s+going\s+to\s+have\b/i.test(original) ||
     /\b(i(?:'|’)ll|ill)\s+have\b/i.test(original) ||
     /\bi\s+will\s+have\b/i.test(original);
 
-  // Long messages are almost always conversation
   const isLong = original.length > 180;
-
-  // Questions are usually NOT a log request (unless very food-dense)
   const hasQuestionMark = original.includes("?");
 
   if (futureIntent) return null;
   if ((convoHit && isLong) || (hasQuestionMark && isLong)) return null;
 
-  // ------------------------------------------------------------
-  // Try to extract a food clause ONLY when user clearly ate/had it
-  // ------------------------------------------------------------
   let candidate = original;
 
-  // Prefer text after "I ate"/"I had"
-  const ateHad = lower.match(/\b(i\s*(ate|had))\b/);
-  if (ateHad && ateHad.index != null) {
-    candidate = original.slice(ateHad.index);
+  // ✅ NEW: supports "Meal: ..."
+  const header = lower.match(/^\s*(meal|breakfast|bfast|lunch|dinner|supper|snack|snacks|dessert)\s*[:\-–]\s*(.+)$/i);
+  if (header) {
+    candidate = (header[2] || "").trim();
+  } else {
+    const ateHad = lower.match(/\b(i\s*(ate|had))\b/);
+    if (ateHad && ateHad.index != null) {
+      candidate = original.slice(ateHad.index);
+    }
   }
 
-  // Or after "breakfast:" style headers
-  const mealHeader = lower.match(/\b(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b\s*[:\-–]/);
-  if (mealHeader && mealHeader.index != null) {
-    candidate = original.slice(mealHeader.index);
-  }
-
-  // Clean wrappers
   candidate = candidate
     .replace(/^\s*(hey|hi|coach|please|can you|could you)\b[:,]?\s*/i, "")
     .replace(/^\s*(log|track|add|save)\b\s*/i, "")
-    .replace(/^\s*(for\s+)?(breakfast|bfast|lunch|dinner|supper|snacks?)\b\s*(was)?\s*[:\-–,]?\s*/i, "")
+    .replace(/^\s*(for\s+)?(meal|breakfast|bfast|lunch|dinner|supper|snacks?)\b\s*(was)?\s*[:\-–,]?\s*/i, "")
     .trim();
 
-  // ------------------------------------------------------------
-  // FOOD SIGNALS: must have a food word AND (a quantity/unit OR a brand/item)
-  // This prevents "Kirkland protein brownie bar I think it's 190 cal..." from becoming garbage input.
-  // ------------------------------------------------------------
+  if (!candidate) return null;
+
   const foodWordsRe =
     /\b(egg|eggs|toast|bread|butter|cheese|chicken|beef|steak|rice|potato|fries|burger|sandwich|wrap|salad|pizza|pasta|taco|burrito|protein|shake|bar|yogurt|oat|oats|banana|apple|berries|granola|cereal|milk|coffee)\b/i;
 
@@ -1260,26 +1242,21 @@ function extractFoodLikeText(text) {
   const hasUnits = unitsRe.test(candidate);
   const hasBrand = brandRe.test(candidate);
 
-  // Require actual food mention
   if (!hasFoodWord) return null;
 
-  // Require either units/quantity OR a known packaged brand/item marker
-  if (!hasUnits && !hasBrand) return null;
+  // ✅ CHANGE: allow short explicit meals even without units/brand
+  const isShort = candidate.length <= 80;
+  if (!hasUnits && !hasBrand && !isShort) return null;
 
-  // If still too long, reject (prevents logging paragraphs)
   if (candidate.length > 220) return null;
 
-  // Final cleanup (strip filler)
   candidate = candidate
     .replace(/\b(ok|okay|sounds good|thank you|thanks|yeah|yep|nope|nah|i think|probably|maybe)\b/gi, "")
     .replace(/\s+/g, " ")
     .trim();
 
-  if (!candidate) return null;
-
-  return candidate;
+  return candidate || null;
 }
-
 
 function pjSplitMealsFromUserMessage(text) {
   const raw = String(text || "").trim();
