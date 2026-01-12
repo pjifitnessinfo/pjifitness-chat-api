@@ -3010,6 +3010,8 @@ if (customerGid) {
       }
     }
 
+// ✅ FINAL USER REPLY (sanitized)
+const cleanedReply = pjSanitizeForUser(rawReply);
 
 
     res.status(200).json({
