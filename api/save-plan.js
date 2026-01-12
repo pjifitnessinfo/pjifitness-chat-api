@@ -1,15 +1,27 @@
 // /api/save-plan.js
-// Saves the user's plan (calories, protein, fat, carbs) into a customer metafield
-// and marks onboarding as completed.
-
-const SHOPIFY_SHOP = process.env.SHOPIFY_SHOP; // e.g. "your-store.myshopify.com"
+const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_ADMIN_API_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 
-// Helper: call Shopify Admin GraphQL
-async function shopifyGraphql(query, variables) {
-  const url = `https://${SHOPIFY_SHOP}/admin/api/2024-01/graphql.json`;
+// ✅ allow your Shopify domain + local dev
+const ALLOWED_ORIGINS = new Set([
+  "https://www.pjifitness.com",
+  "https://pjifitness.com",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+]);
 
-  const res = await fetch(url, {
+function setCors(req, res) {
+  const origin = req.headers.origin;
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+async function shopifyGraphQL(query, variables = {}) {
+  const res = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2024-01/graphql.json`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -18,101 +30,127 @@ async function shopifyGraphql(query, variables) {
     body: JSON.stringify({ query, variables }),
   });
 
-  const json = await res.json();
-  if (!res.ok || json.errors) {
-    console.error("Shopify GraphQL error:", JSON.stringify(json, null, 2));
-    throw new Error("Shopify GraphQL request failed");
-  }
-  return json;
+  const text = await res.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch {}
+
+  if (!res.ok) throw new Error(`Shopify HTTP ${res.status}: ${text}`);
+  if (json?.errors?.length) throw new Error(`Shopify GraphQL errors: ${JSON.stringify(json.errors)}`);
+  return json.data;
+}
+
+function asNum(x) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
+}
+
+function safeObj(x) {
+  if (!x) return null;
+  if (typeof x === "object") return x;
+  try { return JSON.parse(String(x)); } catch { return null; }
 }
 
 export default async function handler(req, res) {
+  setCors(req, res);
+
+  if (req.method === "OPTIONS") return res.status(204).end();
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).json({ ok: false, error: "method_not_allowed" });
   }
 
+  if (!SHOPIFY_STORE_DOMAIN || !SHOPIFY_ADMIN_API_ACCESS_TOKEN) {
+    return res.status(500).json({ ok: false, error: "missing_env", message: "Missing Shopify env vars" });
+  }
+
+  let body = null;
   try {
-    const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+    body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
+  } catch (e) {
+    return res.status(400).json({ ok: false, error: "bad_json", message: "Invalid JSON body" });
+  }
 
-    // Support a few possible field names for the customer id
-    const rawCustomerId =
-      body.customerId ||
-      body.shopifyCustomerId ||
-      body.customer_id ||
-      body.customer_id_raw;
+  const customerId = String(body.customerId || "").trim();
+  const numeric = customerId.replace(/[^0-9]/g, "");
+  const customerGid = numeric ? `gid://shopify/Customer/${numeric}` : null;
 
-    if (!rawCustomerId) {
-      return res.status(400).json({ error: "Missing customerId" });
-    }
+  if (!customerGid) {
+    return res.status(400).json({ ok: false, error: "missing_customerId", message: "Missing customerId" });
+  }
 
-    // If we ever get a full gid, strip it down; if it's just a number, that's fine too.
-    const numericId = String(rawCustomerId).replace(
-      "gid://shopify/Customer/",
-      ""
-    );
-    const ownerId = `gid://shopify/Customer/${numericId}`;
+  // Accept either coach_plan or plan_json in payload (we store both)
+  const coach_plan = safeObj(body.coach_plan) || safeObj(body.plan_json) || {};
+  const plan_json  = safeObj(body.plan_json) || safeObj(body.coach_plan) || {};
 
-    const calories = Number(body.calories) || 0;
-    const protein = Number(body.protein) || 0;
-    const fat = Number(body.fat) || 0;
-    const carbs = Number(body.carbs) || 0;
+  // Light normalization (don’t overdo it)
+  if (coach_plan.current_weight_lbs == null && plan_json.current_weight_lbs != null) coach_plan.current_weight_lbs = plan_json.current_weight_lbs;
+  if (coach_plan.goal_weight_lbs == null && plan_json.goal_weight_lbs != null) coach_plan.goal_weight_lbs = plan_json.goal_weight_lbs;
+  if (coach_plan.age == null && plan_json.age != null) coach_plan.age = plan_json.age;
 
-    const plan = {
-      calories,
-      protein,
-      fat,
-      carbs,
-    };
+  // Mark onboarding complete + stage done
+  const onboarding_complete_value = "true";
+  const post_plan_stage_value = "done";
 
+  try {
     const mutation = `
-      mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
-        metafieldsSet(metafields: $metafields) {
-          metafields {
-            id
-            key
-            namespace
-            type
-            value
-          }
-          userErrors {
-            field
-            message
-          }
+      mutation SetPlan($id: ID!, $mf: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $mf) {
+          metafields { id namespace key value }
+          userErrors { field message }
         }
       }
     `;
 
-    const variables = {
-      metafields: [
-        {
-          ownerId,
-          namespace: "custom",
-          key: "coach_plan",
-          type: "json",
-          value: JSON.stringify(plan),
-        },
-        {
-          ownerId,
-          namespace: "custom",
-          key: "onboarding_status",
-          type: "single_line_text_field",
-          value: "completed",
-        },
-      ],
-    };
+    const metafields = [
+      {
+        ownerId: customerGid,
+        namespace: "custom",
+        key: "coach_plan",
+        type: "json",
+        value: JSON.stringify(coach_plan || {}),
+      },
+      {
+        ownerId: customerGid,
+        namespace: "custom",
+        key: "plan_json",
+        type: "json",
+        value: JSON.stringify(plan_json || {}),
+      },
+      {
+        ownerId: customerGid,
+        namespace: "custom",
+        key: "onboarding_complete",
+        type: "single_line_text_field",
+        value: onboarding_complete_value,
+      },
+      {
+        ownerId: customerGid,
+        namespace: "custom",
+        key: "post_plan_stage",
+        type: "single_line_text_field",
+        value: post_plan_stage_value,
+      },
+    ];
 
-    const result = await shopifyGraphql(mutation, variables);
+    const data = await shopifyGraphQL(mutation, { id: customerGid, mf: metafields });
 
-    const userErrors = result?.data?.metafieldsSet?.userErrors || [];
-    if (userErrors.length) {
-      console.error("metafieldsSet userErrors:", userErrors);
-      return res.status(400).json({ error: "Shopify userErrors", userErrors });
+    const errs = data?.metafieldsSet?.userErrors || [];
+    if (errs.length) {
+      return res.status(400).json({ ok: false, error: "shopify_user_errors", userErrors: errs });
     }
 
-    const metafields = result?.data?.metafieldsSet?.metafields || [];
-    return res.status(200).json({ ok: true, metafields });
-  } catch (err) {
-    console.error("save-plan error:", err);
-    return res.status(500).json({ error: "Internal server error" });
+    return res.status(200).json({
+      ok: true,
+      customerGid,
+      onboarding_complete: true,
+      post_plan_stage: "done",
+    });
+  } catch (e) {
+    return res.status(500).json({
+      ok: false,
+      error: "save_plan_failed",
+      message: String(e?.message || e),
+    });
   }
 }
