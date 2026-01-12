@@ -39,11 +39,6 @@ async function shopifyGraphQL(query, variables = {}) {
   return json.data;
 }
 
-function asNum(x) {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : null;
-}
-
 function safeObj(x) {
   if (!x) return null;
   if (typeof x === "object") return x;
@@ -67,7 +62,7 @@ export default async function handler(req, res) {
   let body = null;
   try {
     body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
-  } catch (e) {
+  } catch {
     return res.status(400).json({ ok: false, error: "bad_json", message: "Invalid JSON body" });
   }
 
@@ -79,22 +74,13 @@ export default async function handler(req, res) {
     return res.status(400).json({ ok: false, error: "missing_customerId", message: "Missing customerId" });
   }
 
-  // Accept either coach_plan or plan_json in payload (we store both)
   const coach_plan = safeObj(body.coach_plan) || safeObj(body.plan_json) || {};
-  const plan_json  = safeObj(body.plan_json) || safeObj(body.coach_plan) || {};
-
-  // Light normalization (don’t overdo it)
-  if (coach_plan.current_weight_lbs == null && plan_json.current_weight_lbs != null) coach_plan.current_weight_lbs = plan_json.current_weight_lbs;
-  if (coach_plan.goal_weight_lbs == null && plan_json.goal_weight_lbs != null) coach_plan.goal_weight_lbs = plan_json.goal_weight_lbs;
-  if (coach_plan.age == null && plan_json.age != null) coach_plan.age = plan_json.age;
-
-  // Mark onboarding complete + stage done
-  const onboarding_complete_value = "true";
-  const post_plan_stage_value = "done";
+  const plan_json  = safeObj(body.plan_json)  || safeObj(body.coach_plan) || {};
 
   try {
+    // ✅ FIX: no unused $id variable
     const mutation = `
-      mutation SetPlan($id: ID!, $mf: [MetafieldsSetInput!]!) {
+      mutation SetPlan($mf: [MetafieldsSetInput!]!) {
         metafieldsSet(metafields: $mf) {
           metafields { id namespace key value }
           userErrors { field message }
@@ -122,18 +108,18 @@ export default async function handler(req, res) {
         namespace: "custom",
         key: "onboarding_complete",
         type: "single_line_text_field",
-        value: onboarding_complete_value,
+        value: "true",
       },
       {
         ownerId: customerGid,
         namespace: "custom",
         key: "post_plan_stage",
         type: "single_line_text_field",
-        value: post_plan_stage_value,
+        value: "done",
       },
     ];
 
-    const data = await shopifyGraphQL(mutation, { id: customerGid, mf: metafields });
+    const data = await shopifyGraphQL(mutation, { mf: metafields });
 
     const errs = data?.metafieldsSet?.userErrors || [];
     if (errs.length) {
