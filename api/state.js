@@ -1,7 +1,5 @@
 // /api/state.js
-// PURPOSE:
-// Read coach state (plan + daily logs + flags) for the Coach UI
-// NO PII (no email) – avoids Shopify permission errors
+// Coach state endpoint with CORS + Shopify-safe access
 
 const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_ADMIN_API_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
@@ -29,11 +27,9 @@ async function shopifyGraphQL(query, variables = {}) {
   if (!res.ok) {
     throw new Error(`Shopify HTTP ${res.status}: ${text}`);
   }
-
   if (json?.errors?.length) {
     throw new Error(`Shopify GraphQL errors: ${JSON.stringify(json.errors)}`);
   }
-
   return json.data;
 }
 
@@ -41,7 +37,33 @@ async function shopifyGraphQL(query, variables = {}) {
 // API handler
 // --------------------------------------------------
 export default async function handler(req, res) {
+
+  /* =========================
+     CORS — REQUIRED
+     ========================= */
+  const origin = req.headers.origin || "";
+
+  const ALLOWED_ORIGINS = [
+    "https://www.pjifitness.com",
+    "https://pjifitness.com"
+  ];
+
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+
   res.setHeader("Content-Type", "application/json; charset=utf-8");
+
+  /* ========================= */
 
   if (!SHOPIFY_STORE_DOMAIN || !SHOPIFY_ADMIN_API_ACCESS_TOKEN) {
     return res.status(500).json({
@@ -50,7 +72,6 @@ export default async function handler(req, res) {
     });
   }
 
-  // Accept ONLY numeric customerId (safe, no PII)
   const raw = String(req.query.customerId || "").trim();
   const numericId = raw.replace(/[^0-9]/g, "");
   const customerGid = numericId
@@ -65,7 +86,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 🚫 NO email, NO PII
     const query = `
       query GetCoachState($id: ID!) {
         customer(id: $id) {
