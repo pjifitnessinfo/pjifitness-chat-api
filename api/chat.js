@@ -1877,16 +1877,15 @@ async function upsertMealLog(customerGid, meal, dateKey, options = {}) {
   const protein = Number(meal.protein) || 0;
   const carbs = Number(meal.carbs) || 0;
   const fat = Number(meal.fat) || 0;
+// ✅ meal_type is now OPTIONAL (we're removing breakfast/lunch/dinner/snack dependence)
+const mealType = normalizeMealType(meal.meal_type) || null;
 
-  const mealType = normalizeMealType(meal.meal_type);
-if (!mealType) return; // ✅ if no known type, don't save it into the wrong bucket
+// ✅ items are now OBJECTS with macros (from /api/nutrition)
+let items = pjNormalizeMealItems(meal.items);
 
-
-  let items = pjCleanMealItems(meal.items);
-
-
-// ✅ If items got wiped (because they were sentences), do NOT save the meal.
+// ✅ If we still got nothing meaningful, don't save
 if (!items.length) return;
+
 
 
   const replaceMealType = options.replaceMealType || null;
