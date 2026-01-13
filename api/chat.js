@@ -2605,8 +2605,11 @@ if (!guessed && /^\s*meal\s*[:\-–]/i.test(String(userMessage || ""))) {
       const nutRes = await fetch(`${base}/api/nutrition`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: String(foodText || "").trim() }) // ✅ use cleaned food text
-      });
+        body: JSON.stringify({
+  text: String(foodText || "").trim(),
+  customerId: customerNumericId || customerGid
+})
+
 
       const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
       const items = Array.isArray(nut?.items) ? nut.items : [];
