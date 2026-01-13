@@ -2478,6 +2478,89 @@ if (customerGid) {
       pending &&
       typeof pending.raw_text === "string" &&
       pending.raw_text.trim();
+    // ✅ If we already have meal_type saved and user is now sending portions, resolve it
+if (hasPending && pending.meal_type && pjHasPortionsOrUnits(userMessage)) {
+  const mt = normalizeMealType(pending.meal_type) || pending.meal_type;
+
+  const base = pjInternalUrl("");
+  const combinedText = `${String(pending.raw_text || "").trim()}, ${String(userMessage || "").trim()}`.trim();
+
+  const nutRes = await fetch(`${base}/api/nutrition`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text: combinedText,
+      customerId: customerNumericId || customerGid
+    })
+  });
+
+  const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
+  const items = Array.isArray(nut?.items) ? nut.items : [];
+  const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
+  const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
+  const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
+
+  if (!nut || nut.ok !== true || incomplete) {
+    debug.pendingMealResolved = false;
+    debug.pendingMealResolvedReason = needs.length ? "needs_clarification" : "nutrition_incomplete";
+
+    const qText = needs.length
+      ? needs.map((q) => `- ${q.question}`).join("\n")
+      : "- What portion did you have for each item? (examples: 6oz, 1 cup cooked, 200g)";
+
+    // ✅ keep pending (with meal_type) so we don't ask meal type again
+    await setPendingMeal(customerGid, {
+      ...pending,
+      meal_type: mt,
+      raw_text: String(pending.raw_text || "").trim()
+    });
+
+    return res.status(200).json({
+      reply:
+        "To log this accurately, I need portions.\n\n" +
+        qText +
+        "\n\nReply with amounts like: \"chicken 6oz, rice 1 cup cooked\".\n" +
+        "If you are not sure, you can also send a clear close-up photo of the plate.",
+      debug,
+      free_chat_remaining: remainingAfter
+    });
+  }
+
+  // ✅ clear pending once fully resolved
+  await setPendingMeal(customerGid, null);
+
+  const meal = {
+    date: dateKey,
+    meal_type: mt,
+    items: items.map(it => String(it?.name || it?.matched_to || "Food")),
+    calories: Number(totals.calories) || 0,
+    protein: Number(totals.protein) || 0,
+    carbs: Number(totals.carbs) || 0,
+    fat: Number(totals.fat) || 0
+  };
+
+  meal.calories = Math.round(Number(meal.calories) || 0);
+  meal.protein  = pjRound1(meal.protein);
+  meal.carbs    = pjRound1(meal.carbs);
+  meal.fat      = pjRound1(meal.fat);
+
+  await upsertMealLog(customerGid, meal, dateKey);
+
+  debug.pendingMealResolved = true;
+  debug.pendingMealResolvedType = mt;
+
+  const itemsList = meal.items.map(x => `• ${x}`).join("\n");
+  const replyText =
+    `Logged your ${mt.toLowerCase()}:\n${itemsList}\n\n` +
+    `Estimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`;
+
+  return res.status(200).json({
+    reply: replyText,
+    debug,
+    free_chat_remaining: remainingAfter
+  });
+}
+
 
     if (hasPending && isMealTypeOnly(userMessage)) {
       const mtRaw = String(userMessage || "").trim().toLowerCase();
