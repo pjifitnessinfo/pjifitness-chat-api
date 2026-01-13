@@ -2730,7 +2730,7 @@ if (!totals || needs.length) {
   await setPendingMeal(customerGid, {
     date: dateKey,
     raw_text: String(foodText || "").trim(),
-    meal_type: normalizeMealType(guessed) || null
+    meal_type: normalizeMealType(guessed) || guessed
   });
 
   return res.status(200).json({
