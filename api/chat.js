@@ -771,6 +771,43 @@ function pjRound1(n) {
   if (!Number.isFinite(x)) return 0;
   return Math.round(x * 10) / 10;
 }
+function pjNormalizeMealItems(rawItems) {
+  const arr = Array.isArray(rawItems) ? rawItems : [];
+  const out = [];
+
+  for (let i = 0; i < arr.length; i++) {
+    const it = arr[i];
+
+    // If it's already an object with macros
+    if (it && typeof it === "object" && !Array.isArray(it)) {
+      const name = String(it.name || it.text || it.matched_to || "").trim();
+      if (!name) continue;
+
+      out.push({
+        name,
+        calories: Math.round(Number(it.calories) || 0),
+        protein: pjRound1(Number(it.protein) || 0),
+        carbs: pjRound1(Number(it.carbs) || 0),
+        fat: pjRound1(Number(it.fat) || 0),
+      });
+      continue;
+    }
+
+    // If it's a string, keep it but macros unknown
+    const s = String(it || "").trim();
+    if (!s) continue;
+
+    out.push({
+      name: s,
+      calories: 0,
+      protein: 0,
+      carbs: 0,
+      fat: 0,
+    });
+  }
+
+  return out.slice(0, 20);
+}
 
 function computePlanFromOverlayOnboarding(ob, dateKey) {
   const n = (v) => {
