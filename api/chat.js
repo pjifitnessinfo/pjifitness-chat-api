@@ -2641,6 +2641,21 @@ if (!guessed && /^\s*meal\s*[:\-–]/i.test(String(userMessage || ""))) {
       const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
       const items = Array.isArray(nut?.items) ? nut.items : [];
       const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
+     const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
+if (!totals || needs.length) {
+  // Keep them in portion-training flow (don’t let OpenAI override)
+  return res.status(200).json({
+    reply:
+      "To log this accurately, I need portions.\n\n" +
+      (needs.length
+        ? needs.map((q) => `- ${q.question}`).join("\n")
+        : "- What portion did you have? (examples: 6oz, 1 cup cooked, 200g)") +
+      "\n\nReply like: \"chicken 6oz, rice 1 cup cooked\". If you’re unsure, send a clear photo.",
+    debug: { ...debug, autoMealLog: { ok: false, reason: "needs_clarification" } },
+    free_chat_remaining: remainingAfter
+  });
+}
+
 
       if (items.length && totals) {
         const meal = {
