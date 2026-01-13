@@ -2505,8 +2505,10 @@ if (customerGid) {
       const nutRes = await fetch(`${base}/api/nutrition`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: pending.raw_text })
-      });
+        body: JSON.stringify({
+  text: pending.raw_text,
+  customerId: customerNumericId || customerGid
+})
 
       const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
       const items = Array.isArray(nut?.items) ? nut.items : [];
