@@ -215,7 +215,7 @@ async function llmParseMeal(text) {
 
       return {
         name: name || cleanName(p),
-        qty: Number.isFinite(qty) && qty > 0 ? qty : 1,
+        qty: Number.isFinite(qty) && qty > 0 ? qty : null,
         unit,
       };
     }
