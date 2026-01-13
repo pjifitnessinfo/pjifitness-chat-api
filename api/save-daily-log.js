@@ -4,6 +4,11 @@ const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
 
+// OPTIONAL: if your /api/nutrition lives on the same Vercel project, leave blank.
+// If it lives on a different domain, set:
+// NUTRITION_BASE_URL="https://your-vercel-domain.vercel.app"
+const NUTRITION_BASE_URL = process.env.NUTRITION_BASE_URL || "";
+
 /**
  * Date helpers (clientDate preferred; fallback server-local; NOT UTC)
  */
@@ -24,6 +29,45 @@ function num(x) {
 
 function safeStr(x) {
   return x == null ? "" : String(x);
+}
+
+/**
+ * ✅ CORS helper — MUST be called before any early returns.
+ * Ensures preflight + errors still get correct headers.
+ */
+function applyCors(req, res) {
+  const origin = req.headers.origin || "";
+
+  const ALLOWED_ORIGINS = new Set([
+    "https://www.pjifitness.com",
+    "https://pjifitness.com",
+    "https://pjifitness.myshopify.com",
+  ]);
+
+  // Always vary on origin when we reflect it
+  res.setHeader("Vary", "Origin");
+
+  if (ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  } else {
+    // For non-browser/server-to-server calls, * is fine.
+    // If you're testing from another origin and want to allow it temporarily,
+    // add it to ALLOWED_ORIGINS above.
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
+
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+
+  // IMPORTANT: echo requested headers for preflight success
+  const reqHeaders = req.headers["access-control-request-headers"];
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    reqHeaders || "Content-Type, Authorization, X-Requested-With, Accept"
+  );
+
+  // Helps some CDNs/browsers cache preflight
+  res.setHeader("Access-Control-Max-Age", "86400");
 }
 
 /**
@@ -56,7 +100,7 @@ async function shopifyAdminFetch(query, variables = {}) {
 }
 
 /**
- * Build absolute URL to our API on Vercel
+ * Build absolute URL to our API on Vercel (fallback)
  */
 function getBaseUrl(req) {
   const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0].trim();
@@ -70,7 +114,8 @@ function getBaseUrl(req) {
  */
 async function callNutrition(req, { text, customerId }) {
   try {
-    const baseUrl = getBaseUrl(req);
+    const baseUrl = NUTRITION_BASE_URL || getBaseUrl(req);
+
     const r = await fetch(`${baseUrl}/api/nutrition`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -92,20 +137,16 @@ async function callNutrition(req, { text, customerId }) {
  * - protein_g
  * - carbs_g
  * - fat_g
- *
- * Accepts legacy fields protein/carbs/fat as well.
  */
 function normalizeMeal(meal) {
   if (!meal || typeof meal !== "object") return null;
 
   const m = { ...meal };
 
-  // Canonical id (helps later for edits/deletes)
   if (!m.id) {
     m.id = `m_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   }
 
-  // Canonical text
   if (!m.text) {
     m.text =
       (typeof m.description === "string" && m.description.trim()) ||
@@ -114,37 +155,27 @@ function normalizeMeal(meal) {
       "";
   }
 
-  // Normalize calories
-  if (m.calories == null) m.calories = null;
   m.calories = num(m.calories);
 
-  // Normalize macros to *_g
   const p = m.protein_g != null ? m.protein_g : m.protein;
   const c = m.carbs_g != null ? m.carbs_g : m.carbs;
   const f = m.fat_g != null ? m.fat_g : m.fat;
 
-  m.protein_g = num(p) ?? null;
-  m.carbs_g = num(c) ?? null;
-  m.fat_g = num(f) ?? null;
+  m.protein_g = num(p);
+  m.carbs_g = num(c);
+  m.fat_g = num(f);
 
-  // Remove ambiguous duplicates (optional, but keeps data clean)
   delete m.protein;
   delete m.carbs;
   delete m.fat;
 
-  // Default meal_type
   if (!m.meal_type && typeof m.type === "string") m.meal_type = m.type;
   if (!m.meal_type) m.meal_type = "meal";
-
-  // Ensure strings are safe
-  if (m.meal_type) m.meal_type = safeStr(m.meal_type).toLowerCase();
+  m.meal_type = safeStr(m.meal_type).toLowerCase();
 
   return m;
 }
 
-/**
- * Compute totals from canonical meal macros
- */
 function computeTotalsFromMeals(meals) {
   const totals = { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
   if (!Array.isArray(meals)) return totals;
@@ -158,9 +189,6 @@ function computeTotalsFromMeals(meals) {
   return totals;
 }
 
-/**
- * Sanitize log fields. Forces date to dateKey.
- */
 function sanitizeLog(raw, dateKey) {
   if (!raw || typeof raw !== "object") return null;
 
@@ -176,15 +204,11 @@ function sanitizeLog(raw, dateKey) {
     "risk_color",
     "needs_human_review",
     "coach_review",
-
-    // totals (we will overwrite from meals when meals present)
     "calories",
     "total_calories",
     "total_protein",
     "total_carbs",
     "total_fat",
-
-    // meals
     "meals",
   ];
 
@@ -202,9 +226,6 @@ function sanitizeLog(raw, dateKey) {
   return clean;
 }
 
-/**
- * Parse body safely
- */
 function parseBody(req) {
   try {
     if (req.body && typeof req.body === "object") return req.body;
@@ -214,222 +235,188 @@ function parseBody(req) {
 }
 
 export default async function handler(req, res) {
-  // ===== CORS =====
-  const origin = req.headers.origin || "";
-  const ALLOWED_ORIGINS = [
-    "https://www.pjifitness.com",
-    "https://pjifitness.com",
-    "https://pjifitness.myshopify.com",
-  ];
-
-  if (ALLOWED_ORIGINS.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Access-Control-Allow-Credentials", "true");
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  }
-
-  res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    req.headers["access-control-request-headers"] ||
-      "Content-Type, Authorization, X-Requested-With, Accept"
-  );
+  // ✅ Apply CORS FIRST so even errors/preflight get headers
+  applyCors(req, res);
 
   if (req.method === "OPTIONS") {
     res.status(200).end();
     return;
   }
+
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-  // ===== END CORS =====
-
-  const body = parseBody(req);
-
-  const customerIdRaw = body?.customerId ?? body?.shopifyCustomerId ?? body?.customer_id;
-  const clientDate = body?.clientDate;
-
-  if (!customerIdRaw) {
-    return res.status(400).json({ error: "Missing customerId" });
+    res.status(405).json({ ok: false, error: "Method not allowed" });
+    return;
   }
 
-  const customerId = String(customerIdRaw).replace(/[^0-9]/g, "");
-  if (!customerId) {
-    return res.status(400).json({ error: "Invalid customerId" });
-  }
+  try {
+    const body = parseBody(req);
 
-  const customerGid = `gid://shopify/Customer/${customerId}`;
-  const dateKey = isYMD(clientDate) ? clientDate : localYMD();
+    const customerIdRaw =
+      body?.customerId ?? body?.shopifyCustomerId ?? body?.customer_id;
 
-  // New: action routing
-  const action = safeStr(body?.action || "merge_log").toLowerCase();
-  const estimateIfMissing = body?.estimateIfMissing === true;
+    const clientDate = body?.clientDate;
 
-  // Accept either:
-  // - merge_log: { log: {...} }
-  // - add_meal: { meal: {...} } OR { mealText: "..." }
-  // - replace_meals: { meals: [...] }
-  const rawLog = body?.log && typeof body.log === "object" ? body.log : {};
-  const safeLog = sanitizeLog(rawLog, dateKey) || { date: dateKey };
+    if (!customerIdRaw) {
+      res.status(400).json({ ok: false, error: "Missing customerId" });
+      return;
+    }
 
-  // 1) Read existing daily_logs metafield
-  const GET_LOGS_QUERY = `
-    query GetDailyLogs($id: ID!) {
-      customer(id: $id) {
-        id
-        metafield(namespace: "custom", key: "daily_logs") {
+    const customerId = String(customerIdRaw).replace(/[^0-9]/g, "");
+    if (!customerId) {
+      res.status(400).json({ ok: false, error: "Invalid customerId" });
+      return;
+    }
+
+    const customerGid = `gid://shopify/Customer/${customerId}`;
+    const dateKey = isYMD(clientDate) ? clientDate : localYMD();
+
+    const action = safeStr(body?.action || "merge_log").toLowerCase();
+    const estimateIfMissing = body?.estimateIfMissing === true;
+
+    const rawLog = body?.log && typeof body.log === "object" ? body.log : {};
+    const safeLog = sanitizeLog(rawLog, dateKey) || { date: dateKey };
+
+    // 1) Read existing daily_logs metafield
+    const GET_LOGS_QUERY = `
+      query GetDailyLogs($id: ID!) {
+        customer(id: $id) {
           id
-          value
+          metafield(namespace: "custom", key: "daily_logs") {
+            id
+            value
+          }
         }
       }
-    }
-  `;
+    `;
 
-  let existingLogs = [];
-  try {
-    const data = await shopifyAdminFetch(GET_LOGS_QUERY, { id: customerGid });
-    const mf = data?.customer?.metafield;
-    if (mf?.value) {
-      const parsed = JSON.parse(mf.value);
-      if (Array.isArray(parsed)) existingLogs = parsed;
-    }
-  } catch (err) {
-    console.error("Error fetching existing daily_logs:", err);
-  }
-
-  // 2) Upsert by date
-  const dateStr = safeLog.date;
-  const updatedLogs = Array.isArray(existingLogs) ? [...existingLogs] : [];
-  const foundIndex = updatedLogs.findIndex((l) => l && l.date === dateStr);
-
-  const existing = foundIndex >= 0 ? (updatedLogs[foundIndex] || {}) : {};
-  const merged = { ...existing, ...safeLog, date: dateStr };
-
-  // Ensure meals array exists if present previously
-  if (!Array.isArray(merged.meals)) {
-    merged.meals = Array.isArray(existing.meals) ? existing.meals : [];
-  }
-
-  // --- ACTION HANDLERS ---
-  if (action === "replace_meals") {
-    const incomingMeals = Array.isArray(body?.meals) ? body.meals : [];
-    merged.meals = incomingMeals.map(normalizeMeal).filter(Boolean);
-
-  } else if (action === "add_meal") {
-    let mealObj = body?.meal && typeof body.meal === "object" ? body.meal : null;
-
-    // Allow shortcut: { mealText: "..." }
-    if (!mealObj && typeof body?.mealText === "string") {
-      mealObj = { text: body.mealText };
+    let existingLogs = [];
+    try {
+      const data = await shopifyAdminFetch(GET_LOGS_QUERY, { id: customerGid });
+      const mf = data?.customer?.metafield;
+      if (mf?.value) {
+        const parsed = JSON.parse(mf.value);
+        if (Array.isArray(parsed)) existingLogs = parsed;
+      }
+    } catch (err) {
+      console.error("Error fetching existing daily_logs:", err);
     }
 
-    // Normalize
-    let m = normalizeMeal(mealObj);
-    if (!m) {
-      return res.status(400).json({ error: "Missing meal payload" });
+    // 2) Upsert by date
+    const dateStr = safeLog.date;
+    const updatedLogs = Array.isArray(existingLogs) ? [...existingLogs] : [];
+    const foundIndex = updatedLogs.findIndex((l) => l && l.date === dateStr);
+
+    const existing = foundIndex >= 0 ? updatedLogs[foundIndex] || {} : {};
+    const merged = { ...existing, ...safeLog, date: dateStr };
+
+    if (!Array.isArray(merged.meals)) {
+      merged.meals = Array.isArray(existing.meals) ? existing.meals : [];
     }
 
-    // Optional estimation if macros missing
-    const macrosMissing =
-      m.calories == null || m.protein_g == null || m.carbs_g == null || m.fat_g == null;
+    if (action === "replace_meals") {
+      const incomingMeals = Array.isArray(body?.meals) ? body.meals : [];
+      merged.meals = incomingMeals.map(normalizeMeal).filter(Boolean);
 
-    if (estimateIfMissing && macrosMissing && m.text) {
-      const nut = await callNutrition(req, { text: m.text, customerId });
-      if (nut?.totals) {
-        m.nutrition = {
-          items: Array.isArray(nut.items) ? nut.items : [],
-          totals: nut.totals || null,
-          needs_clarification: Array.isArray(nut.needs_clarification) ? nut.needs_clarification : [],
-        };
-        m.calories = num(nut.totals.calories) ?? m.calories;
-        m.protein_g = num(nut.totals.protein) ?? m.protein_g;
-        m.carbs_g = num(nut.totals.carbs) ?? m.carbs_g;
-        m.fat_g = num(nut.totals.fat) ?? m.fat_g;
+    } else if (action === "add_meal") {
+      let mealObj = body?.meal && typeof body.meal === "object" ? body.meal : null;
+      if (!mealObj && typeof body?.mealText === "string") mealObj = { text: body.mealText };
+
+      let m = normalizeMeal(mealObj);
+      if (!m) {
+        res.status(400).json({ ok: false, error: "Missing meal payload" });
+        return;
+      }
+
+      const macrosMissing =
+        m.calories == null || m.protein_g == null || m.carbs_g == null || m.fat_g == null;
+
+      if (estimateIfMissing && macrosMissing && m.text) {
+        const nut = await callNutrition(req, { text: m.text, customerId });
+        if (nut?.totals) {
+          m.nutrition = {
+            items: Array.isArray(nut.items) ? nut.items : [],
+            totals: nut.totals || null,
+            needs_clarification: Array.isArray(nut.needs_clarification) ? nut.needs_clarification : [],
+          };
+          m.calories = num(nut.totals.calories) ?? m.calories;
+          m.protein_g = num(nut.totals.protein) ?? m.protein_g;
+          m.carbs_g = num(nut.totals.carbs) ?? m.carbs_g;
+          m.fat_g = num(nut.totals.fat) ?? m.fat_g;
+        }
+      }
+
+      merged.meals.push(m);
+
+    } else {
+      if (body?.log && body.log.meals !== undefined) {
+        const incomingMeals = Array.isArray(body.log.meals) ? body.log.meals : [];
+        merged.meals = incomingMeals.map(normalizeMeal).filter(Boolean);
       }
     }
 
-    merged.meals = Array.isArray(merged.meals) ? merged.meals : [];
-    merged.meals.push(m);
-
-  } else {
-    // merge_log (default): if caller included meals explicitly, replace them
-    if (body?.log && body.log.meals !== undefined) {
-      const incomingMeals = Array.isArray(body.log.meals) ? body.log.meals : [];
-      merged.meals = incomingMeals.map(normalizeMeal).filter(Boolean);
-    }
-  }
-
-  // Recompute totals from meals (if meals exist)
-  if (Array.isArray(merged.meals)) {
     const totals = computeTotalsFromMeals(merged.meals);
     merged.total_calories = totals.calories;
     merged.calories = totals.calories;
     merged.total_protein = totals.protein_g;
     merged.total_carbs = totals.carbs_g;
     merged.total_fat = totals.fat_g;
-  }
 
-  if (foundIndex >= 0) {
-    updatedLogs[foundIndex] = merged;
-  } else {
-    updatedLogs.push(merged);
-  }
+    if (foundIndex >= 0) updatedLogs[foundIndex] = merged;
+    else updatedLogs.push(merged);
 
-  // Optional cap
-  const MAX_LOGS = 365;
-  const trimmedLogs =
-    updatedLogs.length > MAX_LOGS
-      ? updatedLogs.slice(updatedLogs.length - MAX_LOGS)
-      : updatedLogs;
+    const MAX_LOGS = 365;
+    const trimmedLogs =
+      updatedLogs.length > MAX_LOGS
+        ? updatedLogs.slice(updatedLogs.length - MAX_LOGS)
+        : updatedLogs;
 
-  // 3) Write back
-  const SET_LOGS_MUTATION = `
-    mutation SaveDailyLogs($metafields: [MetafieldsSetInput!]!) {
-      metafieldsSet(metafields: $metafields) {
-        metafields { id key namespace }
-        userErrors { field message }
+    // 3) Write back
+    const SET_LOGS_MUTATION = `
+      mutation SaveDailyLogs($metafields: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $metafields) {
+          metafields { id key namespace }
+          userErrors { field message }
+        }
       }
-    }
-  `;
+    `;
 
-  const metafieldsInput = [
-    {
-      ownerId: customerGid,
-      namespace: "custom",
-      key: "daily_logs",
-      type: "json",
-      value: JSON.stringify(trimmedLogs),
-    },
-  ];
+    const metafieldsInput = [
+      {
+        ownerId: customerGid,
+        namespace: "custom",
+        key: "daily_logs",
+        type: "json",
+        value: JSON.stringify(trimmedLogs),
+      },
+    ];
 
-  try {
     const result = await shopifyAdminFetch(SET_LOGS_MUTATION, { metafields: metafieldsInput });
     const errors = result?.metafieldsSet?.userErrors || [];
     if (errors.length) {
       console.error("Shopify metafieldsSet errors:", errors);
-      return res.status(500).json({ error: "Failed to save daily_logs", details: errors });
+      res.status(500).json({ ok: false, error: "Failed to save daily_logs", details: errors });
+      return;
     }
+
+    res.status(200).json({
+      ok: true,
+      action,
+      dateKey,
+      log: merged,
+      totals: {
+        calories: merged.total_calories || 0,
+        protein_g: merged.total_protein || 0,
+        carbs_g: merged.total_carbs || 0,
+        fat_g: merged.total_fat || 0,
+      },
+    });
   } catch (err) {
-    console.error("Error saving daily_logs metafield:", err);
-    return res.status(500).json({
-      error: "Error saving daily_logs",
-      details: err.shopifyResponse || err.message || String(err),
+    console.error("[save-daily-log] fatal:", err);
+    res.status(500).json({
+      ok: false,
+      error: "Server error",
+      details: err?.shopifyResponse || err?.message || String(err),
     });
   }
-
-  return res.status(200).json({
-    ok: true,
-    action,
-    dateKey,
-    log: merged,
-    totals: {
-      calories: merged.total_calories || 0,
-      protein_g: merged.total_protein || 0,
-      carbs_g: merged.total_carbs || 0,
-      fat_g: merged.total_fat || 0,
-    },
-  });
 }
