@@ -5,23 +5,29 @@ const SHOPIFY_ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-01";
 
 /**
- * ✅ Date helpers
- * - Prefer clientDate (browser local YYYY-MM-DD)
- * - Fallback: server-local YYYY-MM-DD (NOT UTC)
+ * Date helpers (clientDate preferred; fallback server-local; NOT UTC)
  */
 function isYMD(s) {
   return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
 }
-
 function localYMD() {
   const d = new Date();
-  const off = d.getTimezoneOffset(); // minutes
+  const off = d.getTimezoneOffset();
   const local = new Date(d.getTime() - off * 60000);
   return local.toISOString().slice(0, 10);
 }
 
+function num(x) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
+}
+
+function safeStr(x) {
+  return x == null ? "" : String(x);
+}
+
 /**
- * Helper: call Shopify Admin GraphQL
+ * Shopify Admin GraphQL
  */
 async function shopifyAdminFetch(query, variables = {}) {
   if (!SHOPIFY_STORE_DOMAIN || !SHOPIFY_ADMIN_API_TOKEN) {
@@ -30,41 +36,27 @@ async function shopifyAdminFetch(query, variables = {}) {
 
   const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`;
 
-  let res;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_TOKEN,
-      },
-      body: JSON.stringify({ query, variables }),
-    });
-  } catch (err) {
-    console.error("Network error when calling Shopify:", err);
-    throw new Error("Network error contacting Shopify");
-  }
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_TOKEN,
+    },
+    body: JSON.stringify({ query, variables }),
+  });
 
-  let json;
-  try {
-    json = await res.json();
-  } catch (err) {
-    console.error("Error parsing Shopify response JSON:", err);
-    throw new Error("Invalid JSON from Shopify");
-  }
-
+  const json = await res.json().catch(() => ({}));
   if (!res.ok || json.errors) {
     console.error("Shopify GraphQL error:", JSON.stringify(json, null, 2));
     const err = new Error("Shopify GraphQL error");
     err.shopifyResponse = json;
     throw err;
   }
-
   return json.data;
 }
 
 /**
- * Build an absolute URL to our own API on Vercel.
+ * Build absolute URL to our API on Vercel
  */
 function getBaseUrl(req) {
   const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0].trim();
@@ -73,13 +65,12 @@ function getBaseUrl(req) {
 }
 
 /**
- * Call /api/nutrition to estimate calories/macros for a meal text.
+ * Optional: call /api/nutrition ONLY when explicitly asked
  * Never throws: returns null on failure.
  */
 async function callNutrition(req, { text, customerId }) {
   try {
     const baseUrl = getBaseUrl(req);
-
     const r = await fetch(`${baseUrl}/api/nutrition`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -88,7 +79,6 @@ async function callNutrition(req, { text, customerId }) {
 
     const j = await r.json().catch(() => ({}));
     if (!r.ok || !j?.ok) return null;
-
     return j;
   } catch (e) {
     console.error("[save-daily-log] callNutrition failed:", e);
@@ -97,126 +87,79 @@ async function callNutrition(req, { text, customerId }) {
 }
 
 /**
- * Enrich meals array:
- * - If meal already has calories/macros => keep
- * - Else if meal has nutrition.totals => copy to top-level fields
- * - Else if meal has a text/description/name => call /api/nutrition and fill fields
+ * Normalize a meal object into canonical macros:
+ * - calories
+ * - protein_g
+ * - carbs_g
+ * - fat_g
  *
- * IMPORTANT:
- * We "promote" nutrition totals to meal.calories/protein/carbs/fat so computeTotalsFromMeals works unchanged.
+ * Accepts legacy fields protein/carbs/fat as well.
  */
-async function enrichMealsWithNutrition(req, meals, customerId) {
-  if (!Array.isArray(meals) || meals.length === 0) return meals;
+function normalizeMeal(meal) {
+  if (!meal || typeof meal !== "object") return null;
 
-  const out = [];
-  for (const m of meals) {
-    const meal = m && typeof m === "object" ? { ...m } : null;
-    if (!meal) continue;
+  const m = { ...meal };
 
-    // Already has macros at top-level or legacy _g fields
-    const hasTopMacros =
-      meal.calories != null ||
-      meal.protein != null ||
-      meal.carbs != null ||
-      meal.fat != null ||
-      meal.protein_g != null ||
-      meal.carbs_g != null ||
-      meal.fat_g != null;
-
-    if (hasTopMacros) {
-      out.push(meal);
-      continue;
-    }
-
-    // Already has stored nutrition totals -> promote
-    const nt = meal?.nutrition?.totals;
-    if (nt && typeof nt === "object") {
-      meal.calories = nt.calories ?? meal.calories ?? null;
-      meal.protein = nt.protein ?? meal.protein ?? null;
-      meal.carbs = nt.carbs ?? meal.carbs ?? null;
-      meal.fat = nt.fat ?? meal.fat ?? null;
-      out.push(meal);
-      continue;
-    }
-
-    // Find meal text
-    const text =
-      (typeof meal.text === "string" && meal.text.trim()) ||
-      (typeof meal.description === "string" && meal.description.trim()) ||
-      (typeof meal.name === "string" && meal.name.trim()) ||
-      "";
-
-    if (!text) {
-      out.push(meal);
-      continue;
-    }
-
-    // Call nutrition
-    const nut = await callNutrition(req, { text, customerId });
-
-    if (nut?.totals && typeof nut.totals === "object") {
-      // Store nutrition details (helps UI + debugging)
-      meal.text = meal.text || text;
-      meal.nutrition = {
-        items: Array.isArray(nut.items) ? nut.items : [],
-        totals: nut.totals || null,
-        needs_clarification: Array.isArray(nut.needs_clarification) ? nut.needs_clarification : [],
-      };
-
-      // Promote totals to top-level for compatibility with computeTotalsFromMeals
-      meal.calories = nut.totals.calories ?? null;
-      meal.protein = nut.totals.protein ?? null;
-      meal.carbs = nut.totals.carbs ?? null;
-      meal.fat = nut.totals.fat ?? null;
-    }
-
-    out.push(meal);
+  // Canonical id (helps later for edits/deletes)
+  if (!m.id) {
+    m.id = `m_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   }
 
-  return out;
+  // Canonical text
+  if (!m.text) {
+    m.text =
+      (typeof m.description === "string" && m.description.trim()) ||
+      (typeof m.name === "string" && m.name.trim()) ||
+      (typeof m.items_text === "string" && m.items_text.trim()) ||
+      "";
+  }
+
+  // Normalize calories
+  if (m.calories == null) m.calories = null;
+  m.calories = num(m.calories);
+
+  // Normalize macros to *_g
+  const p = m.protein_g != null ? m.protein_g : m.protein;
+  const c = m.carbs_g != null ? m.carbs_g : m.carbs;
+  const f = m.fat_g != null ? m.fat_g : m.fat;
+
+  m.protein_g = num(p) ?? null;
+  m.carbs_g = num(c) ?? null;
+  m.fat_g = num(f) ?? null;
+
+  // Remove ambiguous duplicates (optional, but keeps data clean)
+  delete m.protein;
+  delete m.carbs;
+  delete m.fat;
+
+  // Default meal_type
+  if (!m.meal_type && typeof m.type === "string") m.meal_type = m.type;
+  if (!m.meal_type) m.meal_type = "meal";
+
+  // Ensure strings are safe
+  if (m.meal_type) m.meal_type = safeStr(m.meal_type).toLowerCase();
+
+  return m;
 }
 
 /**
- * Compute calories + macros from a meals array.
- * Supports both:
- *  - old logs:  calories, protein, carbs, fat
- *  - photo logs: calories, protein_g, carbs_g, fat_g
+ * Compute totals from canonical meal macros
  */
 function computeTotalsFromMeals(meals) {
-  const totals = { calories: 0, protein: 0, carbs: 0, fat: 0 };
+  const totals = { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
   if (!Array.isArray(meals)) return totals;
 
   for (const meal of meals) {
-    const cals = Number(meal?.calories || 0);
-
-    const protein = Number(
-      meal?.protein != null
-        ? meal.protein
-        : meal?.protein_g != null
-        ? meal.protein_g
-        : 0
-    );
-
-    const carbs = Number(
-      meal?.carbs != null ? meal.carbs : meal?.carbs_g != null ? meal.carbs_g : 0
-    );
-
-    const fat = Number(
-      meal?.fat != null ? meal.fat : meal?.fat_g != null ? meal.fat_g : 0
-    );
-
-    totals.calories += cals;
-    totals.protein += protein;
-    totals.carbs += carbs;
-    totals.fat += fat;
+    totals.calories += Number(meal?.calories || 0);
+    totals.protein_g += Number(meal?.protein_g || 0);
+    totals.carbs_g += Number(meal?.carbs_g || 0);
+    totals.fat_g += Number(meal?.fat_g || 0);
   }
-
   return totals;
 }
 
 /**
- * Sanitize the log object so only the fields we expect get stored.
- * ✅ Forces date to dateKey (clientDate or server-local fallback)
+ * Sanitize log fields. Forces date to dateKey.
  */
 function sanitizeLog(raw, dateKey) {
   if (!raw || typeof raw !== "object") return null;
@@ -224,35 +167,25 @@ function sanitizeLog(raw, dateKey) {
   const SAFE_FIELDS = [
     "date",
     "weight",
-    "calories",
-    "total_calories",
     "steps",
     "mood",
     "struggle",
     "coach_focus",
     "calorie_target",
-    "protein",
-    "carbs",
-    "fat",
+    "notes",
+    "risk_color",
+    "needs_human_review",
+    "coach_review",
 
+    // totals (we will overwrite from meals when meals present)
+    "calories",
+    "total_calories",
     "total_protein",
     "total_carbs",
     "total_fat",
 
-    "coach_review",
-    "notes",
-    "risk_color",
-    "needs_human_review",
-
+    // meals
     "meals",
-    "breakfast",
-    "lunch",
-    "dinner",
-    "snacks",
-    "breakfast_calories",
-    "lunch_calories",
-    "dinner_calories",
-    "snacks_calories",
   ];
 
   const clean = {};
@@ -260,10 +193,8 @@ function sanitizeLog(raw, dateKey) {
     if (raw[key] !== undefined) clean[key] = raw[key];
   }
 
-  // ✅ Core fix: force final dateKey, never UTC
   clean.date = isYMD(dateKey) ? dateKey : localYMD();
 
-  // Ensure meals is either undefined or an array (allow empty array for deletes)
   if (clean.meals !== undefined && !Array.isArray(clean.meals)) {
     clean.meals = [];
   }
@@ -272,7 +203,7 @@ function sanitizeLog(raw, dateKey) {
 }
 
 /**
- * Parse body safely (Vercel sometimes gives string body)
+ * Parse body safely
  */
 function parseBody(req) {
   try {
@@ -282,13 +213,9 @@ function parseBody(req) {
   return {};
 }
 
-/**
- * Default export – Vercel API Route
- */
 export default async function handler(req, res) {
-  // ===== CORS FOR PJIFITNESS =====
+  // ===== CORS =====
   const origin = req.headers.origin || "";
-
   const ALLOWED_ORIGINS = [
     "https://www.pjifitness.com",
     "https://pjifitness.com",
@@ -314,34 +241,19 @@ export default async function handler(req, res) {
     res.status(200).end();
     return;
   }
-  // ===== END CORS =====
-
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).json({ error: "Method not allowed" });
   }
+  // ===== END CORS =====
 
   const body = parseBody(req);
 
-  // Support both payload styles:
-  // - { customerId, clientDate, log: {...} }
-  // - { customerId, clientDate, logJson: "..." }
   const customerIdRaw = body?.customerId ?? body?.shopifyCustomerId ?? body?.customer_id;
   const clientDate = body?.clientDate;
 
-  let logObj = body?.log;
-
-  if (!logObj && body?.logJson) {
-    try {
-      logObj = typeof body.logJson === "string" ? JSON.parse(body.logJson) : body.logJson;
-    } catch (e) {
-      console.error("Invalid logJson:", e);
-      return res.status(400).json({ error: "Invalid logJson" });
-    }
-  }
-
-  if (!customerIdRaw || !logObj) {
-    return res.status(400).json({ error: "Missing customerId or log/logJson" });
+  if (!customerIdRaw) {
+    return res.status(400).json({ error: "Missing customerId" });
   }
 
   const customerId = String(customerIdRaw).replace(/[^0-9]/g, "");
@@ -349,16 +261,19 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Invalid customerId" });
   }
 
-  // ✅ Core Fix: choose the date key once, use everywhere
+  const customerGid = `gid://shopify/Customer/${customerId}`;
   const dateKey = isYMD(clientDate) ? clientDate : localYMD();
 
-  // Shopify Admin GraphQL expects a GID
-  const customerGid = `gid://shopify/Customer/${customerId}`;
+  // New: action routing
+  const action = safeStr(body?.action || "merge_log").toLowerCase();
+  const estimateIfMissing = body?.estimateIfMissing === true;
 
-  const safeLog = sanitizeLog(logObj, dateKey);
-  if (!safeLog) {
-    return res.status(400).json({ error: "Invalid log payload" });
-  }
+  // Accept either:
+  // - merge_log: { log: {...} }
+  // - add_meal: { meal: {...} } OR { mealText: "..." }
+  // - replace_meals: { meals: [...] }
+  const rawLog = body?.log && typeof body.log === "object" ? body.log : {};
+  const safeLog = sanitizeLog(rawLog, dateKey) || { date: dateKey };
 
   // 1) Read existing daily_logs metafield
   const GET_LOGS_QUERY = `
@@ -376,88 +291,101 @@ export default async function handler(req, res) {
   let existingLogs = [];
   try {
     const data = await shopifyAdminFetch(GET_LOGS_QUERY, { id: customerGid });
-
     const mf = data?.customer?.metafield;
     if (mf?.value) {
-      try {
-        const parsed = JSON.parse(mf.value);
-        if (Array.isArray(parsed)) existingLogs = parsed;
-      } catch (err) {
-        console.error("Error parsing existing daily_logs JSON:", err);
-      }
+      const parsed = JSON.parse(mf.value);
+      if (Array.isArray(parsed)) existingLogs = parsed;
     }
   } catch (err) {
     console.error("Error fetching existing daily_logs:", err);
   }
 
   // 2) Upsert by date
-  const dateStr = safeLog.date; // ✅ forced to dateKey
+  const dateStr = safeLog.date;
   const updatedLogs = Array.isArray(existingLogs) ? [...existingLogs] : [];
-
   const foundIndex = updatedLogs.findIndex((l) => l && l.date === dateStr);
 
-  let finalLogForResponse = safeLog;
+  const existing = foundIndex >= 0 ? (updatedLogs[foundIndex] || {}) : {};
+  const merged = { ...existing, ...safeLog, date: dateStr };
 
-  if (foundIndex >= 0) {
-    const existing = updatedLogs[foundIndex] || {};
-
-    // ✅ DEFAULT behavior: merge fields
-    const merged = {
-      ...existing,
-      ...safeLog,
-      date: dateStr,
-    };
-
-    // ✅ CRITICAL FIX: If request included "meals" (even empty array), FULL REPLACE.
-    // This is what makes deletes persist.
-    if (safeLog.meals !== undefined) {
-      merged.meals = Array.isArray(safeLog.meals) ? safeLog.meals : [];
-    } else {
-      // If not provided, keep existing meals
-      merged.meals = Array.isArray(existing.meals) ? existing.meals : [];
-    }
-
-    // ✅ NEW: Enrich meals with nutrition before totals
-    if (Array.isArray(merged.meals)) {
-      merged.meals = await enrichMealsWithNutrition(req, merged.meals, customerId);
-
-      const totals = computeTotalsFromMeals(merged.meals);
-      merged.calories = totals.calories || merged.calories || null;
-      merged.total_calories = totals.calories || merged.total_calories || merged.calories || null;
-      merged.total_protein = totals.protein || merged.total_protein || null;
-      merged.total_carbs = totals.carbs || merged.total_carbs || null;
-      merged.total_fat = totals.fat || merged.total_fat || null;
-    }
-
-    updatedLogs[foundIndex] = merged;
-    finalLogForResponse = merged;
-  } else {
-    const newLog = { ...safeLog, date: dateStr };
-
-    // ✅ NEW: Enrich meals with nutrition before totals
-    if (Array.isArray(newLog.meals)) {
-      newLog.meals = await enrichMealsWithNutrition(req, newLog.meals, customerId);
-
-      const totals = computeTotalsFromMeals(newLog.meals);
-      newLog.calories = totals.calories || newLog.calories || null;
-      newLog.total_calories = totals.calories || newLog.total_calories || newLog.calories || null;
-      newLog.total_protein = totals.protein || newLog.total_protein || null;
-      newLog.total_carbs = totals.carbs || newLog.total_carbs || null;
-      newLog.total_fat = totals.fat || newLog.total_fat || null;
-    }
-
-    updatedLogs.push(newLog);
-    finalLogForResponse = newLog;
+  // Ensure meals array exists if present previously
+  if (!Array.isArray(merged.meals)) {
+    merged.meals = Array.isArray(existing.meals) ? existing.meals : [];
   }
 
-  // Optional: cap history
+  // --- ACTION HANDLERS ---
+  if (action === "replace_meals") {
+    const incomingMeals = Array.isArray(body?.meals) ? body.meals : [];
+    merged.meals = incomingMeals.map(normalizeMeal).filter(Boolean);
+
+  } else if (action === "add_meal") {
+    let mealObj = body?.meal && typeof body.meal === "object" ? body.meal : null;
+
+    // Allow shortcut: { mealText: "..." }
+    if (!mealObj && typeof body?.mealText === "string") {
+      mealObj = { text: body.mealText };
+    }
+
+    // Normalize
+    let m = normalizeMeal(mealObj);
+    if (!m) {
+      return res.status(400).json({ error: "Missing meal payload" });
+    }
+
+    // Optional estimation if macros missing
+    const macrosMissing =
+      m.calories == null || m.protein_g == null || m.carbs_g == null || m.fat_g == null;
+
+    if (estimateIfMissing && macrosMissing && m.text) {
+      const nut = await callNutrition(req, { text: m.text, customerId });
+      if (nut?.totals) {
+        m.nutrition = {
+          items: Array.isArray(nut.items) ? nut.items : [],
+          totals: nut.totals || null,
+          needs_clarification: Array.isArray(nut.needs_clarification) ? nut.needs_clarification : [],
+        };
+        m.calories = num(nut.totals.calories) ?? m.calories;
+        m.protein_g = num(nut.totals.protein) ?? m.protein_g;
+        m.carbs_g = num(nut.totals.carbs) ?? m.carbs_g;
+        m.fat_g = num(nut.totals.fat) ?? m.fat_g;
+      }
+    }
+
+    merged.meals = Array.isArray(merged.meals) ? merged.meals : [];
+    merged.meals.push(m);
+
+  } else {
+    // merge_log (default): if caller included meals explicitly, replace them
+    if (body?.log && body.log.meals !== undefined) {
+      const incomingMeals = Array.isArray(body.log.meals) ? body.log.meals : [];
+      merged.meals = incomingMeals.map(normalizeMeal).filter(Boolean);
+    }
+  }
+
+  // Recompute totals from meals (if meals exist)
+  if (Array.isArray(merged.meals)) {
+    const totals = computeTotalsFromMeals(merged.meals);
+    merged.total_calories = totals.calories;
+    merged.calories = totals.calories;
+    merged.total_protein = totals.protein_g;
+    merged.total_carbs = totals.carbs_g;
+    merged.total_fat = totals.fat_g;
+  }
+
+  if (foundIndex >= 0) {
+    updatedLogs[foundIndex] = merged;
+  } else {
+    updatedLogs.push(merged);
+  }
+
+  // Optional cap
   const MAX_LOGS = 365;
   const trimmedLogs =
     updatedLogs.length > MAX_LOGS
       ? updatedLogs.slice(updatedLogs.length - MAX_LOGS)
       : updatedLogs;
 
-  // 3) Write back to Shopify
+  // 3) Write back
   const SET_LOGS_MUTATION = `
     mutation SaveDailyLogs($metafields: [MetafieldsSetInput!]!) {
       metafieldsSet(metafields: $metafields) {
@@ -478,10 +406,7 @@ export default async function handler(req, res) {
   ];
 
   try {
-    const result = await shopifyAdminFetch(SET_LOGS_MUTATION, {
-      metafields: metafieldsInput,
-    });
-
+    const result = await shopifyAdminFetch(SET_LOGS_MUTATION, { metafields: metafieldsInput });
     const errors = result?.metafieldsSet?.userErrors || [];
     if (errors.length) {
       console.error("Shopify metafieldsSet errors:", errors);
@@ -495,5 +420,16 @@ export default async function handler(req, res) {
     });
   }
 
-  return res.status(200).json({ ok: true, log: finalLogForResponse, dateKey });
+  return res.status(200).json({
+    ok: true,
+    action,
+    dateKey,
+    log: merged,
+    totals: {
+      calories: merged.total_calories || 0,
+      protein_g: merged.total_protein || 0,
+      carbs_g: merged.total_carbs || 0,
+      fat_g: merged.total_fat || 0,
+    },
+  });
 }
