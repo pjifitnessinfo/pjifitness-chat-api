@@ -2479,7 +2479,7 @@ if (customerGid) {
       typeof pending.raw_text === "string" &&
       pending.raw_text.trim();
     // ✅ If we already have meal_type saved and user is now sending portions, resolve it
-if (hasPending && pending.meal_type && pjHasPortionsOrUnits(userMessage)) {
+if (hasPending && pending.meal_type && !isMealTypeOnly(userMessage)) {
   const mt = normalizeMealType(pending.meal_type) || pending.meal_type;
 
   const base = pjInternalUrl("");
