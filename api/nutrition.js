@@ -95,33 +95,38 @@ export default async function handler(req, res) {
       const r = await resolveItem(item, { userFoods, globalFoods, debug });
       resolved.push(r);
 
-      if (r.confidence < 0.65) {
+      if (r.confidence < 0.65 || r.source === "needs_portion") {
         needs_clarification.push({
           name: item.name,
           question:
             r.question ||
-            `I’m not 100% sure on "${item.name}". What’s the serving (ex: 1 slice = 40 cal)?`,
+            `For "${item.name}", how much did you have? (examples: 6oz, 1 cup cooked, 200g)`,
         });
       }
     }
 
-    // 4) Totals
-    const totals = resolved.reduce(
-      (acc, r) => {
-        acc.calories += r.calories || 0;
-        acc.protein += r.protein || 0;
-        acc.carbs += r.carbs || 0;
-        acc.fat += r.fat || 0;
-        return acc;
-      },
-      { calories: 0, protein: 0, carbs: 0, fat: 0 }
-    );
+    // ✅ If anything needs clarification, do NOT return totals (prevents fake logging)
+    const incomplete = needs_clarification.length > 0;
+
+    const totals = incomplete
+      ? null
+      : resolved.reduce(
+          (acc, r) => {
+            acc.calories += r.calories || 0;
+            acc.protein += r.protein || 0;
+            acc.carbs += r.carbs || 0;
+            acc.fat += r.fat || 0;
+            return acc;
+          },
+          { calories: 0, protein: 0, carbs: 0, fat: 0 }
+        );
 
     return res.json({
       ok: true,
       items: resolved,
       totals,
       needs_clarification,
+      incomplete,
       debug_counts: {
         userFoodsCount: userFoods ? Object.keys(userFoods).length : 0,
         globalFoodsCount: globalFoods ? Object.keys(globalFoods).length : 0,
