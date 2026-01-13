@@ -2478,90 +2478,128 @@ if (customerGid) {
       pending &&
       typeof pending.raw_text === "string" &&
       pending.raw_text.trim();
+
+    // ✅ If user replies something non-food while pending exists, clear it (prevents loops)
+    if (hasPending && pjLooksLikeNonFoodMessage(userMessage)) {
+      await setPendingMeal(customerGid, null);
+      debug.pendingMealCleared = true;
+    }
+
     // ✅ If we already have meal_type saved and user is now replying (not just meal type), attempt resolve
-if (hasPending && pending.meal_type && !isMealTypeOnly(userMessage)) {
-  const mt = normalizeMealType(pending.meal_type) || pending.meal_type;
+    if (hasPending && pending.meal_type && !isMealTypeOnly(userMessage)) {
+      const mt = normalizeMealType(pending.meal_type) || pending.meal_type;
 
-  const base = pjInternalUrl("");
-  const combinedText = `${String(pending.raw_text || "").trim()}, ${String(userMessage || "").trim()}`.trim();
+      const base = pjInternalUrl("");
 
-  const nutRes = await fetch(`${base}/api/nutrition`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      text: combinedText,
-      customerId: customerNumericId || customerGid
-    })
-  });
+      // ✅ IMPORTANT: Use combinedText ONLY for this nutrition call
+      // but NEVER store combinedText back into pending.raw_text (prevents “random eggs/rice/chicken” later)
+      const combinedText =
+        `${String(pending.raw_text || "").trim()}, ${String(userMessage || "").trim()}`.trim();
 
-  const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
-  const items = Array.isArray(nut?.items) ? nut.items : [];
-  const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
-  const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
-  const incomplete = nut?.incomplete === true || !totals;
+      const nutRes = await fetch(`${base}/api/nutrition`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: combinedText,
+          customerId: customerNumericId || customerGid
+        })
+      });
 
-  if (!nut || nut.ok !== true || incomplete) {
-    debug.pendingMealResolved = false;
-    debug.pendingMealResolvedReason = needs.length ? "needs_clarification" : "nutrition_incomplete";
+      const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
+      const items = Array.isArray(nut?.items) ? nut.items : [];
+      const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
+      const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
+      const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
 
-    const qText = needs.length
-      ? needs.map((q) => `- ${q.question}`).join("\n")
-      : "- What portion did you have for each item? (examples: 6oz, 1 cup cooked, 200g)";
+      // ✅ Unit-based foods should NOT trigger portion interrogation
+      const unitBased = pjIsUnitBasedFood(pending.raw_text);
 
-    // ✅ keep pending (with meal_type) so we don't ask meal type again
-    await setPendingMeal(customerGid, {
-      ...pending,
-      meal_type: mt,
-      raw_text: String(combinedText || "").trim()
-    });
+      if (!nut || nut.ok !== true || (incomplete && !unitBased)) {
+        debug.pendingMealResolved = false;
+        debug.pendingMealResolvedReason = needs.length ? "needs_clarification" : "nutrition_incomplete";
 
-    return res.status(200).json({
-      reply:
-        "To log this accurately, I need portions.\n\n" +
-        qText +
-        "\n\nReply with amounts like: \"chicken 6oz, rice 1 cup cooked\".\n" +
-        "If you are not sure, you can also send a clear close-up photo of the plate.",
-      debug,
-      free_chat_remaining: remainingAfter
-    });
-  }
+        const qText = needs.length
+          ? needs.map((q) => `- ${q.question}`).join("\n")
+          : "- What portion did you have for each item? (examples: 6oz, 1 cup cooked, 200g)";
 
-  // ✅ clear pending once fully resolved
-  await setPendingMeal(customerGid, null);
+        // ✅ keep pending stable (DO NOT grow raw_text)
+        await setPendingMeal(customerGid, {
+          date: pending?.date || dateKey,
+          meal_type: mt,
+          raw_text: String(pending.raw_text || "").trim()
+        });
 
-  const meal = {
-    date: dateKey,
-    meal_type: mt,
-    items: items.map(it => String(it?.name || it?.matched_to || "Food")),
-    calories: Number(totals.calories) || 0,
-    protein: Number(totals.protein) || 0,
-    carbs: Number(totals.carbs) || 0,
-    fat: Number(totals.fat) || 0
-  };
+        return res.status(200).json({
+          reply:
+            "To log this accurately, I need portions.\n\n" +
+            qText +
+            "\n\nReply with amounts like: \"chicken 6oz, rice 1 cup cooked\".\n" +
+            "If you are not sure, you can also send a clear close-up photo of the plate.",
+          debug,
+          free_chat_remaining: remainingAfter
+        });
+      }
 
-  meal.calories = Math.round(Number(meal.calories) || 0);
-  meal.protein  = pjRound1(meal.protein);
-  meal.carbs    = pjRound1(meal.carbs);
-  meal.fat      = pjRound1(meal.fat);
+      // ✅ If unit-based + totals missing, do a reasonable fallback estimate instead of asking
+      if ((!totals || !items.length) && unitBased) {
+        const fallbackMeal = {
+          date: dateKey,
+          meal_type: mt,
+          items: [String(pending.raw_text || "Item")],
+          calories: 200,
+          protein: 20,
+          carbs: 10,
+          fat: 5
+        };
 
-  await upsertMealLog(customerGid, meal, dateKey);
+        await setPendingMeal(customerGid, null);
+        await upsertMealLog(customerGid, fallbackMeal, dateKey);
 
-  debug.pendingMealResolved = true;
-  debug.pendingMealResolvedType = mt;
+        return res.status(200).json({
+          reply:
+            `Logged your ${mt.toLowerCase()}:\n• ${fallbackMeal.items[0]}\n\n` +
+            `Estimated: ${fallbackMeal.calories} calories — ${fallbackMeal.protein}g protein, ${fallbackMeal.carbs}g carbs, ${fallbackMeal.fat}g fat.`,
+          debug,
+          free_chat_remaining: remainingAfter
+        });
+      }
 
-  const itemsList = meal.items.map(x => `• ${x}`).join("\n");
-  const replyText =
-    `Logged your ${mt.toLowerCase()}:\n${itemsList}\n\n` +
-    `Estimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`;
+      // ✅ clear pending once fully resolved
+      await setPendingMeal(customerGid, null);
 
-  return res.status(200).json({
-    reply: replyText,
-    debug,
-    free_chat_remaining: remainingAfter
-  });
-}
+      const meal = {
+        date: dateKey,
+        meal_type: mt,
+        items: items.map(it => String(it?.name || it?.matched_to || "Food")),
+        calories: Number(totals.calories) || 0,
+        protein: Number(totals.protein) || 0,
+        carbs: Number(totals.carbs) || 0,
+        fat: Number(totals.fat) || 0
+      };
 
+      meal.calories = Math.round(Number(meal.calories) || 0);
+      meal.protein  = pjRound1(meal.protein);
+      meal.carbs    = pjRound1(meal.carbs);
+      meal.fat      = pjRound1(meal.fat);
 
+      await upsertMealLog(customerGid, meal, dateKey);
+
+      debug.pendingMealResolved = true;
+      debug.pendingMealResolvedType = mt;
+
+      const itemsList = meal.items.map(x => `• ${x}`).join("\n");
+      const replyText =
+        `Logged your ${mt.toLowerCase()}:\n${itemsList}\n\n` +
+        `Estimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`;
+
+      return res.status(200).json({
+        reply: replyText,
+        debug,
+        free_chat_remaining: remainingAfter
+      });
+    }
+
+    // ✅ Pending exists and user replied ONLY meal type
     if (hasPending && isMealTypeOnly(userMessage)) {
       const mtRaw = String(userMessage || "").trim().toLowerCase();
       const mt =
@@ -2571,7 +2609,6 @@ if (hasPending && pending.meal_type && !isMealTypeOnly(userMessage)) {
         (mtRaw === "snack" || mtRaw === "snacks" || mtRaw === "dessert") ? "Snacks" :
         null;
 
-      // If they typed something weird, don't get stuck
       if (!mt) {
         await setPendingMeal(customerGid, null);
         return res.status(200).json({
@@ -2581,52 +2618,79 @@ if (hasPending && pending.meal_type && !isMealTypeOnly(userMessage)) {
         });
       }
 
-      // Build base URL for internal call
       const base = pjInternalUrl("");
 
-      // Run nutrition on the saved raw_text
       const nutRes = await fetch(`${base}/api/nutrition`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    text: pending.raw_text,
-    customerId: customerNumericId || customerGid
-  })
-});
-
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: String(pending.raw_text || "").trim(),
+          customerId: customerNumericId || customerGid
+        })
+      });
 
       const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
-const items = Array.isArray(nut?.items) ? nut.items : [];
-const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
-const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
-const incomplete = nut?.incomplete === true || !totals;
+      const items = Array.isArray(nut?.items) ? nut.items : [];
+      const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
+      const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
+      const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
 
-// ✅ If nutrition is incomplete, DO NOT clear pending.
-// Ask portion questions and keep them in the flow.
-if (!nut || nut.ok !== true || incomplete) {
-  debug.pendingMealResolved = false;
-  debug.pendingMealResolvedReason = needs.length ? "needs_clarification" : "nutrition_incomplete";
+      const unitBased = pjIsUnitBasedFood(pending.raw_text);
 
-  const qText = needs.length
-    ? needs.map((q) => `- ${q.question}`).join("\n")
-    : "- What portion did you have for each item? (examples: 6oz, 1 cup cooked, 200g)";
+      if (!nut || nut.ok !== true || (incomplete && !unitBased)) {
+        debug.pendingMealResolved = false;
+        debug.pendingMealResolvedReason = needs.length ? "needs_clarification" : "nutrition_incomplete";
 
-  return res.status(200).json({
-    reply:
-      "To log this accurately, I need portions.\n\n" +
-      qText +
-      "\n\nReply with amounts like: \"chicken 6oz, rice 1 cup cooked\".\n" +
-      "If you are not sure, you can also send a clear close-up photo of the plate.",
-    debug,
-    free_chat_remaining: remainingAfter
-  });
-}
+        // ✅ keep pending stable and also store chosen meal type
+        await setPendingMeal(customerGid, {
+          date: pending?.date || dateKey,
+          meal_type: mt,
+          raw_text: String(pending.raw_text || "").trim()
+        });
 
-// ✅ ONLY clear pending once we have totals (meal fully resolved)
-await setPendingMeal(customerGid, null);
+        const qText = needs.length
+          ? needs.map((q) => `- ${q.question}`).join("\n")
+          : "- What portion did you have for each item? (examples: 6oz, 1 cup cooked, 200g)";
 
-if (!items.length || !totals) {
+        return res.status(200).json({
+          reply:
+            "To log this accurately, I need portions.\n\n" +
+            qText +
+            "\n\nReply with amounts like: \"chicken 6oz, rice 1 cup cooked\".\n" +
+            "If you are not sure, you can also send a clear close-up photo of the plate.",
+          debug,
+          free_chat_remaining: remainingAfter
+        });
+      }
 
+      // ✅ If unit-based + totals missing, do a reasonable fallback estimate instead of asking
+      if ((!totals || !items.length) && unitBased) {
+        const fallbackMeal = {
+          date: dateKey,
+          meal_type: mt,
+          items: [String(pending.raw_text || "Item")],
+          calories: 200,
+          protein: 20,
+          carbs: 10,
+          fat: 5
+        };
+
+        await setPendingMeal(customerGid, null);
+        await upsertMealLog(customerGid, fallbackMeal, dateKey);
+
+        return res.status(200).json({
+          reply:
+            `Logged your ${mt.toLowerCase()}:\n• ${fallbackMeal.items[0]}\n\n` +
+            `Estimated: ${fallbackMeal.calories} calories — ${fallbackMeal.protein}g protein, ${fallbackMeal.carbs}g carbs, ${fallbackMeal.fat}g fat.`,
+          debug,
+          free_chat_remaining: remainingAfter
+        });
+      }
+
+      // ✅ ONLY clear pending once we have totals (meal fully resolved)
+      await setPendingMeal(customerGid, null);
+
+      if (!items.length || !totals) {
         debug.pendingMealResolved = false;
         debug.pendingMealResolvedReason = "nutrition_no_items";
         return res.status(200).json({
@@ -2637,23 +2701,21 @@ if (!items.length || !totals) {
       }
 
       const meal = {
-  date: dateKey,
-  meal_type: mt,
-  items: items.map(it => String(it?.name || it?.matched_to || "Food")),
-  calories: Number(totals.calories) || 0,
-  protein: Number(totals.protein) || 0,
-  carbs: Number(totals.carbs) || 0,
-  fat: Number(totals.fat) || 0
-};
+        date: dateKey,
+        meal_type: mt,
+        items: items.map(it => String(it?.name || it?.matched_to || "Food")),
+        calories: Number(totals.calories) || 0,
+        protein: Number(totals.protein) || 0,
+        carbs: Number(totals.carbs) || 0,
+        fat: Number(totals.fat) || 0
+      };
 
-// ✅ clean numbers
-meal.calories = Math.round(Number(meal.calories) || 0);
-meal.protein  = pjRound1(meal.protein);
-meal.carbs    = pjRound1(meal.carbs);
-meal.fat      = pjRound1(meal.fat);
+      meal.calories = Math.round(Number(meal.calories) || 0);
+      meal.protein  = pjRound1(meal.protein);
+      meal.carbs    = pjRound1(meal.carbs);
+      meal.fat      = pjRound1(meal.fat);
 
-await upsertMealLog(customerGid, meal, dateKey);
-
+      await upsertMealLog(customerGid, meal, dateKey);
 
       debug.pendingMealResolved = true;
       debug.pendingMealResolvedType = mt;
@@ -2676,29 +2738,25 @@ await upsertMealLog(customerGid, meal, dateKey);
 
 // ===============================
 // AUTO MEAL LOG FROM NATURAL CHAT (simple + reliable)
-// Only send REAL food-like text to nutrition (prevents logging: "hope you can log my breakfast")
 // ===============================
 if (customerGid && userMessage) {
   try {
     const foodText = extractFoodLikeText(userMessage);
 
-    // If it doesn't look like real food text, do nothing (let normal chat handle it)
-   if (!foodText) {
-  // not food -> let normal chat handle it
-} else {
+    // not food -> let normal chat handle it
+    if (foodText) {
       let guessed = pjGuessMealTypeFromUserText(userMessage);
 
-// ✅ If they used "Meal:" header, infer a meal type from NY clock
-if (!guessed && /^\s*meal\s*[:\-–]/i.test(String(userMessage || ""))) {
-  guessed = pjInferMealTypeFromClock().toLowerCase();
-}
+      // If they used "Meal:" header, infer a meal type from NY clock
+      if (!guessed && /^\s*meal\s*[:\-–]/i.test(String(userMessage || ""))) {
+        guessed = pjInferMealTypeFromClock().toLowerCase();
+      }
 
-
-      // If they didn't specify the meal type, ask and save pending text
+      // If they didn't specify meal type, ask and save pending text
       if (!guessed) {
         await setPendingMeal(customerGid, {
           date: dateKey,
-          raw_text: String(foodText || "").trim()   // ✅ use cleaned food text
+          raw_text: String(foodText || "").trim()
         });
         debug.pendingMealSaved = true;
 
@@ -2712,110 +2770,141 @@ if (!guessed && /^\s*meal\s*[:\-–]/i.test(String(userMessage || ""))) {
       const base = pjInternalUrl("");
 
       const nutRes = await fetch(`${base}/api/nutrition`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    text: String(foodText || "").trim(),
-    customerId: customerNumericId || customerGid
-  })
-});
-
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: String(foodText || "").trim(),
+          customerId: customerNumericId || customerGid
+        })
+      });
 
       const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
       const items = Array.isArray(nut?.items) ? nut.items : [];
       const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
-     const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
-if (!totals || needs.length) {
-  // ✅ SAVE pending so the NEXT message (portions) can resolve without re-asking meal type
-  await setPendingMeal(customerGid, {
-    date: dateKey,
-    raw_text: String(foodText || "").trim(),
-    meal_type: normalizeMealType(guessed) || guessed
-  });
+      const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
+      const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
 
-  return res.status(200).json({
-    reply:
-      "To log this accurately, I need portions.\n\n" +
-      (needs.length
-        ? needs.map((q) => `- ${q.question}`).join("\n")
-        : "- What portion did you have? (examples: 6oz, 1 cup cooked, 200g)") +
-      "\n\nReply like: \"2 eggs, 2 slices American cheese\". If you’re unsure, send a clear photo.",
-    debug: { ...debug, autoMealLog: { ok: false, reason: "needs_clarification", pendingSaved: true } },
-    free_chat_remaining: remainingAfter
-  });
-}
+      const unitBased = pjIsUnitBasedFood(foodText);
+
+      // ✅ If nutrition is incomplete, ONLY ask portions when not unit-based
+      if ((!nut || nut.ok !== true || incomplete) && !unitBased) {
+        await setPendingMeal(customerGid, {
+          date: dateKey,
+          raw_text: String(foodText || "").trim(),
+          meal_type: normalizeMealType(guessed) || guessed
+        });
+
+        return res.status(200).json({
+          reply:
+            "To log this accurately, I need portions.\n\n" +
+            (needs.length
+              ? needs.map((q) => `- ${q.question}`).join("\n")
+              : "- What portion did you have? (examples: 6oz, 1 cup cooked, 200g)") +
+            "\n\nReply like: \"chicken 6oz, rice 1 cup cooked\". If you’re unsure, send a clear photo.",
+          debug: { ...debug, autoMealLog: { ok: false, reason: "needs_clarification", pendingSaved: true } },
+          free_chat_remaining: remainingAfter
+        });
+      }
+
+      // ✅ Unit-based and nutrition didn't give totals -> simple fallback estimate, no interrogation
+      if ((!totals || !items.length) && unitBased) {
+        const mt = normalizeMealType(guessed);
+        const fallbackMeal = {
+          date: dateKey,
+          meal_type: mt,
+          items: [String(foodText || "Item")],
+          calories: 200,
+          protein: 20,
+          carbs: 10,
+          fat: 5
+        };
+
+        await upsertMealLog(customerGid, fallbackMeal, dateKey);
+
+        return res.status(200).json({
+          reply:
+            `Logged your ${mt.toLowerCase()}:\n• ${fallbackMeal.items[0]}\n\n` +
+            `Estimated: ${fallbackMeal.calories} calories — ${fallbackMeal.protein}g protein, ${fallbackMeal.carbs}g carbs, ${fallbackMeal.fat}g fat.`,
+          debug,
+          free_chat_remaining: remainingAfter
+        });
+      }
 
       if (items.length && totals) {
         const meal = {
           date: dateKey,
           meal_type: normalizeMealType(guessed),
           items: items.map(it => String(it?.name || it?.matched_to || "Food")),
-
           calories: Number(totals.calories) || 0,
           protein: Number(totals.protein) || 0,
           carbs: Number(totals.carbs) || 0,
           fat: Number(totals.fat) || 0
         };
-         // ✅ clean numbers BEFORE any caps/scaling
-meal.calories = Math.round(Number(meal.calories) || 0);
-meal.protein  = pjRound1(meal.protein);
-meal.carbs    = pjRound1(meal.carbs);
-meal.fat      = pjRound1(meal.fat);
 
-         // ✅ No-portion sanity cap (ChatGPT-style estimates)
-const hasPortions = pjHasPortionsOrUnits(foodText);
-if (!hasPortions) {
-  const cap =
-    meal.meal_type === "Breakfast" ? 750 :
-    meal.meal_type === "Lunch" ? 950 :
-    meal.meal_type === "Dinner" ? 1100 :
-    500; // Snacks
+        meal.calories = Math.round(Number(meal.calories) || 0);
+        meal.protein  = pjRound1(meal.protein);
+        meal.carbs    = pjRound1(meal.carbs);
+        meal.fat      = pjRound1(meal.fat);
 
-  if (meal.calories > cap) {
-    const scale = cap / meal.calories;
-    meal.calories = cap;
-    meal.protein = Math.round(meal.protein * scale * 10) / 10;
-    meal.carbs   = Math.round(meal.carbs * scale * 10) / 10;
-    meal.fat     = Math.round(meal.fat * scale * 10) / 10;
-    debug.autoMealLog = debug.autoMealLog || {};
-debug.autoMealLog.capped = true;
-debug.autoMealLog.capApplied = cap;
-  }
-}
+        // No-portion sanity cap (only when user gave no portions)
+        const hasPortions = pjHasPortionsOrUnits(foodText);
+        if (!hasPortions) {
+          const cap =
+            meal.meal_type === "Breakfast" ? 750 :
+            meal.meal_type === "Lunch" ? 950 :
+            meal.meal_type === "Dinner" ? 1100 :
+            500;
+
+          if (meal.calories > cap) {
+            const scale = cap / meal.calories;
+            meal.calories = cap;
+            meal.protein = Math.round(meal.protein * scale * 10) / 10;
+            meal.carbs   = Math.round(meal.carbs * scale * 10) / 10;
+            meal.fat     = Math.round(meal.fat * scale * 10) / 10;
+
+            debug.autoMealLog = debug.autoMealLog || {};
+            debug.autoMealLog.capped = true;
+            debug.autoMealLog.capApplied = cap;
+          }
+        }
 
         await upsertMealLog(customerGid, meal, dateKey);
-        debug.autoMealLog = { ...(debug.autoMealLog || {}), ok: true, meal_type: meal.meal_type, calories: meal.calories, itemsCount: meal.items.length };
-         // ✅ RETURN EARLY so OpenAI doesn't overwrite with a different estimate
-const itemsList = meal.items.map(x => `• ${x}`).join("\n");
 
-const replyText =
-  `Logged your ${meal.meal_type.toLowerCase()}:\n${itemsList}\n\n` +
-  `Estimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`;
+        debug.autoMealLog = {
+          ...(debug.autoMealLog || {}),
+          ok: true,
+          meal_type: meal.meal_type,
+          calories: meal.calories,
+          itemsCount: meal.items.length
+        };
 
-try {
-  // optional but recommended: keep coach review updating even when we skip OpenAI
-  await upsertCoachReview(customerGid, {
-    date: dateKey,
-    summary: `Meal logged via nutrition: ${meal.meal_type}.`,
-    wins: ["Logged a meal promptly"],
-    opportunities: [],
-    struggles: [],
-    next_focus: "If portions were different, tell me and I’ll adjust it.",
-    food_pattern: "",
-    mindset_pattern: ""
-  }, dateKey);
-  debug.coachReviewSavedToDailyLogs = true;
-} catch (e) {
-  debug.coachReviewSavedToDailyLogs = false;
-  debug.coachReviewSaveError = String(e?.message || e);
-}
+        const itemsList = meal.items.map(x => `• ${x}`).join("\n");
+        const replyText =
+          `Logged your ${meal.meal_type.toLowerCase()}:\n${itemsList}\n\n` +
+          `Estimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`;
 
-return res.status(200).json({
-  reply: replyText,
-  debug,
-  free_chat_remaining: remainingAfter
-});
+        try {
+          await upsertCoachReview(customerGid, {
+            date: dateKey,
+            summary: `Meal logged via nutrition: ${meal.meal_type}.`,
+            wins: ["Logged a meal promptly"],
+            opportunities: [],
+            struggles: [],
+            next_focus: "If portions were different, tell me and I’ll adjust it.",
+            food_pattern: "",
+            mindset_pattern: ""
+          }, dateKey);
+          debug.coachReviewSavedToDailyLogs = true;
+        } catch (e) {
+          debug.coachReviewSavedToDailyLogs = false;
+          debug.coachReviewSaveError = String(e?.message || e);
+        }
 
+        return res.status(200).json({
+          reply: replyText,
+          debug,
+          free_chat_remaining: remainingAfter
+        });
       } else {
         debug.autoMealLog = { ok: false, reason: "nutrition_no_items" };
       }
