@@ -2512,7 +2512,7 @@ if (hasPending && pending.meal_type && !isMealTypeOnly(userMessage)) {
     await setPendingMeal(customerGid, {
       ...pending,
       meal_type: mt,
-      raw_text: String(pending.raw_text || "").trim()
+      raw_text: String(combinedText || "").trim()
     });
 
     return res.status(200).json({
