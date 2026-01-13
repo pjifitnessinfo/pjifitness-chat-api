@@ -2681,7 +2681,10 @@ if (customerGid) {
       debug.pendingMealResolved = true;
       debug.pendingMealResolvedType = mt;
 
-      const itemsList = meal.items.map(x => `• ${x}`).join("\n");
+      const itemsList = (meal.items || []).map(it =>
+  `• ${it.name} — ${it.calories} cal (${it.protein}P / ${it.carbs}C / ${it.fat}F)`
+).join("\n");
+
       const replyText =
         `Logged your ${mt.toLowerCase()}:\n${itemsList}\n\n` +
         `Estimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`;
@@ -2821,7 +2824,10 @@ if (customerGid) {
       debug.pendingMealResolved = true;
       debug.pendingMealResolvedType = mt;
 
-      const itemsList = meal.items.map(x => `• ${x}`).join("\n");
+      const itemsList = (meal.items || []).map(it =>
+  `• ${it.name} — ${it.calories} cal (${it.protein}P / ${it.carbs}C / ${it.fat}F)`
+).join("\n");
+
       const replyText =
         `Logged your ${mt.toLowerCase()}:\n${itemsList}\n\n` +
         `Estimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`;
@@ -2986,7 +2992,10 @@ if (customerGid && userMessage) {
           itemsCount: meal.items.length
         };
 
-        const itemsList = meal.items.map(x => `• ${x}`).join("\n");
+        const itemsList = (meal.items || []).map(it =>
+  `• ${it.name} — ${it.calories} cal (${it.protein}P / ${it.carbs}C / ${it.fat}F)`
+).join("\n");
+
         const replyText =
           `Logged your ${meal.meal_type.toLowerCase()}:\n${itemsList}\n\n` +
           `Estimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`;
