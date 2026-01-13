@@ -4,6 +4,20 @@
 // Returns: { reply, debug }
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+// ===============================
+// INTERNAL API BASE URL (prevents wrong domain calls)
+// ===============================
+const INTERNAL_API_BASE_URL =
+  (process.env.INTERNAL_API_BASE_URL || "").trim() ||
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
+
+function pjInternalUrl(path) {
+  const base = (INTERNAL_API_BASE_URL || "").replace(/\/+$/, "");
+  const p = String(path || "").startsWith("/") ? String(path) : `/${path}`;
+  if (!base) throw new Error("Missing INTERNAL_API_BASE_URL (set in Vercel env vars)");
+  return `${base}${p}`;
+}
+
 
 // Shopify Admin API (for reading + writing onboarding/metafields)
 const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN; // e.g. "your-store.myshopify.com"
