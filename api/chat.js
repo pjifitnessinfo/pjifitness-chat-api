@@ -2726,19 +2726,24 @@ if (!guessed && /^\s*meal\s*[:\-–]/i.test(String(userMessage || ""))) {
       const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
      const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
 if (!totals || needs.length) {
-  // Keep them in portion-training flow (don’t let OpenAI override)
+  // ✅ SAVE pending so the NEXT message (portions) can resolve without re-asking meal type
+  await setPendingMeal(customerGid, {
+    date: dateKey,
+    raw_text: String(foodText || "").trim(),
+    meal_type: normalizeMealType(guessed) || null
+  });
+
   return res.status(200).json({
     reply:
       "To log this accurately, I need portions.\n\n" +
       (needs.length
         ? needs.map((q) => `- ${q.question}`).join("\n")
         : "- What portion did you have? (examples: 6oz, 1 cup cooked, 200g)") +
-      "\n\nReply like: \"chicken 6oz, rice 1 cup cooked\". If you’re unsure, send a clear photo.",
-    debug: { ...debug, autoMealLog: { ok: false, reason: "needs_clarification" } },
+      "\n\nReply like: \"2 eggs, 2 slices American cheese\". If you’re unsure, send a clear photo.",
+    debug: { ...debug, autoMealLog: { ok: false, reason: "needs_clarification", pendingSaved: true } },
     free_chat_remaining: remainingAfter
   });
 }
-
 
       if (items.length && totals) {
         const meal = {
