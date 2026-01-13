@@ -2632,7 +2632,7 @@ if (!guessed && /^\s*meal\s*[:\-–]/i.test(String(userMessage || ""))) {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
-    text: pending.raw_text,
+    text: String(foodText || "").trim(),
     customerId: customerNumericId || customerGid
   })
 });
