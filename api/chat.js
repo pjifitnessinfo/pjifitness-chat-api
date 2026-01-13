@@ -1165,6 +1165,55 @@ function pjGuessMealTypeFromUserText(text){
   // ✅ CRITICAL: do NOT default to snack here
   return null;
 }
+// ===============================
+// MEAL HELPERS (required by runtime meal logging)
+// Paste once near top of /api/chat.js BEFORE pending/auto meal blocks
+// ===============================
+
+function pjIsUnitBasedFood(text) {
+  const t = String(text || "").toLowerCase();
+
+  // “countable / packaged / standard” foods where we should NOT interrogate portions
+  const keywords = [
+    "protein shake", "muscle milk", "premier protein", "fairlife", "core power",
+    "ready to drink", "rtf",
+    "protein bar", "kirkland", "quest", "rxbar",
+    "yogurt", "greek yogurt",
+    "string cheese", "cheese stick",
+    "banana", "apple",
+    "egg", "eggs",
+    "wrap", "mission", "carb balance",
+    "647", "slice of bread", "toast"
+  ];
+
+  for (let i = 0; i < keywords.length; i++) {
+    if (t.indexOf(keywords[i]) !== -1) return true;
+  }
+
+  // If they explicitly say "1" + item, treat as unit-based (ex: "1 shake", "2 bars")
+  if (/\b(\d+)\b/.test(t) && (t.includes("shake") || t.includes("bar") || t.includes("yogurt") || t.includes("egg"))) {
+    return true;
+  }
+
+  return false;
+}
+
+function pjLooksLikeNonFoodMessage(text) {
+  try {
+    // You already have extractFoodLikeText(); use it if available
+    if (typeof extractFoodLikeText === "function") {
+      return !extractFoodLikeText(text);
+    }
+  } catch (e) {}
+
+  // fallback: if message has basically no food words, treat as non-food
+  const t = String(text || "").toLowerCase();
+  if (!t.trim()) return true;
+
+  // if they mention meal keywords but no food, still non-food
+  const foodish = /(chicken|rice|steak|eggs?|shake|bar|yogurt|sandwich|pizza|burrito|wrap|bread|cheese|salad|pasta|burger|fries)/i;
+  return !foodish.test(t);
+}
 
 
 function pjLooksLikeFoodText(text){
