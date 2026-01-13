@@ -2498,7 +2498,7 @@ if (hasPending && pending.meal_type && !isMealTypeOnly(userMessage)) {
   const items = Array.isArray(nut?.items) ? nut.items : [];
   const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
   const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
-  const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
+  const incomplete = nut?.incomplete === true || !totals;
 
   if (!nut || nut.ok !== true || incomplete) {
     debug.pendingMealResolved = false;
@@ -2599,7 +2599,7 @@ if (hasPending && pending.meal_type && !isMealTypeOnly(userMessage)) {
 const items = Array.isArray(nut?.items) ? nut.items : [];
 const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
 const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
-const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
+const incomplete = nut?.incomplete === true || !totals;
 
 // ✅ If nutrition is incomplete, DO NOT clear pending.
 // Ask portion questions and keep them in the flow.
