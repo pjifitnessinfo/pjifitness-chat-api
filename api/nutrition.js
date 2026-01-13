@@ -220,7 +220,7 @@ async function llmParseMeal(text) {
       };
     }
 
-    return { name: cleanName(p), qty: 1, unit: "" };
+    return { name: cleanName(p), qty: null, unit: "" };
   });
 
   return items.filter((x) => x && x.name && String(x.name).trim() !== "");
