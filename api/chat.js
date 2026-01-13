@@ -2657,7 +2657,14 @@ if (customerGid) {
       const meal = {
         date: dateKey,
         meal_type: mt,
-        items: items.map(it => String(it?.name || it?.matched_to || "Food")),
+        items: items.map(it => ({
+  name: String(it?.name || it?.matched_to || it?.text || "Food").trim(),
+  calories: Math.round(Number(it?.calories) || 0),
+  protein: pjRound1(Number(it?.protein) || 0),
+  carbs: pjRound1(Number(it?.carbs) || 0),
+  fat: pjRound1(Number(it?.fat) || 0),
+})),
+
         calories: Number(totals.calories) || 0,
         protein: Number(totals.protein) || 0,
         carbs: Number(totals.carbs) || 0,
@@ -2790,7 +2797,14 @@ if (customerGid) {
       const meal = {
         date: dateKey,
         meal_type: mt,
-        items: items.map(it => String(it?.name || it?.matched_to || "Food")),
+        items: items.map(it => ({
+  name: String(it?.name || it?.matched_to || it?.text || "Food").trim(),
+  calories: Math.round(Number(it?.calories) || 0),
+  protein: pjRound1(Number(it?.protein) || 0),
+  carbs: pjRound1(Number(it?.carbs) || 0),
+  fat: pjRound1(Number(it?.fat) || 0),
+})),
+
         calories: Number(totals.calories) || 0,
         protein: Number(totals.protein) || 0,
         carbs: Number(totals.carbs) || 0,
@@ -2921,7 +2935,14 @@ if (customerGid && userMessage) {
         const meal = {
           date: dateKey,
           meal_type: normalizeMealType(guessed),
-          items: items.map(it => String(it?.name || it?.matched_to || "Food")),
+          items: items.map(it => ({
+  name: String(it?.name || it?.matched_to || it?.text || "Food").trim(),
+  calories: Math.round(Number(it?.calories) || 0),
+  protein: pjRound1(Number(it?.protein) || 0),
+  carbs: pjRound1(Number(it?.carbs) || 0),
+  fat: pjRound1(Number(it?.fat) || 0),
+})),
+
           calories: Number(totals.calories) || 0,
           protein: Number(totals.protein) || 0,
           carbs: Number(totals.carbs) || 0,
