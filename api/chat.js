@@ -2511,13 +2511,37 @@ if (customerGid) {
 })
 
       const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
-      const items = Array.isArray(nut?.items) ? nut.items : [];
-      const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
+const items = Array.isArray(nut?.items) ? nut.items : [];
+const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
+const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
+const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
 
-      // Always clear pending so you never get stuck
-      await setPendingMeal(customerGid, null);
+// ✅ If nutrition is incomplete, DO NOT clear pending.
+// Ask portion questions and keep them in the flow.
+if (!nut || nut.ok !== true || incomplete) {
+  debug.pendingMealResolved = false;
+  debug.pendingMealResolvedReason = needs.length ? "needs_clarification" : "nutrition_incomplete";
 
-      if (!items.length || !totals) {
+  const qText = needs.length
+    ? needs.map((q) => `- ${q.question}`).join("\n")
+    : "- What portion did you have for each item? (examples: 6oz, 1 cup cooked, 200g)";
+
+  return res.status(200).json({
+    reply:
+      "To log this accurately, I need portions.\n\n" +
+      qText +
+      "\n\nReply with amounts like: \"chicken 6oz, rice 1 cup cooked\".\n" +
+      "If you are not sure, you can also send a clear close-up photo of the plate.",
+    debug,
+    free_chat_remaining: remainingAfter
+  });
+}
+
+// ✅ ONLY clear pending once we have totals (meal fully resolved)
+await setPendingMeal(customerGid, null);
+
+if (!items.length || !totals) {
+
         debug.pendingMealResolved = false;
         debug.pendingMealResolvedReason = "nutrition_no_items";
         return res.status(200).json({
