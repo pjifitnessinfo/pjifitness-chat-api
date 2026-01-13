@@ -9,8 +9,6 @@ function setCors(req, res) {
     "https://pjifitness.com",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    // Optional (only needed if you ever call /api/nutrition directly from this domain in browser):
-    // "https://pjifitness-chat-api.vercel.app",
   ]);
 
   const origin = req.headers.origin;
@@ -78,13 +76,13 @@ export default async function handler(req, res) {
     if (!text) return res.status(400).json({ ok: false, error: "Missing text" });
 
     // Debug flag (safe)
-    const debug = String(req.query?.debug || "") === "1";
+    const debug = String(req.query && req.query.debug) === "1";
 
     // 1) Load foods from DB (Shopify metafields)
-    const userFoods = await loadUserCustomFoods(customerId); // customer metafield
-    const globalFoods = await loadGlobalFoods(); // shop metafield
+    const userFoods = await loadUserCustomFoods(customerId);
+    const globalFoods = await loadGlobalFoods();
 
-    // 2) Parse
+    // 2) Parse into items (qty/unit may be null if missing)
     const items = await llmParseMeal(text);
 
     // 3) Resolve nutrition
@@ -95,31 +93,32 @@ export default async function handler(req, res) {
       const r = await resolveItem(item, { userFoods, globalFoods, debug });
       resolved.push(r);
 
-      if (r.confidence < 0.65 || r.source === "needs_portion") {
+      if (r && (r.source === "needs_portion" || r.confidence < 0.65)) {
         needs_clarification.push({
           name: item.name,
           question:
             r.question ||
-            `For "${item.name}", how much did you have? (examples: 6oz, 1 cup cooked, 200g)`,
+            `For "${item.name}", what portion did you have? (examples: 6oz, 1 cup cooked, 200g)`,
         });
       }
     }
 
-    // ✅ If anything needs clarification, do NOT return totals (prevents fake logging)
     const incomplete = needs_clarification.length > 0;
 
-    const totals = incomplete
-      ? null
-      : resolved.reduce(
-          (acc, r) => {
-            acc.calories += r.calories || 0;
-            acc.protein += r.protein || 0;
-            acc.carbs += r.carbs || 0;
-            acc.fat += r.fat || 0;
-            return acc;
-          },
-          { calories: 0, protein: 0, carbs: 0, fat: 0 }
-        );
+    // 4) Totals (ONLY if complete)
+    let totals = null;
+    if (!incomplete) {
+      totals = resolved.reduce(
+        (acc, r) => {
+          acc.calories += r.calories || 0;
+          acc.protein += r.protein || 0;
+          acc.carbs += r.carbs || 0;
+          acc.fat += r.fat || 0;
+          return acc;
+        },
+        { calories: 0, protein: 0, carbs: 0, fat: 0 }
+      );
+    }
 
     return res.json({
       ok: true,
@@ -134,12 +133,13 @@ export default async function handler(req, res) {
     });
   } catch (e) {
     setCors(req, res);
-    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+    return res.status(500).json({ ok: false, error: String((e && e.message) || e) });
   }
 }
 
 /* ---------------------------
-   Parser (improved)
+   Parser
+   - IMPORTANT: if no number/unit provided, qty = null (forces portion prompt)
 ----------------------------*/
 async function llmParseMeal(text) {
   const raw = String(text || "").trim();
@@ -192,12 +192,11 @@ async function llmParseMeal(text) {
 
   function cleanName(s) {
     let out = String(s || "")
-      .replace(/'s\b/gi, "") // remove possessive
+      .replace(/'s\b/gi, "")
       .replace(/\b(with|w\/|in|on|of)\b/gi, " ")
       .replace(/\s+/g, " ")
       .trim();
 
-    // remove stray leading single-letter tokens like "s bread"
     out = out
       .split(" ")
       .filter((tok) => tok && tok.length > 1)
@@ -208,8 +207,9 @@ async function llmParseMeal(text) {
   }
 
   const items = chunks.map((p) => {
+    // matches "6oz chicken" or "6 oz chicken" or "1 cup cooked rice"
     const m = p.match(
-      /^\s*(\d+(?:\.\d+)?)\s*(oz|ounce|ounces|g|gram|grams|kg|kilogram|kilograms|lb|lbs|pound|pounds|cup|cups|tbsp|tbsps|tablespoon|tablespoons|tsp|tsps|teaspoon|teaspoons|slice|slices|piece|pieces|serving|servings|scoop|scoops)?\s*(.*)$/i
+      /^\s*(\d+(?:\.\d+)?)\s*(oz|ounce|ounces|g|gram|grams|kg|kilogram|kilograms|lb|lbs|pound|pounds|cup|cups|tbsp|tbsps|tablespoon|tablespoons|tsp|tsps|teaspoon|teaspoons|slice|slices|piece|pieces|serving|servings|scoop|scoops)\s*(.*)$/i
     );
 
     if (m) {
@@ -221,10 +221,11 @@ async function llmParseMeal(text) {
       return {
         name: name || cleanName(p),
         qty: Number.isFinite(qty) && qty > 0 ? qty : null,
-        unit,
+        unit: unit || "",
       };
     }
 
+    // No portion provided -> qty null
     return { name: cleanName(p), qty: null, unit: "" };
   });
 
@@ -236,22 +237,22 @@ async function llmParseMeal(text) {
 ----------------------------*/
 async function resolveItem(item, { userFoods, globalFoods, debug }) {
   const key = normalizeFoodKey(item.name);
-// ✅ If user did NOT provide a portion, force clarification (no guessing)
-const hasQty = item.qty != null && Number(item.qty) > 0;
-const hasUnit = String(item.unit || "").trim() !== "";
 
-if (!hasQty || !hasUnit) {
-  return {
-    ...item,
-    source: "needs_portion",
-    confidence: 0.0,
-    calories: null,
-    protein: null,
-    carbs: null,
-    fat: null,
-    question: `For "${item.name}", how much did you have? (examples: 6oz, 1 cup cooked, 200g)`,
-  };
-}
+  // If user gave no qty/unit, force portion prompt for accuracy
+  if (!item.qty || !item.unit) {
+    return {
+      ...item,
+      qty: null,
+      unit: "",
+      source: "needs_portion",
+      confidence: 0,
+      calories: null,
+      protein: null,
+      carbs: null,
+      fat: null,
+      question: `For "${item.name}", how much did you have? (examples: 6oz, 1 cup cooked, 200g)`,
+    };
+  }
 
   if (userFoods && userFoods[key]) return applyServing(userFoods[key], item, "user", 0.95);
   if (globalFoods && globalFoods[key]) return applyServing(globalFoods[key], item, "global", 0.9);
@@ -320,7 +321,7 @@ async function loadGlobalFoods() {
   `;
 
   const data = await shopifyGraphQL(q, {});
-  const raw = data?.shop?.metafield?.value || "{}";
+  const raw = (data && data.shop && data.shop.metafield && data.shop.metafield.value) || "{}";
 
   try {
     const obj = JSON.parse(raw) || {};
@@ -344,11 +345,11 @@ async function loadUserCustomFoods(customerId) {
         metafield(namespace:"custom", key:"user_foods") { value }
       }
     }
-    `,
+  `,
     { id }
   );
 
-  const raw = data?.customer?.metafield?.value || "{}";
+  const raw = (data && data.customer && data.customer.metafield && data.customer.metafield.value) || "{}";
 
   try {
     const obj = JSON.parse(raw) || {};
@@ -364,7 +365,7 @@ function normalizeFoodObjectKeys(obj) {
   if (Array.isArray(obj)) {
     const out = {};
     for (const it of obj) {
-      const key = normalizeFoodKey(it?.name || it?.label || "");
+      const key = normalizeFoodKey((it && (it.name || it.label)) || "");
       if (!key) continue;
       out[key] = it;
     }
@@ -373,8 +374,9 @@ function normalizeFoodObjectKeys(obj) {
 
   if (typeof obj === "object") {
     const out = {};
-    for (const [k, v] of Object.entries(obj)) {
-      const key = normalizeFoodKey(v?.name || v?.label || k);
+    for (const k of Object.keys(obj)) {
+      const v = obj[k];
+      const key = normalizeFoodKey((v && (v.name || v.label)) || k);
       if (!key) continue;
       out[key] = v;
     }
@@ -385,46 +387,48 @@ function normalizeFoodObjectKeys(obj) {
 }
 
 /* ---------------------------
-   USDA Lookup (REAL CALORIES)
+   USDA Lookup (IMPROVED MATCHING)
+   Fixes:
+   - chicken -> prefer breast/meat, avoid feet
+   - cooked rice -> prefer white rice cooked; cup converts to grams (no grams prompt)
 ----------------------------*/
 async function usdaLookup(item, debug = false) {
   const apiKey = process.env.USDA_API_KEY;
 
   if (!apiKey) {
-    if (debug) {
-      return {
-        ...item,
-        source: "usda",
-        confidence: 0.0,
-        calories: null,
-        protein: null,
-        carbs: null,
-        fat: null,
-        question: null,
-        _debug: { hasUsdaKey: false, reason: "USDA_API_KEY missing at runtime" },
-      };
-    }
-    return null;
+    return debug
+      ? {
+          ...item,
+          source: "usda",
+          confidence: 0.0,
+          calories: null,
+          protein: null,
+          carbs: null,
+          fat: null,
+          question: null,
+          _debug: { hasUsdaKey: false, reason: "USDA_API_KEY missing at runtime" },
+        }
+      : null;
   }
 
-  const name = String(item?.name || "").trim();
+  const name = String(item && item.name ? item.name : "").trim();
   if (!name) return null;
 
   function buildUsdaQuery(it) {
-    const n = String(it?.name || "").trim();
+    const n = String(it && it.name ? it.name : "").trim().toLowerCase();
+    const unit = normalizeFoodKey(it && it.unit ? it.unit : "");
+    const nKey = normalizeFoodKey(n);
 
+    // 93% ground beef -> 93% lean ground beef
     const m = n.match(/^(\d{2})\s*%\s*(.*)$/i);
-    if (m) {
-      const pct = m[1];
-      const rest = m[2] || "";
-      if (/ground\s+beef/i.test(rest)) return `${pct}% lean ground beef`;
-    }
+    if (m && /ground\s+beef/i.test(m[2] || "")) return `${m[1]}% lean ground beef`;
 
-    const unit = normalizeFoodKey(it?.unit || "");
-    const base = n.toLowerCase();
+    // Chicken generic -> chicken breast cooked (prevents "feet")
+    if (nKey === "chicken") return "chicken breast, meat only, cooked";
 
-    if (base === "rice" && unit === "cup") return "rice, white, cooked";
-    if (base === "bread" && unit === "slice") return "bread, white";
+    // Rice / cooked rice in cups -> cooked white rice
+    const hasRice = nKey === "rice" || nKey.endsWith(" rice") || nKey.includes(" rice ");
+    if (hasRice && unit === "cup") return "rice, white, long-grain, regular, cooked";
 
     return n;
   }
@@ -445,41 +449,40 @@ async function usdaLookup(item, debug = false) {
     const sj = await s.json().catch(() => null);
 
     if (!s.ok) {
-      if (debug) {
-        return {
-          ...item,
-          source: "usda",
-          confidence: 0.0,
-          calories: null,
-          protein: null,
-          carbs: null,
-          fat: null,
-          question: null,
-          _debug: { hasUsdaKey: true, searchStatus, searchError: sj || "(no json)" },
-        };
-      }
-      return null;
+      return debug
+        ? {
+            ...item,
+            source: "usda",
+            confidence: 0.0,
+            calories: null,
+            protein: null,
+            carbs: null,
+            fat: null,
+            question: null,
+            _debug: { hasUsdaKey: true, searchStatus, searchError: sj || "(no json)" },
+          }
+        : null;
     }
 
-    const foods = Array.isArray(sj?.foods) ? sj.foods : [];
+    const foods = Array.isArray(sj && sj.foods ? sj.foods : null) ? sj.foods : [];
     if (!foods.length) return null;
 
+    const baseName = normalizeFoodKey(item.name);
+
     function scoreFood(f) {
-      const desc = String(f?.description || "").toLowerCase();
-      const brand = String(f?.brandName || "").toLowerCase();
+      const desc = String((f && f.description) || "").toLowerCase();
+      const brand = String((f && f.brandName) || "").toLowerCase();
       const text = `${desc} ${brand}`.trim();
 
       let score = 0;
 
-      const dt = String(f?.dataType || "").toLowerCase();
+      const dt = String((f && f.dataType) || "").toLowerCase();
       if (dt.includes("foundation")) score += 60;
       if (dt.includes("sr legacy")) score += 40;
       if (dt.includes("survey")) score += 15;
       if (dt.includes("branded")) score -= 15;
 
-      if (text.includes("raw")) score += 15;
-      if (text.includes("fresh")) score += 10;
-
+      // Query word match
       const qWords = String(query || "")
         .toLowerCase()
         .split(/\s+/)
@@ -489,33 +492,51 @@ async function usdaLookup(item, debug = false) {
         if (w.length >= 3 && text.includes(w)) score += 8;
       }
 
+      // Strong negatives (avoid wrong categories)
       const bad = [
-        "chips","dried","dehydrated","powder","flour","puree","babyfood","frozen",
-        "smoothie","muffin","cake","cookie","candy","cereal","ready-to-eat","oh!s","bars",
+        "chips",
+        "dried",
+        "dehydrated",
+        "powder",
+        "flour",
+        "puree",
+        "babyfood",
+        "frozen",
+        "smoothie",
+        "muffin",
+        "cake",
+        "cookie",
+        "candy",
+        "cereal",
+        "ready-to-eat",
+        "bars",
       ];
-      for (const w of bad) {
-        if (text.includes(w)) score -= 60;
+      for (const w of bad) if (text.includes(w)) score -= 60;
+
+      // HARD negatives: chicken feet / organs / odd cuts
+      const hardBad = ["feet", "foot", "gizzard", "liver", "heart", "neck", "wing tip", "bones"];
+      for (const w of hardBad) if (text.includes(w)) score -= 120;
+
+      // Chicken preference
+      if (baseName === "chicken") {
+        if (text.includes("breast")) score += 60;
+        if (text.includes("meat only")) score += 25;
+        if (text.includes("roasted") || text.includes("cooked")) score += 15;
+        if (text.includes("skin")) score -= 15;
       }
 
-      const baseName = normalizeFoodKey(item?.name || "");
-      if (baseName === "rice") {
-        if (text.includes("dirty") || text.includes("fried") || text.includes("pilaf") || text.includes("seasoned")) score -= 80;
-        if (text.includes("white") && text.includes("cooked")) score += 35;
-        if (text.includes("brown") && text.includes("cooked")) score += 15;
+      // Rice preference (avoid wild unless asked)
+      const hasRice = baseName === "rice" || baseName.endsWith(" rice") || baseName.includes(" rice ");
+      if (hasRice) {
+        if (text.includes("wild rice")) score -= 80;
+        if (text.includes("white") && text.includes("cooked")) score += 50;
+        if (text.includes("long-grain") && text.includes("cooked")) score += 20;
+        if (text.includes("fried") || text.includes("seasoned") || text.includes("pilaf")) score -= 80;
       }
 
-      if (baseName === "bread") {
-        if (text.includes("cereal") || text.includes("cracker") || text.includes("graham")) score -= 90;
-        if (text.includes("bread")) score += 20;
-        if (text.includes("white") || text.includes("wheat") || text.includes("whole")) score += 10;
-      }
-
-      if (baseName.includes("ground beef") || baseName.includes("beef")) {
-        if (text.includes("ground") && text.includes("beef")) score += 25;
-        if (text.includes("lean")) score += 10;
-      }
-
+      // Prefer shorter descriptions
       score -= Math.min(desc.length, 200) / 25;
+
       return score;
     }
 
@@ -530,7 +551,7 @@ async function usdaLookup(item, debug = false) {
       }
     }
 
-    if (!best?.fdcId) return null;
+    if (!best || !best.fdcId) return null;
 
     const detailUrl =
       `https://api.nal.usda.gov/fdc/v1/food/${best.fdcId}?` +
@@ -541,27 +562,26 @@ async function usdaLookup(item, debug = false) {
     const dj = await d.json().catch(() => null);
 
     if (!d.ok) {
-      if (debug) {
-        return {
-          ...item,
-          source: "usda",
-          confidence: 0.0,
-          calories: null,
-          protein: null,
-          carbs: null,
-          fat: null,
-          question: null,
-          _debug: { hasUsdaKey: true, detailStatus, detailError: dj || "(no json)" },
-        };
-      }
-      return null;
+      return debug
+        ? {
+            ...item,
+            source: "usda",
+            confidence: 0.0,
+            calories: null,
+            protein: null,
+            carbs: null,
+            fat: null,
+            question: null,
+            _debug: { hasUsdaKey: true, detailStatus, detailError: dj || "(no json)" },
+          }
+        : null;
     }
 
-    const nutrients = Array.isArray(dj?.foodNutrients) ? dj.foodNutrients : [];
+    const nutrients = Array.isArray(dj && dj.foodNutrients ? dj.foodNutrients : null) ? dj.foodNutrients : [];
 
     function getNutrientAmount(id) {
       for (const n of nutrients) {
-        if (n?.nutrient?.id === id && n?.amount != null && isFinite(n.amount)) return Number(n.amount);
+        if (n && n.nutrient && n.nutrient.id === id && n.amount != null && isFinite(n.amount)) return Number(n.amount);
       }
       return null;
     }
@@ -573,9 +593,8 @@ async function usdaLookup(item, debug = false) {
 
     if (kcalPer100g == null) return null;
 
-    const qty = Number(item?.qty || 1);
-    const unitKey = normalizeFoodKey(item?.unit || "");
-    const baseName = normalizeFoodKey(item?.name || "");
+    const qty = Number(item && item.qty ? item.qty : 1);
+    const unitKey = normalizeFoodKey(item && item.unit ? item.unit : "");
 
     function toGrams(q, unit) {
       if (!isFinite(q) || q <= 0) return null;
@@ -586,14 +605,24 @@ async function usdaLookup(item, debug = false) {
       return null;
     }
 
+    // Better estimates so cups do NOT trigger "give grams"
     function estimateGrams(q, unit, nameKey) {
       if (!isFinite(q) || q <= 0) return null;
-      if (unit === "cup" && nameKey === "rice") return q * 158;   // 1 cup cooked rice ~ 158g
-      if (unit === "slice" && nameKey === "bread") return q * 25; // 1 slice bread ~ 25g
+
+      const hasRice = nameKey === "rice" || nameKey.endsWith(" rice") || nameKey.includes(" rice ");
+      if (unit === "cup" && hasRice) {
+        // 1 cup cooked white rice ~ 158g
+        return q * 158;
+      }
+
+      if (unit === "slice" && nameKey === "bread") {
+        return q * 25;
+      }
+
       return null;
     }
 
-    const grams = toGrams(qty, unitKey) ?? estimateGrams(qty, unitKey, baseName);
+    const grams = toGrams(qty, unitKey) || estimateGrams(qty, unitKey, baseName);
     const mult = grams != null ? grams / 100 : qty;
 
     const out = {
@@ -604,10 +633,11 @@ async function usdaLookup(item, debug = false) {
       protein: round((proteinPer100g || 0) * mult),
       carbs: round((carbsPer100g || 0) * mult),
       fat: round((fatPer100g || 0) * mult),
-      matched_to: dj?.description || best?.description || item.name,
+      matched_to: (dj && dj.description) || (best && best.description) || item.name,
       ...(debug ? { _debug: { hasUsdaKey: true, searchStatus, detailStatus, bestScore, queryUsed: query } } : {}),
     };
 
+    // If it's a volume unit we did NOT estimate, ask for grams/oz
     if (
       grams == null &&
       unitKey &&
@@ -617,24 +647,27 @@ async function usdaLookup(item, debug = false) {
       out.question = `For "${item.name}", can you give grams or ounces (ex: 200g, 5oz) so I can be accurate?`;
     }
 
+    // If we used rice/bread estimates, keep confidence slightly lower (brand variance)
     if (unitKey === "slice" && baseName === "bread") out.confidence = 0.65;
-    if (unitKey === "cup" && baseName === "rice") out.confidence = 0.7;
+    {
+      const hasRice = baseName === "rice" || baseName.endsWith(" rice") || baseName.includes(" rice ");
+      if (unitKey === "cup" && hasRice) out.confidence = 0.75;
+    }
 
     return out;
   } catch (err) {
-    if (debug) {
-      return {
-        ...item,
-        source: "usda",
-        confidence: 0.0,
-        calories: null,
-        protein: null,
-        carbs: null,
-        fat: null,
-        question: null,
-        _debug: { hasUsdaKey: true, reason: "Exception", message: String(err?.message || err) },
-      };
-    }
-    return null;
+    return debug
+      ? {
+          ...item,
+          source: "usda",
+          confidence: 0.0,
+          calories: null,
+          protein: null,
+          carbs: null,
+          fat: null,
+          question: null,
+          _debug: { hasUsdaKey: true, reason: "Exception", message: String((err && err.message) || err) },
+        }
+      : null;
   }
 }
