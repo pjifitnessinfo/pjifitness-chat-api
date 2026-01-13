@@ -2598,11 +2598,7 @@ if (!guessed && /^\s*meal\s*[:\-–]/i.test(String(userMessage || ""))) {
         });
       }
 
-      const proto =
-        (req.headers["x-forwarded-proto"] && String(req.headers["x-forwarded-proto"]).split(",")[0]) ||
-        "https";
-      const host = req.headers["x-forwarded-host"] || req.headers.host;
-      const base = host ? `${proto}://${host}` : "https://www.pjifitness.com";
+      const base = pjInternalUrl("");
 
       const nutRes = await fetch(`${base}/api/nutrition`, {
         method: "POST",
