@@ -2478,7 +2478,7 @@ if (customerGid) {
       pending &&
       typeof pending.raw_text === "string" &&
       pending.raw_text.trim();
-    // ✅ If we already have meal_type saved and user is now sending portions, resolve it
+    // ✅ If we already have meal_type saved and user is now replying (not just meal type), attempt resolve
 if (hasPending && pending.meal_type && !isMealTypeOnly(userMessage)) {
   const mt = normalizeMealType(pending.meal_type) || pending.meal_type;
 
