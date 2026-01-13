@@ -231,6 +231,22 @@ async function llmParseMeal(text) {
 ----------------------------*/
 async function resolveItem(item, { userFoods, globalFoods, debug }) {
   const key = normalizeFoodKey(item.name);
+// ✅ If user did NOT provide a portion, force clarification (no guessing)
+const hasQty = item.qty != null && Number(item.qty) > 0;
+const hasUnit = String(item.unit || "").trim() !== "";
+
+if (!hasQty || !hasUnit) {
+  return {
+    ...item,
+    source: "needs_portion",
+    confidence: 0.0,
+    calories: null,
+    protein: null,
+    carbs: null,
+    fat: null,
+    question: `For "${item.name}", how much did you have? (examples: 6oz, 1 cup cooked, 200g)`,
+  };
+}
 
   if (userFoods && userFoods[key]) return applyServing(userFoods[key], item, "user", 0.95);
   if (globalFoods && globalFoods[key]) return applyServing(globalFoods[key], item, "global", 0.9);
