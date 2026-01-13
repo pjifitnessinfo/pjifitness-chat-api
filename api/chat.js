@@ -2499,11 +2499,7 @@ if (customerGid) {
       }
 
       // Build base URL for internal call
-      const proto =
-        (req.headers["x-forwarded-proto"] && String(req.headers["x-forwarded-proto"]).split(",")[0]) ||
-        "https";
-      const host = req.headers["x-forwarded-host"] || req.headers.host;
-      const base = host ? `${proto}://${host}` : "https://www.pjifitness.com";
+      const base = pjInternalUrl("");
 
       // Run nutrition on the saved raw_text
       const nutRes = await fetch(`${base}/api/nutrition`, {
