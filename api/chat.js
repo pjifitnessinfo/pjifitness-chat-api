@@ -1908,7 +1908,8 @@ if (replaceLast && existingMeals.length) {
 }
 
 
-    const desc = Array.isArray(items) ? items.join(", ") : "";
+    const desc = Array.isArray(items) ? items.map(it => it?.name).filter(Boolean).join(", ") : "";
+
 
 const newMeal = {
   meal_type: mealType,
@@ -1943,7 +1944,8 @@ const newMeal = {
       coach_focus: existing.coach_focus || "Meals logged from chat."
     };
   } else {
-    const desc = Array.isArray(items) ? items.join(", ") : "";
+    const desc = Array.isArray(items) ? items.map(it => it?.name).filter(Boolean).join(", ") : "";
+
 
 const newMeals = [{
   meal_type: mealType,
