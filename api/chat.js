@@ -2508,6 +2508,14 @@ if (customerGid) {
   }
 
   if (appendUserMessage && userMessage) messages.push({ role: "user", content: userMessage });
+  // ✅ Weekly pattern context (last 7 days)
+if (weeklyContextText) {
+  messages.push({
+    role: "system",
+    content: weeklyContextText
+  });
+}
+
 
   messages.push({
     role: "system",
