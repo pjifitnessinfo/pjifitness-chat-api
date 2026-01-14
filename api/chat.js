@@ -1286,6 +1286,224 @@ function detectMealOverride(userMsg) {
 function isYMD(s) {
   return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
 }
+// ===============================
+// WEEKLY SUMMARY HELPERS (last 7 days)
+// ===============================
+
+function pjYmdToUtcDate(ymd) {
+  // ymd: "YYYY-MM-DD"
+  if (!isYMD(ymd)) return null;
+  const [y, m, d] = ymd.split("-").map(n => parseInt(n, 10));
+  if (!y || !m || !d) return null;
+  return new Date(Date.UTC(y, m - 1, d));
+}
+
+function pjUtcDateToYmd(d) {
+  if (!(d instanceof Date)) return null;
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function pjAddDaysYmd(ymd, deltaDays) {
+  const dt = pjYmdToUtcDate(ymd);
+  if (!dt) return null;
+  dt.setUTCDate(dt.getUTCDate() + Number(deltaDays || 0));
+  return pjUtcDateToYmd(dt);
+}
+
+function pjNumOrNull(v) {
+  if (v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function pjGetPlanTargetsFromPlan(plan) {
+  if (!plan || typeof plan !== "object") return {
+    calories_target: null,
+    protein_target: null,
+    calories_zone: 150,
+    protein_zone: 20
+  };
+
+  const calories_target = pjNumOrNull(plan.calories_target ?? plan.calories);
+  const protein_target = pjNumOrNull(plan.protein_target ?? plan.protein);
+
+  return {
+    calories_target,
+    protein_target,
+    calories_zone: 150,
+    protein_zone: 20
+  };
+}
+
+function pjComputeWeeklySummary(logs, dateKey, plan) {
+  const out = {
+    ok: true,
+    start: null,
+    end: dateKey,
+    days_with_any_log: 0,
+    avg_calories: null,
+    avg_protein: null,
+    avg_steps: null,
+    weight_delta_7d: null,
+    weight_trend_note: "unknown",
+    adherence_calories_pct: null,
+    adherence_protein_pct: null
+  };
+
+  if (!Array.isArray(logs) || !isYMD(dateKey)) {
+    out.ok = false;
+    return out;
+  }
+
+  const targets = pjGetPlanTargetsFromPlan(plan);
+  const startKey = pjAddDaysYmd(dateKey, -6);
+  out.start = startKey;
+
+  // Build a map for quick lookup
+  const map = new Map();
+  for (const e of logs) {
+    if (e && typeof e.date === "string") map.set(e.date, e);
+  }
+
+  let calsSum = 0, calsCount = 0;
+  let pSum = 0, pCount = 0;
+  let stepsSum = 0, stepsCount = 0;
+
+  let anyLogDays = 0;
+
+  let adherCalOk = 0, adherCalCount = 0;
+  let adherProtOk = 0, adherProtCount = 0;
+
+  // Weight trend: first non-null and last non-null in window
+  let firstW = null, lastW = null;
+
+  for (let i = 0; i < 7; i++) {
+    const dayKey = pjAddDaysYmd(startKey, i);
+    const entry = map.get(dayKey);
+    if (!entry) continue;
+
+    const dayHasAny =
+      entry.weight != null ||
+      entry.steps != null ||
+      entry.calories != null ||
+      entry.total_calories != null ||
+      (Array.isArray(entry.meals) && entry.meals.length);
+
+    if (dayHasAny) anyLogDays++;
+
+    const dayCals = pjNumOrNull(entry.total_calories ?? entry.calories);
+    if (dayCals != null) {
+      calsSum += dayCals;
+      calsCount++;
+
+      if (targets.calories_target != null) {
+        adherCalCount++;
+        if (Math.abs(dayCals - targets.calories_target) <= (targets.calories_zone || 150)) {
+          adherCalOk++;
+        }
+      }
+    }
+
+    const dayProt = pjNumOrNull(entry.total_protein ?? entry.protein ?? entry.protein_g);
+    if (dayProt != null) {
+      pSum += dayProt;
+      pCount++;
+
+      if (targets.protein_target != null) {
+        adherProtCount++;
+        if (Math.abs(dayProt - targets.protein_target) <= (targets.protein_zone || 20)) {
+          adherProtOk++;
+        }
+      }
+    }
+
+    const daySteps = pjNumOrNull(entry.steps);
+    if (daySteps != null) {
+      stepsSum += daySteps;
+      stepsCount++;
+    }
+
+    const w = pjNumOrNull(entry.weight);
+    if (w != null) {
+      if (firstW == null) firstW = w;
+      lastW = w;
+    }
+  }
+
+  out.days_with_any_log = anyLogDays;
+
+  out.avg_calories = calsCount ? Math.round(calsSum / calsCount) : null;
+  out.avg_protein  = pCount ? Math.round(pSum / pCount) : null;
+  out.avg_steps    = stepsCount ? Math.round(stepsSum / stepsCount) : null;
+
+  if (firstW != null && lastW != null) {
+    const delta = lastW - firstW;
+    out.weight_delta_7d = Math.round(delta * 10) / 10;
+    if (delta <= -0.3) out.weight_trend_note = "down";
+    else if (delta >= 0.3) out.weight_trend_note = "up";
+    else out.weight_trend_note = "flat";
+  }
+
+  out.adherence_calories_pct = adherCalCount ? Math.round((adherCalOk / adherCalCount) * 100) : null;
+  out.adherence_protein_pct  = adherProtCount ? Math.round((adherProtOk / adherProtCount) * 100) : null;
+
+  return out;
+}
+
+function pjWeeklySummaryToSystemText(sum, plan) {
+  if (!sum || sum.ok !== true) return null;
+
+  const targets = pjGetPlanTargetsFromPlan(plan);
+
+  const lines = [];
+  lines.push(`WEEKLY_CONTEXT (last 7 days, ${sum.start} to ${sum.end}):`);
+
+  lines.push(`- Days with any log: ${sum.days_with_any_log}/7`);
+
+  if (sum.avg_calories != null) {
+    if (targets.calories_target != null) {
+      lines.push(`- Avg calories: ${sum.avg_calories} (target ${targets.calories_target}, zone +/-${targets.calories_zone})`);
+    } else {
+      lines.push(`- Avg calories: ${sum.avg_calories}`);
+    }
+  } else {
+    lines.push(`- Avg calories: unknown`);
+  }
+
+  if (sum.avg_protein != null) {
+    if (targets.protein_target != null) {
+      lines.push(`- Avg protein: ${sum.avg_protein}g (target ${targets.protein_target}g, zone +/-${targets.protein_zone}g)`);
+    } else {
+      lines.push(`- Avg protein: ${sum.avg_protein}g`);
+    }
+  } else {
+    lines.push(`- Avg protein: unknown`);
+  }
+
+  if (sum.avg_steps != null) lines.push(`- Avg steps: ${sum.avg_steps}`);
+  else lines.push(`- Avg steps: unknown`);
+
+  if (sum.weight_delta_7d != null) {
+    lines.push(`- Weight trend: ${sum.weight_trend_note} (${sum.weight_delta_7d} lb over 7d)`);
+  } else {
+    lines.push(`- Weight trend: unknown`);
+  }
+
+  if (sum.adherence_calories_pct != null) {
+    lines.push(`- Calories adherence: ${sum.adherence_calories_pct}% days in zone`);
+  }
+  if (sum.adherence_protein_pct != null) {
+    lines.push(`- Protein adherence: ${sum.adherence_protein_pct}% days in zone`);
+  }
+
+  // Make it actionable for the model
+  lines.push(`Use this weekly context to give pattern-based coaching. Do NOT invent missing days.`);
+
+  return lines.join("\n");
+}
 
 function localYMD() {
   const d = new Date();
