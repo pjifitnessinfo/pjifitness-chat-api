@@ -1,9 +1,10 @@
 // /api/chat.js
 // Chat endpoint using OpenAI REST API.
-// Expects: { message, email, customerId, threadId, history, appendUserMessage } in JSON body.
-// Returns: { reply, debug }
+// Expects: { message, email, customerId, threadId, history, appendUserMessage, clientDate, isSubscriber } in JSON body.
+// Returns: { reply, debug, free_chat_remaining }
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
 // ===============================
 // INTERNAL API BASE URL (prevents wrong domain calls)
 // ===============================
@@ -18,19 +19,13 @@ function pjInternalUrl(path) {
   return `${base}${p}`;
 }
 
-
 // Shopify Admin API (for reading + writing onboarding/metafields)
 const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN; // e.g. "your-store.myshopify.com"
 const SHOPIFY_ADMIN_API_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 
 // ============================================================
 // SYSTEM PROMPT — PJiFitness AI Coach (v2: “people love talking to coach”)
-// - Human-first, short, punchy, accurate numbers
-// - Onboarding only once (with the warm 3-step pre-onboarding sequence)
-// - Always outputs COACH_REVIEW_JSON at the very end
-// - ASCII only (no smart quotes)
 // ============================================================
-
 const SYSTEM_PROMPT = `
 You are the PJiFitness AI Coach.
 
@@ -349,29 +344,6 @@ Rules:
 - If correction mode: output exactly ONE MEAL_LOG_JSON replacement.
 
 ======================================================
-REVIEW MY MEALS (MEAL REVIEW + SWAPS)
-======================================================
-If user says: "Review my meals" or taps Review Meals:
-
-Output:
-1) Meals logged today grouped by meal
-2) Totals vs targets
-3) Coaching feedback:
-   - Wins (1-3)
-   - Swaps ONLY if needed
-4) ONE best next move
-
-Calorie range rule:
-- Targets are a RANGE.
-- Within +/- 200 is "on plan" (do NOT call it "over").
-
-Suggest swaps only if:
-A) calories > ~200 over target
-B) protein clearly low
-C) meals very calorie-dense and user mentions hunger
-D) user asks for swaps
-
-======================================================
 DAILY REVIEW (OPTIONAL)
 ======================================================
 Sometimes send a quick daily focus:
@@ -410,31 +382,10 @@ Rules:
 - This MUST be the FINAL block in the response.
 `;
 
-/* ============================
-   POST-PLAN (after refresh) MESSAGES
-   (Shorter, more coach-like, gets them logging fast)
-   ============================ */
-
-const PJ_POST_PLAN_EDU =
-  "Quick coaching note so you do not overthink this:\\n\\n" +
-  "1) This is flexible dieting: hit calories + protein most days.\\n" +
-  "2) No foods are banned. We just make them fit.\\n" +
-  "3) If hunger is high, we use higher-volume foods (lean protein + fruit/veg + smart carbs).\\n\\n" +
-  "If you tell me 2-3 foods you love (pizza, burgers, sweets), I'll show you how to keep them in and still lose.";
-
-const PJ_POST_PLAN_MEAL_PROMPT =
-  "Nice - plan is set. Let's log your first meal.\\n\\n" +
-  "Tell me what you ate (and which meal: Breakfast, Lunch, Dinner, or Snacks). " +
-  "I'll estimate calories/macros and log it.";
-
-const PJ_POST_PLAN_REFRESH =
-  "One quick step: please refresh the page once so your plan loads correctly.\\n\\n" +
-  "After you refresh, come back here and tell me what you ate today - we'll start simple.";
-
-// ===============================
-// SAFETY: sanitize model output so internal blocks never leak into chat
-// Handles [[...]] and also broken single-bracket variants like [COACH_REVIEW_JSON ...]
-// ===============================
+/* ===============================
+   SAFETY: sanitize model output so internal blocks never leak into chat
+   Handles [[...]] and also broken single-bracket variants like [COACH_REVIEW_JSON ...]
+   =============================== */
 function pjSanitizeForUser(text) {
   if (!text || typeof text !== "string") return "";
 
@@ -465,22 +416,21 @@ function pjSanitizeForUser(text) {
 /* ============================
    PJ PLAN VALIDATOR
    ============================ */
-function pjPlanIsValid(plan){
+function pjPlanIsValid(plan) {
   if (!plan || typeof plan !== "object") return false;
 
   const cal = Number(plan.calories_target ?? plan.calories);
   const startW = Number(plan.start_weight);
-  const goalW  = Number(plan.goal_weight);
+  const goalW = Number(plan.goal_weight);
   const protein = Number(plan.protein_target ?? plan.protein);
 
   if (!Number.isFinite(cal) || cal < 1000) return false;
   if (!Number.isFinite(startW) || startW <= 0) return false;
-  if (!Number.isFinite(goalW)  || goalW  <= 0) return false;
+  if (!Number.isFinite(goalW) || goalW <= 0) return false;
   if (!Number.isFinite(protein) || protein < 50) return false;
 
   return true;
 }
-
 
 // --- Helper: Shopify GraphQL client (for metafields) ---
 async function shopifyGraphQL(query, variables = {}) {
@@ -488,17 +438,14 @@ async function shopifyGraphQL(query, variables = {}) {
     throw new Error("Missing Shopify env vars");
   }
 
-  const res = await fetch(
-    `https://${SHOPIFY_STORE_DOMAIN}/admin/api/2024-01/graphql.json`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_ACCESS_TOKEN
-      },
-      body: JSON.stringify({ query, variables })
-    }
-  );
+  const res = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2024-01/graphql.json`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": SHOPIFY_ADMIN_API_ACCESS_TOKEN
+    },
+    body: JSON.stringify({ query, variables })
+  });
 
   if (!res.ok) {
     const text = await res.text();
@@ -509,9 +456,7 @@ async function shopifyGraphQL(query, variables = {}) {
   const json = await res.json();
   if (json.errors && json.errors.length) {
     console.error("Shopify GraphQL errors:", json.errors);
-    const message = json.errors
-      .map(e => e.message || JSON.stringify(e))
-      .join(" | ");
+    const message = json.errors.map((e) => e.message || JSON.stringify(e)).join(" | ");
     throw new Error(`Shopify GraphQL errors: ${message}`);
   }
 
@@ -519,28 +464,13 @@ async function shopifyGraphQL(query, variables = {}) {
 }
 
 // ===============================
-// POST-PLAN STAGE (one-time post-refresh education + first meal prompt)
+// POST-PLAN STAGE
 // ===============================
-async function getPostPlanStage(customerGid) {
-  if (!customerGid) return null;
-  const q = `
-    query($id: ID!) {
-      customer(id: $id) {
-        metafield(namespace:"custom", key:"post_plan_stage") { value }
-      }
-    }
-  `;
-  const data = await shopifyGraphQL(q, { id: customerGid });
-  return data?.customer?.metafield?.value || null;
-}
-
 async function setPostPlanStage(customerGid, value) {
   if (!customerGid) return;
   const m = `
     mutation($input: MetafieldsSetInput!) {
-      metafieldsSet(metafields: [$input]) {
-        userErrors { field message }
-      }
+      metafieldsSet(metafields: [$input]) { userErrors { field message } }
     }
   `;
   return shopifyGraphQL(m, {
@@ -555,9 +485,8 @@ async function setPostPlanStage(customerGid, value) {
 }
 
 // ============================================================
-// FREE PREVIEW HELPERS (Step 2A)
+// FREE PREVIEW HELPERS
 // ============================================================
-
 async function getFreeChatRemaining(customerGid) {
   const q = `
     query($id: ID!) {
@@ -575,9 +504,7 @@ async function getFreeChatRemaining(customerGid) {
 async function setFreeChatRemaining(customerGid, remaining) {
   const m = `
     mutation($input: MetafieldsSetInput!) {
-      metafieldsSet(metafields: [$input]) {
-        userErrors { field message }
-      }
+      metafieldsSet(metafields: [$input]) { userErrors { field message } }
     }
   `;
   return shopifyGraphQL(m, {
@@ -595,11 +522,12 @@ async function setFreeChatRemaining(customerGid, remaining) {
 async function parseBody(req) {
   return new Promise((resolve, reject) => {
     try {
-      if (req.body && typeof req.body === "object") {
-        return resolve(req.body);
-      }
+      if (req.body && typeof req.body === "object") return resolve(req.body);
+
       let data = "";
-      req.on("data", chunk => { data += chunk; });
+      req.on("data", (chunk) => {
+        data += chunk;
+      });
       req.on("end", () => {
         if (!data) return resolve({});
         try {
@@ -614,6 +542,7 @@ async function parseBody(req) {
     }
   });
 }
+
 // ===============================
 // ONBOARDING OVERLAY HELPERS
 // ===============================
@@ -629,12 +558,13 @@ function clamp(n, lo, hi) {
   if (!Number.isFinite(x)) return lo;
   return Math.max(lo, Math.min(hi, x));
 }
-// ✅ Helper: stable rounding (prevents 33.599999999999994)
+
 function pjRound1(n) {
   const x = Number(n);
   if (!Number.isFinite(x)) return 0;
   return Math.round(x * 10) / 10;
 }
+
 function pjNormalizeMealItems(rawItems) {
   const arr = Array.isArray(rawItems) ? rawItems : [];
   const out = [];
@@ -642,7 +572,6 @@ function pjNormalizeMealItems(rawItems) {
   for (let i = 0; i < arr.length; i++) {
     const it = arr[i];
 
-    // If it's already an object with macros
     if (it && typeof it === "object" && !Array.isArray(it)) {
       const name = String(it.name || it.text || it.matched_to || "").trim();
       if (!name) continue;
@@ -652,12 +581,11 @@ function pjNormalizeMealItems(rawItems) {
         calories: Math.round(Number(it.calories) || 0),
         protein: pjRound1(Number(it.protein) || 0),
         carbs: pjRound1(Number(it.carbs) || 0),
-        fat: pjRound1(Number(it.fat) || 0),
+        fat: pjRound1(Number(it.fat) || 0)
       });
       continue;
     }
 
-    // If it's a string, keep it but macros unknown
     const s = String(it || "").trim();
     if (!s) continue;
 
@@ -666,7 +594,7 @@ function pjNormalizeMealItems(rawItems) {
       calories: 0,
       protein: 0,
       carbs: 0,
-      fat: 0,
+      fat: 0
     });
   }
 
@@ -683,43 +611,27 @@ function computePlanFromOverlayOnboarding(ob, dateKey) {
   const sex = String(ob?.gender || ob?.sex || "male").toLowerCase() === "female" ? "female" : "male";
 
   const startW = n(ob?.start_weight) ?? n(ob?.current_weight) ?? n(ob?.weight) ?? null;
-  const goalW  = n(ob?.goal_weight) ?? n(ob?.goal) ?? null;
+  const goalW = n(ob?.goal_weight) ?? n(ob?.goal) ?? null;
 
   const activity = String(ob?.activity || "moderate").toLowerCase();
   const pace = String(ob?.pace || "moderate").toLowerCase();
 
   const bw = startW ?? 180;
 
-  // Maintenance multipliers per your prompt rules
-  const mult =
-    activity === "low" ? 11.5 :
-    activity === "high" ? 13.5 :
-    12.5; // moderate
-
+  const mult = activity === "low" ? 11.5 : activity === "high" ? 13.5 : 12.5;
   const maintenance = Math.round(bw * mult);
 
-  // Pace -> deficit (simple + stable)
-  const weeklyLoss =
-    pace === "conservative" ? 0.75 :
-    pace === "aggressive" ? 1.5 :
-    1.0;
+  const weeklyLoss = pace === "conservative" ? 0.75 : pace === "aggressive" ? 1.5 : 1.0;
 
-  const deficit =
-    weeklyLoss <= 0.8 ? 300 :
-    weeklyLoss >= 1.4 ? 500 :
-    400;
+  const deficit = weeklyLoss <= 0.8 ? 300 : weeklyLoss >= 1.4 ? 500 : 400;
 
   let calories = Math.round((maintenance - deficit) / 50) * 50;
   calories = clamp(calories, 1400, 2600);
 
-  // Protein 0.8–1.0 g/lb (use 0.9)
   let protein = Math.round(clamp(bw * 0.9, 120, 220));
-
-  // Fats 0.3–0.4 g/lb (use 0.35)
   let fat = Math.round(clamp(bw * 0.35, 45, 90));
 
-  // Carbs fill remainder
-  let carbs = Math.round((calories - (protein * 4) - (fat * 9)) / 4);
+  let carbs = Math.round((calories - protein * 4 - fat * 9) / 4);
   if (!Number.isFinite(carbs) || carbs < 50) carbs = 50;
 
   return {
@@ -728,7 +640,7 @@ function computePlanFromOverlayOnboarding(ob, dateKey) {
     current_weight_lbs: startW || null,
     goal_weight_lbs: goalW || null,
     age: n(ob?.age) || null,
-    activity_level: (activity === "low" || activity === "high") ? activity : "moderate",
+    activity_level: activity === "low" || activity === "high" ? activity : "moderate",
     weekly_loss_target_lbs: weeklyLoss,
     calories_target: calories,
     protein_target: protein,
@@ -742,8 +654,6 @@ function computePlanFromOverlayOnboarding(ob, dateKey) {
 /* ===============================
    HELPERS FOR PLAN SAVING & ID
    =============================== */
-
-// Extract the COACH_PLAN_JSON block and parse the JSON inside
 function extractCoachPlanJson(text) {
   if (!text) return null;
   const start = text.indexOf("[[COACH_PLAN_JSON");
@@ -765,37 +675,6 @@ function extractCoachPlanJson(text) {
   }
 }
 
-// Fallback: try to pull calories / protein / fat out of the text bullets
-function extractPlanFromText(text) {
-  if (!text) return null;
-
-  const calMatch =
-    text.match(/daily calorie target[^0-9]*([0-9]{3,4})/i) ||
-    text.match(/target is about[^0-9]*([0-9]{3,4})/i) ||
-    text.match(/(\d{3,4})\s*(?:calories|cals?|kcals?)/i);
-
-  const proteinMatch =
-    text.match(/protein[^0-9]*([0-9]{2,4})\s*g/i) ||
-    text.match(/aim for around[^0-9]*([0-9]{2,4})\s*g[^.]*protein/i);
-
-  const fatMatch =
-    text.match(/fat[s]?[^0-9]*([0-9]{1,3})\s*g/i) ||
-    text.match(/target about[^0-9]*([0-9]{1,3})\s*g[^.]*fat/i);
-
-  const calories = calMatch ? Number(calMatch[1]) : 0;
-  const protein  = proteinMatch ? Number(proteinMatch[1]) : 0;
-  const fat      = fatMatch ? Number(fatMatch[1]) : 0;
-
-  if (calories && calories < 500) return null;
-  if (!calories && !protein && !fat) return null;
-
-  return {
-    calories_target: calories || 0,
-    protein_target: protein || 0,
-    fat_target: fat || 0
-  };
-}
-
 function finalizePlanJson(planJson) {
   if (!planJson) return null;
 
@@ -805,50 +684,37 @@ function finalizePlanJson(planJson) {
   };
 
   const caloriesTarget = toNum(planJson.calories_target || planJson.calories);
-  const proteinTarget  = toNum(planJson.protein_target || planJson.protein);
-  let   fatTarget      = toNum(planJson.fat_target || planJson.fat);
-  let   carbs          = toNum(planJson.carbs);
+  const proteinTarget = toNum(planJson.protein_target || planJson.protein);
+  let fatTarget = toNum(planJson.fat_target || planJson.fat);
+  let carbs = toNum(planJson.carbs);
 
-  if (!fatTarget && caloriesTarget) {
-    fatTarget = Math.round((caloriesTarget * 0.30) / 9);
-  }
+  if (!fatTarget && caloriesTarget) fatTarget = Math.round((caloriesTarget * 0.30) / 9);
 
   if (!carbs && caloriesTarget && (proteinTarget || fatTarget)) {
-    const usedCals   = proteinTarget * 4 + fatTarget * 9;
-    const remaining  = caloriesTarget - usedCals;
+    const usedCals = proteinTarget * 4 + fatTarget * 9;
+    const remaining = caloriesTarget - usedCals;
     if (remaining > 0) carbs = Math.round(remaining / 4);
   }
 
-  const startWeight = planJson.start_weight != null
-    ? toNum(planJson.start_weight)
-    : planJson.current_weight_lbs != null
-      ? toNum(planJson.current_weight_lbs)
-      : 0;
+  const startWeight =
+    planJson.start_weight != null ? toNum(planJson.start_weight) : planJson.current_weight_lbs != null ? toNum(planJson.current_weight_lbs) : 0;
 
-  const goalWeight = planJson.goal_weight != null
-    ? toNum(planJson.goal_weight)
-    : planJson.goal_weight_lbs != null
-      ? toNum(planJson.goal_weight_lbs)
-      : 0;
+  const goalWeight =
+    planJson.goal_weight != null ? toNum(planJson.goal_weight) : planJson.goal_weight_lbs != null ? toNum(planJson.goal_weight_lbs) : 0;
 
   return {
     ...planJson,
     calories_target: caloriesTarget || null,
-    protein_target:  proteinTarget  || null,
-    fat_target:      fatTarget      || null,
-    carbs:           carbs          || null,
-    start_weight:    startWeight    || null,
-    goal_weight:     goalWeight     || null
+    protein_target: proteinTarget || null,
+    fat_target: fatTarget || null,
+    carbs: carbs || null,
+    start_weight: startWeight || null,
+    goal_weight: goalWeight || null
   };
 }
 
 async function resolveCustomerGidFromBody(body) {
-  let rawId =
-    body.customerId ||
-    body.shopifyCustomerId ||
-    body.customer_id ||
-    body.customer_id_raw ||
-    null;
+  let rawId = body.customerId || body.shopifyCustomerId || body.customer_id || body.customer_id_raw || null;
 
   if (rawId) {
     const str = String(rawId);
@@ -865,9 +731,7 @@ async function resolveCustomerGidFromBody(body) {
       `
       query FindCustomerByEmail($query: String!) {
         customers(first: 1, query: $query) {
-          edges {
-            node { id email }
-          }
+          edges { node { id email } }
         }
       }
       `,
@@ -886,7 +750,6 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
   if (!customerGid || !planJson) return;
 
   planJson = finalizePlanJson(planJson) || planJson;
-
   const ownerId = customerGid;
 
   // ✅ LOCK EXISTING START/GOAL (SERVER-SIDE SAFETY)
@@ -902,10 +765,13 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
       `,
       { id: ownerId }
     );
-
     const v = existingData?.customer?.metafield?.value;
     if (v) {
-      try { existingPlan = JSON.parse(v); } catch(e) { existingPlan = null; }
+      try {
+        existingPlan = JSON.parse(v);
+      } catch {
+        existingPlan = null;
+      }
     }
   } catch (e) {
     console.warn("[LOCK] Failed to fetch existing coach_plan (continuing):", e?.message || e);
@@ -917,15 +783,8 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
     return Number.isFinite(n) ? n : null;
   };
 
-  const existingStart =
-    normalizeNum(existingPlan?.start_weight_lbs) ??
-    normalizeNum(existingPlan?.start_weight) ??
-    null;
-
-  const existingGoal =
-    normalizeNum(existingPlan?.goal_weight_lbs) ??
-    normalizeNum(existingPlan?.goal_weight) ??
-    null;
+  const existingStart = normalizeNum(existingPlan?.start_weight_lbs) ?? normalizeNum(existingPlan?.start_weight) ?? null;
+  const existingGoal = normalizeNum(existingPlan?.goal_weight_lbs) ?? normalizeNum(existingPlan?.goal_weight) ?? null;
 
   if (existingStart) {
     planJson.start_weight = existingStart;
@@ -937,17 +796,15 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
   }
   // ✅ END LOCK
 
-  const startWeight = planJson.start_weight != null
-    ? Number(planJson.start_weight)
-    : (planJson.current_weight_lbs != null ? Number(planJson.current_weight_lbs) : 0);
+  const startWeight =
+    planJson.start_weight != null ? Number(planJson.start_weight) : planJson.current_weight_lbs != null ? Number(planJson.current_weight_lbs) : 0;
 
-  const goalWeight = planJson.goal_weight != null
-    ? Number(planJson.goal_weight)
-    : (planJson.goal_weight_lbs != null ? Number(planJson.goal_weight_lbs) : 0);
+  const goalWeight =
+    planJson.goal_weight != null ? Number(planJson.goal_weight) : planJson.goal_weight_lbs != null ? Number(planJson.goal_weight_lbs) : 0;
 
   const caloriesTarget = Number(planJson.calories_target) || 0;
-  const proteinTarget  = Number(planJson.protein_target)  || 0;
-  const fatTarget      = Number(planJson.fat_target)      || 0;
+  const proteinTarget = Number(planJson.protein_target) || 0;
+  const fatTarget = Number(planJson.fat_target) || 0;
 
   let carbs = Number(planJson.carbs || 0);
   if (!carbs && caloriesTarget && proteinTarget && fatTarget) {
@@ -955,12 +812,7 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
     if (remaining > 0) carbs = Math.round(remaining / 4);
   }
 
-  const coachPlan = {
-    ...planJson,
-    start_weight: startWeight || planJson.start_weight || null,
-    goal_weight: goalWeight || planJson.goal_weight || null,
-    carbs
-  };
+  const coachPlan = { ...planJson, start_weight: startWeight || planJson.start_weight || null, goal_weight: goalWeight || planJson.goal_weight || null, carbs };
 
   const mutation = `
     mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
@@ -972,48 +824,13 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
   `;
 
   const metafields = [
-    {
-      ownerId,
-      namespace: "custom",
-      key: "coach_plan",
-      type: "json",
-      value: JSON.stringify(coachPlan)
-    },
-    {
-      ownerId,
-      namespace: "custom",
-      key: "plan_json",
-      type: "json",
-      value: JSON.stringify(coachPlan)
-    },
-    {
-      ownerId,
-      namespace: "custom",
-      key: "onboarding_complete",
-      type: "single_line_text_field",
-      value: "true"
-    }
+    { ownerId, namespace: "custom", key: "coach_plan", type: "json", value: JSON.stringify(coachPlan) },
+    { ownerId, namespace: "custom", key: "plan_json", type: "json", value: JSON.stringify(coachPlan) },
+    { ownerId, namespace: "custom", key: "onboarding_complete", type: "single_line_text_field", value: "true" }
   ];
 
-  if (startWeight) {
-    metafields.push({
-      ownerId,
-      namespace: "custom",
-      key: "start_weight",
-      type: "number_integer",
-      value: String(Math.round(startWeight))
-    });
-  }
-
-  if (goalWeight) {
-    metafields.push({
-      ownerId,
-      namespace: "custom",
-      key: "goal_weight",
-      type: "number_integer",
-      value: String(Math.round(goalWeight))
-    });
-  }
+  if (startWeight) metafields.push({ ownerId, namespace: "custom", key: "start_weight", type: "number_integer", value: String(Math.round(startWeight)) });
+  if (goalWeight) metafields.push({ ownerId, namespace: "custom", key: "goal_weight", type: "number_integer", value: String(Math.round(goalWeight)) });
 
   const data = await shopifyGraphQL(mutation, { metafields });
   const userErrors = data?.metafieldsSet?.userErrors || [];
@@ -1026,19 +843,13 @@ async function saveCoachPlanForCustomer(customerGid, planJson) {
 }
 
 /* ==================================================
-   DAILY LOG HELPERS (CALORIES + MEALS/MACROS)
+   DAILY LOG HELPERS
    ================================================== */
-
 function parseDailyCaloriesFromMessage(msg) {
   if (!msg || typeof msg !== "string") return null;
   const text = msg.toLowerCase();
 
-  const mentionsDay =
-    text.includes("today") ||
-    text.includes("for the day") ||
-    text.includes("whole day") ||
-    text.includes("all day") ||
-    text.includes("the day");
+  const mentionsDay = text.includes("today") || text.includes("for the day") || text.includes("whole day") || text.includes("all day") || text.includes("the day");
 
   let m = text.match(/log\s+(?:today|the day)\s+as\s+(\d{3,4})/i);
   if (m && m[1]) {
@@ -1055,26 +866,21 @@ function parseDailyCaloriesFromMessage(msg) {
   }
   return null;
 }
-function pjGuessMealTypeFromUserText(text){
-  const t = String(text || "").toLowerCase();
 
+function pjGuessMealTypeFromUserText(text) {
+  const t = String(text || "").toLowerCase();
   if (/\b(breakfast|bfast)\b/.test(t)) return "breakfast";
   if (/\blunch\b/.test(t)) return "lunch";
   if (/\b(dinner|supper)\b/.test(t)) return "dinner";
   if (/\b(snack|snacks|dessert)\b/.test(t)) return "snack";
-
-  // ✅ CRITICAL: do NOT default to snack here
-  return null;
+  return null; // do NOT default here
 }
-// ===============================
-// MEAL HELPERS (required by runtime meal logging)
-// Paste once near top of /api/chat.js BEFORE pending/auto meal blocks
-// ===============================
 
+// ===============================
+// MEAL HELPERS
+// ===============================
 function pjIsUnitBasedFood(text) {
   const t = String(text || "").toLowerCase();
-
-  // “countable / packaged / standard” foods where we should NOT interrogate portions
   const keywords = [
     "protein shake", "muscle milk", "premier protein", "fairlife", "core power",
     "ready to drink", "rtf",
@@ -1086,38 +892,16 @@ function pjIsUnitBasedFood(text) {
     "wrap", "mission", "carb balance",
     "647", "slice of bread", "toast"
   ];
-
   for (let i = 0; i < keywords.length; i++) {
     if (t.indexOf(keywords[i]) !== -1) return true;
   }
-
-  // If they explicitly say "1" + item, treat as unit-based (ex: "1 shake", "2 bars")
   if (/\b(\d+)\b/.test(t) && (t.includes("shake") || t.includes("bar") || t.includes("yogurt") || t.includes("egg"))) {
     return true;
   }
-
   return false;
 }
 
-function pjLooksLikeNonFoodMessage(text) {
-  try {
-    // You already have extractFoodLikeText(); use it if available
-    if (typeof extractFoodLikeText === "function") {
-      return !extractFoodLikeText(text);
-    }
-  } catch (e) {}
-
-  // fallback: if message has basically no food words, treat as non-food
-  const t = String(text || "").toLowerCase();
-  if (!t.trim()) return true;
-
-  // if they mention meal keywords but no food, still non-food
-  const foodish = /(chicken|rice|steak|eggs?|shake|bar|yogurt|sandwich|pizza|burrito|wrap|bread|cheese|salad|pasta|burger|fries)/i;
-  return !foodish.test(t);
-}
-
-
-function pjLooksLikeFoodText(text){
+function pjLooksLikeFoodText(text) {
   const t = (text || "").toLowerCase();
   return (
     /\b(i\s*(ate|had)|ate|had|for\s+(breakfast|bfast|lunch|dinner|snack)|log (this|my) (meal|food))\b/.test(t) ||
@@ -1125,10 +909,13 @@ function pjLooksLikeFoodText(text){
     /\b(cal(orie|ories)|cals|protein|carb|carbs|fat|macros)\b/.test(t)
   );
 }
+
 function pjHasPortionsOrUnits(text) {
   const t = String(text || "").toLowerCase();
-  return /\b(\d+(\.\d+)?)\s*(oz|ounce|ounces|g|gram|grams|kg|lb|lbs|cup|cups|tbsp|tablespoon|tsp|teaspoon|slice|slices|serving|srv|piece|pcs)\b/i.test(t)
-    || /\b(one|two|three|half|quarter)\b\s*(cup|cups|tbsp|tablespoon|tsp|teaspoon|slice|slices|serving|piece)\b/i.test(t);
+  return (
+    /\b(\d+(\.\d+)?)\s*(oz|ounce|ounces|g|gram|grams|kg|lb|lbs|cup|cups|tbsp|tablespoon|tsp|teaspoon|slice|slices|serving|srv|piece|pcs)\b/i.test(t) ||
+    /\b(one|two|three|half|quarter)\b\s*(cup|cups|tbsp|tablespoon|tsp|teaspoon|slice|slices|serving|piece)\b/i.test(t)
+  );
 }
 
 function extractFoodLikeText(text) {
@@ -1140,26 +927,11 @@ function extractFoodLikeText(text) {
   const lower = original.toLowerCase();
 
   const convoPhrases = [
-    "sounds good",
-    "bad day",
-    "yesterday",
-    "stay under",
-    "trying to",
-    "i’m trying",
-    "im trying",
-    "can you help",
-    "what should i",
-    "do you think",
-    "do you have",
-    "question",
-    "plan",
-    "targets",
-    "calories left",
-    "how many calories left",
-    "log it out",
-    "log out for"
+    "sounds good", "bad day", "yesterday", "stay under", "trying to", "i’m trying", "im trying",
+    "can you help", "what should i", "do you think", "do you have", "question", "plan",
+    "targets", "calories left", "how many calories left", "log it out", "log out for"
   ];
-  const convoHit = convoPhrases.some(p => lower.includes(p));
+  const convoHit = convoPhrases.some((p) => lower.includes(p));
 
   const futureIntent =
     /\b(i(?:'|’)m|im)\s+going\s+to\s+have\b/i.test(original) ||
@@ -1174,15 +946,12 @@ function extractFoodLikeText(text) {
 
   let candidate = original;
 
-  // ✅ NEW: supports "Meal: ..."
   const header = lower.match(/^\s*(meal|breakfast|bfast|lunch|dinner|supper|snack|snacks|dessert)\s*[:\-–]\s*(.+)$/i);
   if (header) {
     candidate = (header[2] || "").trim();
   } else {
     const ateHad = lower.match(/\b(i\s*(ate|had))\b/);
-    if (ateHad && ateHad.index != null) {
-      candidate = original.slice(ateHad.index);
-    }
+    if (ateHad && ateHad.index != null) candidate = original.slice(ateHad.index);
   }
 
   candidate = candidate
@@ -1199,8 +968,7 @@ function extractFoodLikeText(text) {
   const unitsRe =
     /\b(\d+(\.\d+)?)\s*(oz|ounce|ounces|g|gram|grams|kg|lb|lbs|cup|cups|tbsp|tablespoon|tsp|teaspoon|slice|slices|serving|piece|pcs)\b/i;
 
-  const brandRe =
-    /\b(kirkland|premier|fairlife|quest|chipotle|mcdonalds|starbucks)\b/i;
+  const brandRe = /\b(kirkland|premier|fairlife|quest|chipotle|mcdonalds|starbucks)\b/i;
 
   const hasFoodWord = foodWordsRe.test(candidate);
   const hasUnits = unitsRe.test(candidate);
@@ -1208,7 +976,6 @@ function extractFoodLikeText(text) {
 
   if (!hasFoodWord) return null;
 
-  // ✅ CHANGE: allow short explicit meals even without units/brand
   const isShort = candidate.length <= 80;
   if (!hasUnits && !hasBrand && !isShort) return null;
 
@@ -1222,52 +989,19 @@ function extractFoodLikeText(text) {
   return candidate || null;
 }
 
-function pjSplitMealsFromUserMessage(text) {
-  const raw = String(text || "").trim();
-  if (!raw) return [];
-
-  // Split by newlines OR common separators like "Lunch:" inline, etc.
-  const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-
-  const sections = [];
-  let current = { label: null, text: "" };
-
-  // Detect headings like:
-  // "Breakfast: ...", "Lunch - ...", "Dinner ...", "Snack: ..."
-  const headingRe = /^(breakfast|bfast|lunch|dinner|supper|snack|snacks|snaks|dessert)\b\s*[:\-–]?\s*(.*)$/i;
-
-  function pushCurrent() {
-    const txt = (current.text || "").trim();
-    if (!txt) return;
-
-    // ✅ If no explicit heading, leave meal_type null so caller can decide (or keep as one block)
-    sections.push({
-      meal_type: current.label ? normalizeMealType(current.label) : null,
-      text: txt
-    });
-  }
-
-  for (const line of lines) {
-    const m = line.match(headingRe);
-    if (m) {
-      pushCurrent();
-      current = { label: m[1], text: (m[2] || "").trim() };
-    } else {
-      current.text += (current.text ? " " : "") + line;
-    }
-  }
-
-  pushCurrent();
-
-  // ✅ If they never used headings, return ONE chunk only (no forced snack)
-  if (sections.length === 1 && sections[0].meal_type === null) {
-    return [{ meal_type: null, text: raw }];
-  }
-
-  // ✅ If multiple chunks exist, keep them (meal_type might still be null for some)
-  return sections;
+function pjLooksLikeNonFoodMessage(text) {
+  try {
+    if (typeof extractFoodLikeText === "function") return !extractFoodLikeText(text);
+  } catch (e) {}
+  const t = String(text || "").toLowerCase();
+  if (!t.trim()) return true;
+  const foodish = /(chicken|rice|steak|eggs?|shake|bar|yogurt|sandwich|pizza|burrito|wrap|bread|cheese|salad|pasta|burger|fries)/i;
+  return !foodish.test(t);
 }
 
+/* ==========================================
+   DAILY LOGS METAFIELD HELPERS
+   ========================================== */
 async function getDailyLogsMetafield(customerGid) {
   if (!customerGid) return { logs: [], metafieldId: null };
 
@@ -1297,12 +1031,10 @@ async function getDailyLogsMetafield(customerGid) {
 
 async function saveDailyLogsMetafield(customerGid, logs) {
   if (!customerGid) return;
+
   const mutation = `
     mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
-      metafieldsSet(metafields: $metafields) {
-        metafields { id key namespace type value }
-        userErrors { field message }
-      }
+      metafieldsSet(metafields: $metafields) { userErrors { field message } }
     }
   `;
   const variables = {
@@ -1316,30 +1048,28 @@ async function saveDailyLogsMetafield(customerGid, logs) {
       }
     ]
   };
+
   const data = await shopifyGraphQL(mutation, variables);
   const userErrors = data?.metafieldsSet?.userErrors || [];
   if (userErrors.length) {
     console.error("metafieldsSet userErrors (daily_logs):", userErrors);
-    throw new Error(
-      "Shopify userErrors when saving daily_logs: " +
-        userErrors.map(e => `${(e.field || []).join(".")}: ${e.message}`).join(" | ")
-    );
+    throw new Error("Shopify userErrors when saving daily_logs: " + userErrors.map((e) => `${(e.field || []).join(".")}: ${e.message}`).join(" | "));
   }
 }
 
-// ✅ FIXED: use dateKey (client-local) — NOT server UTC day
+// ✅ FIXED: use dateKey (client-local)
 async function upsertDailyTotalCalories(customerGid, calories, dateKey) {
   if (!customerGid || !calories || !dateKey) return;
 
   const { logs } = await getDailyLogsMetafield(customerGid);
-  const idx = logs.findIndex(entry => entry && entry.date === dateKey);
+  const idx = logs.findIndex((entry) => entry && entry.date === dateKey);
 
   if (idx >= 0) {
     const existing = logs[idx] || {};
     logs[idx] = {
       ...existing,
       date: dateKey,
-      calories: calories,
+      calories,
       total_calories: calories,
       coach_focus: existing.coach_focus || "Daily calories logged from chat."
     };
@@ -1352,7 +1082,7 @@ async function upsertDailyTotalCalories(customerGid, calories, dateKey) {
       mood: null,
       struggle: null,
       coach_focus: "Daily calories logged from chat.",
-      calories: calories,
+      calories,
       total_calories: calories,
       total_protein: null,
       total_carbs: null,
@@ -1384,18 +1114,13 @@ function extractDailyLogFromText(text) {
   }
 }
 
-// ✅ FIXED: default date to dateKey, not server UTC
 async function upsertDailyLog(customerGid, dailyLog, dateKey) {
   if (!customerGid || !dailyLog || !dateKey) return;
 
   const { logs } = await getDailyLogsMetafield(customerGid);
 
-  const date =
-    (typeof dailyLog.date === "string" && dailyLog.date.trim())
-      ? dailyLog.date.trim()
-      : dateKey;
-
-  const idx = logs.findIndex(entry => entry && entry.date === date);
+  const date = typeof dailyLog.date === "string" && dailyLog.date.trim() ? dailyLog.date.trim() : dateKey;
+  const idx = logs.findIndex((entry) => entry && entry.date === date);
 
   const toNumOrNull = (v) => {
     if (v === null || v === undefined) return null;
@@ -1409,10 +1134,7 @@ async function upsertDailyLog(customerGid, dailyLog, dateKey) {
   const carbs = toNumOrNull(dailyLog.carbs_g);
   const fat = toNumOrNull(dailyLog.fat_g);
   const steps = toNumOrNull(dailyLog.steps);
-  const notes =
-    typeof dailyLog.notes === "string" && dailyLog.notes.trim()
-      ? dailyLog.notes.trim()
-      : null;
+  const notes = typeof dailyLog.notes === "string" && dailyLog.notes.trim() ? dailyLog.notes.trim() : null;
 
   if (idx >= 0) {
     const existing = logs[idx] || {};
@@ -1421,21 +1143,15 @@ async function upsertDailyLog(customerGid, dailyLog, dateKey) {
       date,
       weight: weight !== null ? weight : existing.weight ?? null,
       steps: steps !== null ? steps : existing.steps ?? null,
-      calories:
-        calories !== null ? calories : existing.calories ?? existing.total_calories ?? null,
-      total_calories:
-        calories !== null ? calories : existing.total_calories ?? existing.calories ?? null,
-      total_protein:
-        protein !== null ? protein : existing.total_protein ?? existing.protein ?? null,
-      total_carbs:
-        carbs !== null ? carbs : existing.total_carbs ?? existing.carbs ?? null,
-      total_fat:
-        fat !== null ? fat : existing.total_fat ?? existing.fat ?? null,
+      calories: calories !== null ? calories : existing.calories ?? existing.total_calories ?? null,
+      total_calories: calories !== null ? calories : existing.total_calories ?? existing.calories ?? null,
+      total_protein: protein !== null ? protein : existing.total_protein ?? existing.protein ?? null,
+      total_carbs: carbs !== null ? carbs : existing.total_carbs ?? existing.carbs ?? null,
+      total_fat: fat !== null ? fat : existing.total_fat ?? existing.fat ?? null,
       meals: Array.isArray(existing.meals) ? existing.meals : [],
       mood: existing.mood ?? null,
       struggle: existing.struggle ?? null,
-      coach_focus:
-        existing.coach_focus || notes || existing.notes || "Daily check-in logged from chat.",
+      coach_focus: existing.coach_focus || notes || existing.notes || "Daily check-in logged from chat.",
       notes: notes !== null ? notes : existing.notes ?? null
     };
   } else {
@@ -1529,267 +1245,143 @@ function extractCoachReviewFromText(text) {
   }
 }
 
-function parseCaloriesFromReplyText(text) {
-  if (!text || typeof text !== "string") return null;
-
-  const regex = /(\d{2,4})\s*(?:calories|cals?|kcals?)/gi;
-  let match;
-  let best = null;
-
-  while ((match = regex.exec(text)) !== null) {
-    const n = Number(match[1]);
-    if (n > 0 && n < 6000) {
-      if (best === null || n > best) best = n;
-    }
-  }
-  return best;
+/* ==========================================
+   MEAL OVERRIDE DETECTOR + NORMALIZE
+   ========================================== */
+function normalizeMealType(raw) {
+  const t = String(raw || "").toLowerCase().trim();
+  if (t === "bfast" || t === "breakfast") return "Breakfast";
+  if (t === "lunch") return "Lunch";
+  if (t === "dinner" || t === "supper") return "Dinner";
+  if (t === "snack" || t === "snacks" || t === "snaks" || t === "dessert") return "Snacks";
+  return null; // do NOT default
 }
 
-function parseCaloriesFromUserText(text) {
-  if (!text || typeof text !== "string") return null;
-  const m = text.match(/(\d{2,4})\s*(?:cal(?:ories|s|)?|kcals?)/i);
-  if (m && m[1]) {
-    const n = Number(m[1]);
-    if (n > 0 && n < 6000) return n;
-  }
-  return null;
-}
-
-function parseProteinFromReplyText(text) {
-  if (!text || typeof text !== "string") return null;
-  const m = text.match(/(\d{1,3})\s*(?:g|grams?)\s*protein/i);
-  if (m && m[1]) {
-    const n = Number(m[1]);
-    if (n > 0 && n < 300) return n;
-  }
-  return null;
-}
-
-function inferMealTypeFromReply(originalType, replyText) {
-  if (!replyText || typeof replyText !== "string") return originalType;
-  const lower = replyText.toLowerCase();
-
-  if (/logged as breakfast\b/.test(lower)) return "breakfast";
-  if (/logged as lunch\b/.test(lower)) return "lunch";
-  if (/logged as dinner\b/.test(lower)) return "dinner";
-
-  return originalType;
-}
-
-function detectSimpleMealFromUser(userMsg) {
+function detectMealOverride(userMsg) {
   if (!userMsg || typeof userMsg !== "string") return null;
-
-  const original = userMsg;
   const text = userMsg.toLowerCase();
 
-  const cleanDesc = (descLower) => {
-    if (!descLower) return "";
-    const startIndex = text.indexOf(descLower);
-    let desc = descLower;
-    if (startIndex !== -1) desc = original.substring(startIndex, startIndex + descLower.length);
+  const pattern = /(change|replace|swap|edit|make)\s+(?:my\s+)?(breakfast|bfast|lunch|dinner|supper|snack|snacks|snaks|dessert)\b/i;
+  const match = text.match(pattern);
+  if (!match) return null;
 
-    desc = (desc || "")
-      .trim()
-      .replace(/^[“"']/g, "")
-      .replace(/[”"'.,!?]+$/g, "")
-      .trim();
+  const mealType = normalizeMealType(match[2]);
 
-    return desc;
+  const descStart = match.index + match[0].length;
+  let itemText = userMsg.slice(descStart);
+  itemText = itemText.replace(/^\s*(to|with|for)\b/i, "");
+  itemText = itemText.trim().replace(/^[:\-–]/, "").trim();
+  if (!itemText) return null;
+
+  return {
+    meal_type: mealType,
+    items: [itemText],
+    calories: null,
+    protein: null,
+    carbs: null,
+    fat: null
   };
-
-  let m = text.match(
-    /for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*,?\s*i\s+(?:had|ate)\s+(.*)$/i
-  );
-  if (m) {
-    const mealType = normalizeMealType(m[1]);
-    const desc = cleanDesc(m[2] || "");
-    if (!desc) return null;
-    return { meal_type: mealType, items: [desc] };
-  }
-
-  m = text.match(
-    /log\s+this\s+as\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*[:\-]?\s*(.*)$/i
-  );
-  if (m) {
-    const mealType = normalizeMealType(m[1]);
-    const desc = cleanDesc(m[2] || "");
-    if (!desc) return null;
-    return { meal_type: mealType, items: [desc] };
-  }
-
-  m = text.match(
-    /^(breakfast|bfast|lunch|dinner|supper|snack|snacks)\s*[:\-]\s*(.+)$/i
-  );
-  if (m) {
-    const mealType = normalizeMealType(m[1]);
-    const desc = cleanDesc(m[2] || "");
-    if (!desc) return null;
-    return { meal_type: mealType, items: [desc] };
-  }
-
-  m = text.match(
-    /i\s+(?:had|ate)\s+(.*)\s+for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b/i
-  );
-  if (m) {
-    const desc = cleanDesc(m[1] || "");
-    const mealType = normalizeMealType(m[2]);
-    if (!desc) return null;
-    return { meal_type: mealType, items: [desc] };
-  }
-
-  m = text.match(
-    /^(.*)\s+for\s+(breakfast|bfast|lunch|dinner|supper|snack|snacks)\b/i
-  );
-  if (m) {
-    const mealType = normalizeMealType(m[2]);
-    let desc = (m[1] || "")
-      .trim()
-      .replace(/^[“"']/g, "")
-      .replace(/[”"'.,!?]+$/g, "")
-      .trim();
-
-    if (!desc) return null;
-    return { meal_type: mealType, items: [desc] };
-  }
-
-  m = text.match(/i\s+(?:had|ate)\s+(.*)$/i);
-  if (m) {
-    const desc = cleanDesc(m[1] || "");
-    if (!desc) return null;
-    return { meal_type: null, items: [desc] };
-  }
-
-  return null;
-}
-function pjCleanMealItems(items) {
-  let arr = [];
-  if (Array.isArray(items)) arr = items;
-  else if (typeof items === "string" && items.trim()) arr = [items.trim()];
-
-  // If a single string contains commas, split it into separate items
-  if (arr.length === 1 && typeof arr[0] === "string" && arr[0].includes(",")) {
-    const parts = arr[0].split(",").map(s => s.trim()).filter(Boolean);
-    if (parts.length >= 2) arr = parts;
-  }
-
-  const cleaned = [];
-  const seen = new Set();
-
-  for (let raw of arr) {
-    let s = String(raw || "").replace(/\s+/g, " ").trim();
-    if (!s) continue;
-
-    const lower = s.toLowerCase();
-
-    // ❌ Kill sentence-style entries like "Lunch was..."
-    if (/\b(lunch|dinner|breakfast|snacks?)\s+was\b/i.test(s)) continue;
-
-    // ❌ Kill meal-type words unless it's "lunch meat"
-    if (
-      /\b(breakfast|bfast|lunch|dinner|supper|snack|snacks|dessert)\b/i.test(s) &&
-      !/\blunch meat\b/i.test(s)
-    ) continue;
-
-    // ❌ Coaching / UI language
-    if (/\b(got it|perfect|awesome|sounds good|no worries|tap|refresh|questions|next action|logged)\b/i.test(s)) {
-      continue;
-    }
-
-    // ❌ Too long = sentence
-    if (s.length > 80) continue;
-
-    // ❌ Ends like a sentence
-    if (/[.?!]$/.test(s)) continue;
-
-    // Cleanup leading junk
-    s = s
-      .replace(/^(i\s*(ate|had)\s+)/i, "")
-      .replace(/^(for\s+)?(breakfast|bfast|lunch|dinner|supper|snacks?)\s*(was)?\s*[:\-]?\s*/i, "")
-      .replace(/^(log( this)?( meal)?\s*[:\-]?\s*)/i, "")
-      .trim();
-
-    if (!s) continue;
-
-    // ✅ Allow almost any food phrase.
-// Only reject if it's basically empty / not meaningful.
-const hasLetters = /[a-zA-Z]/.test(s);
-if (!hasLetters) continue;
-
-
-    const key = s.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    cleaned.push(s);
-    if (cleaned.length >= 12) break;
-  }
-
-  return cleaned;
 }
 
+function isYMD(s) {
+  return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
 
-// ✅ FIXED: force meals to save to dateKey (client-local day), not server UTC
+function localYMD() {
+  const d = new Date();
+  const off = d.getTimezoneOffset();
+  const local = new Date(d.getTime() - off * 60000);
+  return local.toISOString().slice(0, 10);
+}
+
+function pjGetHourInNY() {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).formatToParts(new Date());
+    const h = Number(parts.find((p) => p.type === "hour")?.value);
+    return Number.isFinite(h) ? h : null;
+  } catch {
+    return null;
+  }
+}
+
+function pjInferMealTypeFromClock() {
+  const h = pjGetHourInNY();
+  if (h === null) return "Snacks";
+  if (h >= 5 && h < 11) return "Breakfast";
+  if (h >= 11 && h < 16) return "Lunch";
+  if (h >= 16 && h < 21) return "Dinner";
+  return "Snacks";
+}
+
+function detectMealCorrection(userMsg) {
+  if (!userMsg || typeof userMsg !== "string") return false;
+  const t = userMsg.toLowerCase();
+  return /\b(wrong|incorrect|actually|should be|not right|label|nutrition label|it’s|its)\b/.test(t) || /\b(\d{1,4})\s*(cal|cals|calories|kcal)\b/.test(t);
+}
+
+function getLastMealTypeFromLogs(logs, dateKey) {
+  if (!Array.isArray(logs) || !dateKey) return null;
+  const day = logs.find((x) => x && x.date === dateKey);
+  const meals = Array.isArray(day?.meals) ? day.meals : [];
+  if (!meals.length) return null;
+  const last = meals[meals.length - 1];
+  return normalizeMealType(last?.meal_type || null);
+}
+
+/* ==========================================
+   MEAL UPSERT
+   ========================================== */
 async function upsertMealLog(customerGid, meal, dateKey, options = {}) {
   if (!customerGid || !meal) return;
 
   const cleanDate = isYMD(dateKey) ? dateKey : localYMD();
-
   const { logs } = await getDailyLogsMetafield(customerGid);
-  const idx = logs.findIndex(entry => entry && entry.date === cleanDate);
+  const idx = logs.findIndex((entry) => entry && entry.date === cleanDate);
 
   const cals = Number(meal.calories) || 0;
   const protein = Number(meal.protein) || 0;
   const carbs = Number(meal.carbs) || 0;
   const fat = Number(meal.fat) || 0;
-// ✅ meal_type is now OPTIONAL (we're removing breakfast/lunch/dinner/snack dependence)
-const mealType = normalizeMealType(meal.meal_type) || null;
 
-// ✅ items are now OBJECTS with macros (from /api/nutrition)
-let items = pjNormalizeMealItems(meal.items);
-
-// ✅ If we still got nothing meaningful, don't save
-if (!items.length) return;
-
-
+  const mealType = normalizeMealType(meal.meal_type) || null;
+  const items = pjNormalizeMealItems(meal.items);
+  if (!items.length) return;
 
   const replaceMealType = options.replaceMealType || null;
-const replaceLast = options.replaceLast === true;
+  const replaceLast = options.replaceLast === true;
 
+  const desc = items.map((it) => it?.name).filter(Boolean).join(", ");
+
+  const newMeal = {
+    meal_type: mealType,
+    items,
+    description: desc,
+    text: desc,
+    calories: Math.round(cals),
+    protein: pjRound1(protein),
+    carbs: pjRound1(carbs),
+    fat: pjRound1(fat)
+  };
 
   if (idx >= 0) {
     const existing = logs[idx] || {};
     const existingMeals = Array.isArray(existing.meals) ? existing.meals : [];
-
     let baseMeals = existingMeals;
 
-if (replaceLast && existingMeals.length) {
-  // ✅ correction mode: replace the LAST logged meal (no duplicates)
-  baseMeals = existingMeals.slice(0, -1);
-} else if (replaceMealType) {
-  // ✅ replace all meals of that type (manual "replace my lunch" etc)
-  const rt = normalizeMealType(replaceMealType) || replaceMealType;
-  baseMeals = existingMeals.filter(m => normalizeMealType(m?.meal_type) !== rt);
-}
-
-
-    const desc = Array.isArray(items) ? items.map(it => it?.name).filter(Boolean).join(", ") : "";
-
-
-const newMeal = {
-  meal_type: mealType,
-  items,
-  description: desc,   // ✅ for UI display
-  text: desc,          // ✅ fallback display field
-  calories: cals,
-  protein,
-  carbs,
-  fat
-};
+    if (replaceLast && existingMeals.length) {
+      baseMeals = existingMeals.slice(0, -1);
+    } else if (replaceMealType) {
+      const rt = normalizeMealType(replaceMealType) || replaceMealType;
+      baseMeals = existingMeals.filter((m) => normalizeMealType(m?.meal_type) !== rt);
+    }
 
     const updatedMeals = baseMeals.concat([newMeal]);
 
-    let sumCals = 0, sumP = 0, sumC = 0, sumF = 0;
-    updatedMeals.forEach(m => {
+    let sumCals = 0,
+      sumP = 0,
+      sumC = 0,
+      sumF = 0;
+    updatedMeals.forEach((m) => {
       sumCals += Number(m.calories) || 0;
       sumP += Number(m.protein) || 0;
       sumC += Number(m.carbs) || 0;
@@ -1808,50 +1400,34 @@ const newMeal = {
       coach_focus: existing.coach_focus || "Meals logged from chat."
     };
   } else {
-    const desc = Array.isArray(items) ? items.map(it => it?.name).filter(Boolean).join(", ") : "";
-
-
-const newMeals = [{
-  meal_type: mealType,
-  items,
-  description: desc,
-  text: desc,
-  calories: cals,
-  protein,
-  carbs,
-  fat
-}];
-
-
     logs.push({
       date: cleanDate,
       weight: null,
       steps: null,
-      meals: newMeals,
+      meals: [newMeal],
       mood: null,
       struggle: null,
       coach_focus: "Meals logged from chat.",
-      calories: cals || null,
-      total_calories: cals || null,
-      total_protein: protein || null,
-      total_carbs: carbs || null,
-      total_fat: fat || null
+      calories: newMeal.calories || null,
+      total_calories: newMeal.calories || null,
+      total_protein: newMeal.protein || null,
+      total_carbs: newMeal.carbs || null,
+      total_fat: newMeal.fat || null
     });
   }
 
   await saveDailyLogsMetafield(customerGid, logs);
 }
 
-// ✅ FIXED: use dateKey
+/* ==========================================
+   DAILY REVIEW / COACH REVIEW UPSERT
+   ========================================== */
 async function upsertDailyReview(customerGid, review, dateKey) {
   if (!customerGid || !review || !dateKey) return;
 
   const { logs } = await getDailyLogsMetafield(customerGid);
 
-  const date =
-    (review.date && typeof review.date === "string" && review.date.trim())
-      ? review.date.trim()
-      : dateKey;
+  const date = review.date && typeof review.date === "string" && review.date.trim() ? review.date.trim() : dateKey;
 
   const summary =
     typeof review.summary === "string" && review.summary.trim()
@@ -1861,17 +1437,11 @@ async function upsertDailyReview(customerGid, review, dateKey) {
   const riskColor = review.risk_color || "green";
   const needsHumanReview = !!review.needs_human_review;
 
-  const idx = logs.findIndex(entry => entry && entry.date === date);
+  const idx = logs.findIndex((entry) => entry && entry.date === date);
 
   if (idx >= 0) {
     const existing = logs[idx] || {};
-    logs[idx] = {
-      ...existing,
-      date,
-      coach_focus: summary,
-      risk_color: riskColor,
-      needs_human_review: needsHumanReview
-    };
+    logs[idx] = { ...existing, date, coach_focus: summary, risk_color: riskColor, needs_human_review: needsHumanReview };
   } else {
     logs.push({
       date,
@@ -1894,20 +1464,15 @@ async function upsertDailyReview(customerGid, review, dateKey) {
   await saveDailyLogsMetafield(customerGid, logs);
 }
 
-// ✅ FIXED: use dateKey (never server UTC)
 async function upsertCoachReview(customerGid, coachReview, dateKey) {
   if (!customerGid || !coachReview || !dateKey) return;
 
   const { logs } = await getDailyLogsMetafield(customerGid);
 
-  const date =
-    (typeof coachReview.date === "string" && coachReview.date.trim())
-      ? coachReview.date.trim()
-      : dateKey;
+  const date = typeof coachReview.date === "string" && coachReview.date.trim() ? coachReview.date.trim() : dateKey;
+  const idx = logs.findIndex((entry) => entry && entry.date === date);
 
-  const idx = logs.findIndex(entry => entry && entry.date === date);
-
-  const safeArr = (v) => Array.isArray(v) ? v : [];
+  const safeArr = (v) => (Array.isArray(v) ? v : []);
   const safeStr = (v) => (typeof v === "string" ? v.trim() : "");
 
   const payload = {
@@ -1949,111 +1514,11 @@ async function upsertCoachReview(customerGid, coachReview, dateKey) {
 }
 
 /* ==========================================
-   MEAL OVERRIDE DETECTOR ("change breakfast")
+   PENDING MEAL (MEAL TYPE PICKER FLOW)
    ========================================== */
-
-function normalizeMealType(raw) {
-  const t = String(raw || "").toLowerCase().trim();
-
-  if (t === "bfast" || t === "breakfast") return "Breakfast";
-  if (t === "lunch") return "Lunch";
-  if (t === "dinner" || t === "supper") return "Dinner";
-
-  // Always store snacks as "Snacks"
-  if (t === "snack" || t === "snacks" || t === "snaks" || t === "dessert") return "Snacks";
-
-  return null; // ✅ key: don't silently default here
-}
-
-function detectMealOverride(userMsg) {
-  if (!userMsg || typeof userMsg !== "string") return null;
-  const text = userMsg.toLowerCase();
-
-  const pattern = /(change|replace|swap|edit|make)\s+(?:my\s+)?(breakfast|bfast|lunch|dinner|supper|snack|snacks|snaks|dessert)\b/i;
-  const match = text.match(pattern);
-  if (!match) return null;
-
-  const mealType = normalizeMealType(match[2]);
-
-  const descStart = match.index + match[0].length;
-  let itemText = userMsg.slice(descStart);
-
-  itemText = itemText.replace(/^\s*(to|with|for)\b/i, "");
-  itemText = itemText.trim().replace(/^[:\-–]/, "").trim();
-
-  if (!itemText || !itemText.length) return null;
-
-  return {
-    meal_type: mealType,
-    items: [itemText],
-    calories: null,
-    protein: null,
-    carbs: null,
-    fat: null
-  };
-}
-
-function isYMD(s) {
-  return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
-}
-
-// NOTE: keep this as fallback only; we prefer clientDate always
-function localYMD() {
-  const d = new Date();
-  const off = d.getTimezoneOffset();
-  const local = new Date(d.getTime() - off * 60000);
-  return local.toISOString().slice(0, 10);
-}
-function pjGetHourInNY() {
-  try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: "America/New_York",
-      hour: "numeric",
-      hour12: false
-    }).formatToParts(new Date());
-
-    const h = Number(parts.find(p => p.type === "hour")?.value);
-    return Number.isFinite(h) ? h : null;
-  } catch {
-    return null;
-  }
-}
-
-function pjInferMealTypeFromClock() {
-  const h = pjGetHourInNY();
-  if (h === null) return "Snacks";
-  if (h >= 5 && h < 11) return "Breakfast";
-  if (h >= 11 && h < 16) return "Lunch";
-  if (h >= 16 && h < 21) return "Dinner";
-  return "Snacks";
-}
-
-function detectMealCorrection(userMsg) {
-  if (!userMsg || typeof userMsg !== "string") return false;
-  const t = userMsg.toLowerCase();
-
-  // Common correction language + calorie numbers
-  return (
-    /\b(wrong|incorrect|actually|should be|not right|label|nutrition label|it’s|its)\b/.test(t) ||
-    /\b(\d{1,4})\s*(cal|cals|calories|kcal)\b/.test(t)
-  );
-}
-
-function getLastMealTypeFromLogs(logs, dateKey) {
-  if (!Array.isArray(logs) || !dateKey) return null;
-  const day = logs.find(x => x && x.date === dateKey);
-  const meals = Array.isArray(day?.meals) ? day.meals : [];
-  if (!meals.length) return null;
-  const last = meals[meals.length - 1];
-  return normalizeMealType(last?.meal_type || null);
-}
-// ===============================
-// PENDING MEAL HELPERS (simple 2-step meal logging)
-// ===============================
-
 function isMealTypeOnly(text) {
   const t = String(text || "").trim().toLowerCase();
-  return ["breakfast","bfast","lunch","dinner","supper","snack","snacks","dessert"].includes(t);
+  return ["breakfast", "bfast", "lunch", "dinner", "supper", "snack", "snacks", "dessert"].includes(t);
 }
 
 async function getPendingMeal(customerGid) {
@@ -2068,7 +1533,11 @@ async function getPendingMeal(customerGid) {
   const data = await shopifyGraphQL(q, { id: customerGid });
   const v = data?.customer?.metafield?.value;
   if (!v) return null;
-  try { return JSON.parse(v); } catch { return null; }
+  try {
+    return JSON.parse(v);
+  } catch {
+    return null;
+  }
 }
 
 async function setPendingMeal(customerGid, payloadOrNull) {
@@ -2093,22 +1562,12 @@ async function setPendingMeal(customerGid, payloadOrNull) {
   });
 
   const userErrors = data?.metafieldsSet?.userErrors || [];
-  if (userErrors.length) {
-    console.error("metafieldsSet userErrors (pending_meal):", userErrors);
-  }
+  if (userErrors.length) console.error("metafieldsSet userErrors (pending_meal):", userErrors);
 }
 
-function pjBuildMealPickerAction({ dateKey, rawText }) {
-  return {
-    type: "MEAL_PICKER",
-    pending: {
-      date: dateKey,
-      raw_text: String(rawText || "").trim(),
-      options: ["Breakfast", "Lunch", "Dinner", "Snacks"]
-    }
-  };
-}
-
+/* ==========================================================
+   MAIN HANDLER
+   ========================================================== */
 export default async function handler(req, res) {
   // ===== CORS (SHOPIFY -> VERCEL) =====
   const origin = req.headers.origin || "";
@@ -2116,7 +1575,7 @@ export default async function handler(req, res) {
   const ALLOWED_ORIGINS = new Set([
     "https://www.pjifitness.com",
     "https://pjifitness.com",
-    "https://pjifitness.myshopify.com",
+    "https://pjifitness.myshopify.com"
   ]);
 
   if (ALLOWED_ORIGINS.has(origin)) {
@@ -2128,63 +1587,36 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
 
   const reqHeaders = req.headers["access-control-request-headers"];
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    reqHeaders ? String(reqHeaders) : "Content-Type, Authorization, X-Requested-With, Accept"
-  );
+  res.setHeader("Access-Control-Allow-Headers", reqHeaders ? String(reqHeaders) : "Content-Type, Authorization, X-Requested-With, Accept");
 
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
+  if (req.method === "OPTIONS") return res.status(204).end();
   // ===== END CORS =====
 
-
-  if (req.method !== "POST") {
-    res.status(405).json({ error: "Method not allowed" });
-    return;
-  }
-
-  if (!OPENAI_API_KEY) {
-    res.status(500).json({ error: "Missing OPENAI_API_KEY env var" });
-    return;
-  }
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (!OPENAI_API_KEY) return res.status(500).json({ error: "Missing OPENAI_API_KEY env var" });
 
   let body;
   try {
     body = await parseBody(req);
   } catch (e) {
     console.error("Error parsing body", e);
-    res.status(400).json({
-      error: "Invalid request body",
-      debug: { parseError: String(e?.message || e) }
-    });
-    return;
+    return res.status(400).json({ error: "Invalid request body", debug: { parseError: String(e?.message || e) } });
   }
 
-  // ✅ PJ DATE SOURCE OF TRUTH (CLIENT LOCAL DATE)
   const clientDate = body?.clientDate;
   const dateKey = isYMD(clientDate) ? clientDate : localYMD();
 
   const userMessage = body.message || "";
-   const isInitPing = String(userMessage || "").trim() === "__PJ_INIT__";
   const history = Array.isArray(body.history) ? body.history : [];
   const appendUserMessage = !!body.appendUserMessage;
   const email = body.email || null;
 
-  if (!userMessage && !history.length) {
-    res.status(400).json({ error: "Missing 'message' in body" });
-    return;
-  }
+  if (!userMessage && !history.length) return res.status(400).json({ error: "Missing 'message' in body" });
 
   let customerGid = null;
   let customerNumericId = null;
 
-  let rawId =
-    body.customerId ||
-    body.shopifyCustomerId ||
-    body.customer_id ||
-    body.customer_id_raw ||
-    null;
+  let rawId = body.customerId || body.shopifyCustomerId || body.customer_id || body.customer_id_raw || null;
 
   if (rawId != null) {
     const str = String(rawId);
@@ -2245,7 +1677,7 @@ export default async function handler(req, res) {
       const val = data?.customer?.onboarding?.value;
       const stageVal = data?.customer?.postStage?.value;
 
-      if (typeof val === "string") onboardingComplete = (val === "true");
+      if (typeof val === "string") onboardingComplete = val === "true";
       postPlanStage = typeof stageVal === "string" ? stageVal : null;
 
       shopifyMetafieldReadStatus = "success";
@@ -2269,17 +1701,11 @@ export default async function handler(req, res) {
     dateKey,
     clientDate: clientDate || null,
     messagesCount: null,
-    model: "gpt-4.1-mini",
+    model: "gpt-4.1-mini"
   };
-   // ✅ STEP 1B — UI ACTION STATE (meal picker)
-let ui_action = null;
-let ui_reply = null;
-let ui_pending_reason = null;
 
   // ============================================================
-  // ✅ OVERLAY ONBOARDING SHORT-CIRCUIT
-  // If <ONBOARDING_JSON> is present, generate + SAVE plan now.
-  // This bypasses OpenAI onboarding "ask name" behavior.
+  // OVERLAY ONBOARDING SHORT-CIRCUIT (<ONBOARDING_JSON>)
   // ============================================================
   const onboardingJsonText = extractTagBlock(userMessage, "ONBOARDING_JSON");
   const hasOnboardingJson = !!onboardingJsonText;
@@ -2307,10 +1733,8 @@ let ui_pending_reason = null;
     const plan = computePlanFromOverlayOnboarding(ob, dateKey);
 
     try {
-      // Save plan (uses your existing saver)
       await saveCoachPlanForCustomer(customerGid, plan);
 
-      // Mark post-plan stage (your existing flow)
       try {
         await setPostPlanStage(customerGid, "plan_questions");
         postPlanStage = "plan_questions";
@@ -2318,7 +1742,6 @@ let ui_pending_reason = null;
         console.warn("Failed to set post_plan_stage:", e?.message || e);
       }
 
-      // Write initial weight as today's weight log (your existing rule)
       if (plan.current_weight_lbs != null) {
         const w = Number(plan.current_weight_lbs);
         if (Number.isFinite(w) && w > 0) {
@@ -2342,7 +1765,6 @@ let ui_pending_reason = null;
           }
         }
       }
-
     } catch (e) {
       console.error("Overlay onboarding save failed:", e);
       return res.status(200).json({
@@ -2363,7 +1785,6 @@ let ui_pending_reason = null;
       `One next action: log today’s weight + one meal so we start your streak.\n\n` +
       `Any questions about your plan?`;
 
-    // (Optional) return remaining without decrement so plan creation never gets blocked
     let remainingNow = null;
     try {
       let r = await getFreeChatRemaining(customerGid);
@@ -2371,22 +1792,23 @@ let ui_pending_reason = null;
         r = 30;
         await setFreeChatRemaining(customerGid, r);
       }
-      remainingNow = r; // don't decrement for plan generation
-    } catch(e) {}
+      remainingNow = r;
+    } catch (e) {}
 
     return res.status(200).json({
       reply,
-      plan_json: plan,          // ✅ overlay reads this
-      coach_plan: plan,         // ✅ backup
+      plan_json: plan,
+      coach_plan: plan,
       free_chat_remaining: remainingNow,
       debug: { ...debug, onboardingOverlay: true, planSavedToShopify: true, plan_json: plan }
     });
   }
 
+  // ============================================================
   // FREE PREVIEW MESSAGE GATE
+  // ============================================================
   let remainingAfter = null;
   const FREE_START = 30;
-
   const isSubscriber = body?.isSubscriber === true;
 
   try {
@@ -2395,7 +1817,6 @@ let ui_pending_reason = null;
         remainingAfter = 999999;
       } else {
         let remaining = await getFreeChatRemaining(customerGid);
-
         if (remaining === null) {
           remaining = FREE_START;
           await setFreeChatRemaining(customerGid, remaining);
@@ -2405,7 +1826,7 @@ let ui_pending_reason = null;
           return res.status(200).json({
             reply: "[[PAYWALL]]",
             free_chat_remaining: 0,
-            debug: { ...debug, free_chat_remaining: 0, isSubscriber },
+            debug: { ...debug, free_chat_remaining: 0, isSubscriber }
           });
         }
 
@@ -2417,486 +1838,323 @@ let ui_pending_reason = null;
     console.warn("Free-preview gate failed open:", err);
     remainingAfter = null;
   }
-  // ===============================
-// PENDING MEAL RESOLUTION (runtime)
-// If we previously asked "what meal was this?" and user replies "lunch/dinner/etc"
-// ===============================
-if (customerGid) {
-  try {
-    const pending = await getPendingMeal(customerGid);
 
-    const hasPending =
-      pending &&
-      typeof pending.raw_text === "string" &&
-      pending.raw_text.trim();
+  // ============================================================
+  // PENDING MEAL RESOLUTION (runtime)
+  // ============================================================
+  if (customerGid) {
+    try {
+      const pending = await getPendingMeal(customerGid);
+      const hasPending = pending && typeof pending.raw_text === "string" && pending.raw_text.trim();
 
-    // ✅ If user replies something non-food while pending exists, clear it (prevents loops)
-    if (hasPending && pjLooksLikeNonFoodMessage(userMessage)) {
-      await setPendingMeal(customerGid, null);
-      debug.pendingMealCleared = true;
-    }
-
-    // ✅ If we already have meal_type saved and user is now replying (not just meal type), attempt resolve
-    if (hasPending && pending.meal_type && !isMealTypeOnly(userMessage)) {
-      const mt = normalizeMealType(pending.meal_type) || pending.meal_type;
-
-      const base = pjInternalUrl("");
-
-      // ✅ IMPORTANT: Use combinedText ONLY for this nutrition call
-      // but NEVER store combinedText back into pending.raw_text (prevents “random eggs/rice/chicken” later)
-      const combinedText =
-        `${String(pending.raw_text || "").trim()}, ${String(userMessage || "").trim()}`.trim();
-
-      const nutRes = await fetch(`${base}/api/nutrition`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: combinedText,
-          customerId: customerNumericId || customerGid
-        })
-      });
-
-      const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
-      const items = Array.isArray(nut?.items) ? nut.items : [];
-      const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
-      const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
-      const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
-
-      // ✅ Unit-based foods should NOT trigger portion interrogation
-      const unitBased = pjIsUnitBasedFood(pending.raw_text);
-
-      if (!nut || nut.ok !== true || (incomplete && !unitBased)) {
-        debug.pendingMealResolved = false;
-        debug.pendingMealResolvedReason = needs.length ? "needs_clarification" : "nutrition_incomplete";
-
-        const qText = needs.length
-          ? needs.map((q) => `- ${q.question}`).join("\n")
-          : "- What portion did you have for each item? (examples: 6oz, 1 cup cooked, 200g)";
-
-        // ✅ keep pending stable (DO NOT grow raw_text)
-        await setPendingMeal(customerGid, {
-          date: pending?.date || dateKey,
-          meal_type: mt,
-          raw_text: String(pending.raw_text || "").trim()
-        });
-
-        return res.status(200).json({
-          reply:
-            "To log this accurately, I need portions.\n\n" +
-            qText +
-            "\n\nReply with amounts like: \"chicken 6oz, rice 1 cup cooked\".\n" +
-            "If you are not sure, you can also send a clear close-up photo of the plate.",
-          debug,
-          free_chat_remaining: remainingAfter
-        });
+      if (hasPending && pjLooksLikeNonFoodMessage(userMessage)) {
+        await setPendingMeal(customerGid, null);
+        debug.pendingMealCleared = true;
       }
 
-      // ✅ If unit-based + totals missing, do a reasonable fallback estimate instead of asking
-      if ((!totals || !items.length) && unitBased) {
-        const fallbackMeal = {
-          date: dateKey,
-          meal_type: mt,
-          items: [String(pending.raw_text || "Item")],
-          calories: 200,
-          protein: 20,
-          carbs: 10,
-          fat: 5
-        };
+      // If they picked meal type only
+      if (hasPending && isMealTypeOnly(userMessage)) {
+        const mtRaw = String(userMessage || "").trim().toLowerCase();
+        const mt =
+          mtRaw === "bfast" || mtRaw === "breakfast"
+            ? "Breakfast"
+            : mtRaw === "lunch"
+              ? "Lunch"
+              : mtRaw === "dinner" || mtRaw === "supper"
+                ? "Dinner"
+                : mtRaw === "snack" || mtRaw === "snacks" || mtRaw === "dessert"
+                  ? "Snacks"
+                  : null;
+
+        if (!mt) {
+          await setPendingMeal(customerGid, null);
+          return res.status(200).json({
+            reply: "Got it — can you pick one: breakfast, lunch, dinner, or snacks?",
+            debug: { ...debug, pendingMealResolved: false, pendingMealResolvedReason: "invalid_meal_type" },
+            free_chat_remaining: remainingAfter
+          });
+        }
+
+        const base = pjInternalUrl("");
+        const nutRes = await fetch(`${base}/api/nutrition`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: String(pending.raw_text || "").trim(), customerId: customerNumericId || customerGid })
+        });
+
+        const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
+        const items = Array.isArray(nut?.items) ? nut.items : [];
+        const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
+        const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
+        const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
+        const unitBased = pjIsUnitBasedFood(pending.raw_text);
+
+        if (!nut || nut.ok !== true || (incomplete && !unitBased)) {
+          await setPendingMeal(customerGid, { date: pending?.date || dateKey, meal_type: mt, raw_text: String(pending.raw_text || "").trim() });
+
+          const qText = needs.length
+            ? needs.map((q) => `- ${q.question}`).join("\n")
+            : "- What portion did you have for each item? (examples: 6oz, 1 cup cooked, 200g)";
+
+          return res.status(200).json({
+            reply:
+              "To log this accurately, I need portions.\n\n" +
+              qText +
+              "\n\nReply with amounts like: \"chicken 6oz, rice 1 cup cooked\".\n" +
+              "If you are not sure, you can also send a clear close-up photo of the plate.",
+            debug: { ...debug, pendingMealResolved: false, pendingMealResolvedReason: needs.length ? "needs_clarification" : "nutrition_incomplete" },
+            free_chat_remaining: remainingAfter
+          });
+        }
+
+        // unit-based fallback if totals missing
+        if ((!totals || !items.length) && unitBased) {
+          const fallbackMeal = { date: dateKey, meal_type: mt, items: [String(pending.raw_text || "Item")], calories: 200, protein: 20, carbs: 10, fat: 5 };
+          await setPendingMeal(customerGid, null);
+          await upsertMealLog(customerGid, fallbackMeal, dateKey);
+
+          return res.status(200).json({
+            reply:
+              `Logged your ${mt.toLowerCase()}:\n• ${fallbackMeal.items[0]}\n\n` +
+              `Estimated: ${fallbackMeal.calories} calories — ${fallbackMeal.protein}g protein, ${fallbackMeal.carbs}g carbs, ${fallbackMeal.fat}g fat.`,
+            debug,
+            free_chat_remaining: remainingAfter
+          });
+        }
 
         await setPendingMeal(customerGid, null);
-        await upsertMealLog(customerGid, fallbackMeal, dateKey);
 
-        return res.status(200).json({
-          reply:
-            `Logged your ${mt.toLowerCase()}:\n• ${fallbackMeal.items[0]}\n\n` +
-            `Estimated: ${fallbackMeal.calories} calories — ${fallbackMeal.protein}g protein, ${fallbackMeal.carbs}g carbs, ${fallbackMeal.fat}g fat.`,
-          debug,
-          free_chat_remaining: remainingAfter
-        });
-      }
-
-      // ✅ clear pending once fully resolved
-      await setPendingMeal(customerGid, null);
-
-      const meal = {
-        date: dateKey,
-        meal_type: mt,
-        items: items.map(it => ({
-  name: String(it?.name || it?.matched_to || it?.text || "Food").trim(),
-  calories: Math.round(Number(it?.calories) || 0),
-  protein: pjRound1(Number(it?.protein) || 0),
-  carbs: pjRound1(Number(it?.carbs) || 0),
-  fat: pjRound1(Number(it?.fat) || 0),
-})),
-
-        calories: Number(totals.calories) || 0,
-        protein: Number(totals.protein) || 0,
-        carbs: Number(totals.carbs) || 0,
-        fat: Number(totals.fat) || 0
-      };
-
-      meal.calories = Math.round(Number(meal.calories) || 0);
-      meal.protein  = pjRound1(meal.protein);
-      meal.carbs    = pjRound1(meal.carbs);
-      meal.fat      = pjRound1(meal.fat);
-
-      await upsertMealLog(customerGid, meal, dateKey);
-
-      debug.pendingMealResolved = true;
-      debug.pendingMealResolvedType = mt;
-
-      const itemsList = (meal.items || []).map(it =>
-  `• ${it.name} — ${it.calories} cal (${it.protein}P / ${it.carbs}C / ${it.fat}F)`
-).join("\n");
-
-      const replyText =
-        `Logged your ${mt.toLowerCase()}:\n${itemsList}\n\n` +
-        `Estimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`;
-
-      return res.status(200).json({
-        reply: replyText,
-        debug,
-        free_chat_remaining: remainingAfter
-      });
-    }
-
-    // ✅ Pending exists and user replied ONLY meal type
-    if (hasPending && isMealTypeOnly(userMessage)) {
-      const mtRaw = String(userMessage || "").trim().toLowerCase();
-      const mt =
-        mtRaw === "bfast" || mtRaw === "breakfast" ? "Breakfast" :
-        mtRaw === "lunch" ? "Lunch" :
-        (mtRaw === "dinner" || mtRaw === "supper") ? "Dinner" :
-        (mtRaw === "snack" || mtRaw === "snacks" || mtRaw === "dessert") ? "Snacks" :
-        null;
-
-      if (!mt) {
-        await setPendingMeal(customerGid, null);
-        return res.status(200).json({
-          reply: "Got it — can you pick one: breakfast, lunch, dinner, or snacks?",
-          debug: { ...debug, pendingMealResolved: false, pendingMealResolvedReason: "invalid_meal_type" },
-          free_chat_remaining: remainingAfter
-        });
-      }
-
-      const base = pjInternalUrl("");
-
-      const nutRes = await fetch(`${base}/api/nutrition`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: String(pending.raw_text || "").trim(),
-          customerId: customerNumericId || customerGid
-        })
-      });
-
-      const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
-      const items = Array.isArray(nut?.items) ? nut.items : [];
-      const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
-      const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
-      const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
-
-      const unitBased = pjIsUnitBasedFood(pending.raw_text);
-
-      if (!nut || nut.ok !== true || (incomplete && !unitBased)) {
-        debug.pendingMealResolved = false;
-        debug.pendingMealResolvedReason = needs.length ? "needs_clarification" : "nutrition_incomplete";
-
-        // ✅ keep pending stable and also store chosen meal type
-        await setPendingMeal(customerGid, {
-          date: pending?.date || dateKey,
-          meal_type: mt,
-          raw_text: String(pending.raw_text || "").trim()
-        });
-
-        const qText = needs.length
-          ? needs.map((q) => `- ${q.question}`).join("\n")
-          : "- What portion did you have for each item? (examples: 6oz, 1 cup cooked, 200g)";
-
-        return res.status(200).json({
-          reply:
-            "To log this accurately, I need portions.\n\n" +
-            qText +
-            "\n\nReply with amounts like: \"chicken 6oz, rice 1 cup cooked\".\n" +
-            "If you are not sure, you can also send a clear close-up photo of the plate.",
-          debug,
-          free_chat_remaining: remainingAfter
-        });
-      }
-
-      // ✅ If unit-based + totals missing, do a reasonable fallback estimate instead of asking
-      if ((!totals || !items.length) && unitBased) {
-        const fallbackMeal = {
-          date: dateKey,
-          meal_type: mt,
-          items: [String(pending.raw_text || "Item")],
-          calories: 200,
-          protein: 20,
-          carbs: 10,
-          fat: 5
-        };
-
-        await setPendingMeal(customerGid, null);
-        await upsertMealLog(customerGid, fallbackMeal, dateKey);
-
-        return res.status(200).json({
-          reply:
-            `Logged your ${mt.toLowerCase()}:\n• ${fallbackMeal.items[0]}\n\n` +
-            `Estimated: ${fallbackMeal.calories} calories — ${fallbackMeal.protein}g protein, ${fallbackMeal.carbs}g carbs, ${fallbackMeal.fat}g fat.`,
-          debug,
-          free_chat_remaining: remainingAfter
-        });
-      }
-
-      // ✅ ONLY clear pending once we have totals (meal fully resolved)
-      await setPendingMeal(customerGid, null);
-
-      if (!items.length || !totals) {
-        debug.pendingMealResolved = false;
-        debug.pendingMealResolvedReason = "nutrition_no_items";
-        return res.status(200).json({
-          reply: "I couldn’t estimate that one — can you resend the food details with amounts? (example: 6oz chicken + 1 cup rice)",
-          debug,
-          free_chat_remaining: remainingAfter
-        });
-      }
-
-      const meal = {
-        date: dateKey,
-        meal_type: mt,
-        items: items.map(it => ({
-  name: String(it?.name || it?.matched_to || it?.text || "Food").trim(),
-  calories: Math.round(Number(it?.calories) || 0),
-  protein: pjRound1(Number(it?.protein) || 0),
-  carbs: pjRound1(Number(it?.carbs) || 0),
-  fat: pjRound1(Number(it?.fat) || 0),
-})),
-
-        calories: Number(totals.calories) || 0,
-        protein: Number(totals.protein) || 0,
-        carbs: Number(totals.carbs) || 0,
-        fat: Number(totals.fat) || 0
-      };
-
-      meal.calories = Math.round(Number(meal.calories) || 0);
-      meal.protein  = pjRound1(meal.protein);
-      meal.carbs    = pjRound1(meal.carbs);
-      meal.fat      = pjRound1(meal.fat);
-
-      await upsertMealLog(customerGid, meal, dateKey);
-
-      debug.pendingMealResolved = true;
-      debug.pendingMealResolvedType = mt;
-
-      const itemsList = (meal.items || []).map(it =>
-  `• ${it.name} — ${it.calories} cal (${it.protein}P / ${it.carbs}C / ${it.fat}F)`
-).join("\n");
-
-      const replyText =
-        `Logged your ${mt.toLowerCase()}:\n${itemsList}\n\n` +
-        `Estimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`;
-
-      return res.status(200).json({
-        reply: replyText,
-        debug,
-        free_chat_remaining: remainingAfter
-      });
-    }
-  } catch (e) {
-    debug.pendingMealResolveError = String(e?.message || e);
-  }
-}
-
-// ===============================
-// AUTO MEAL LOG FROM NATURAL CHAT (simple + reliable)
-// ===============================
-if (customerGid && userMessage) {
-  try {
-    const foodText = extractFoodLikeText(userMessage);
-
-    // not food -> let normal chat handle it
-    if (foodText) {
-      let guessed = pjGuessMealTypeFromUserText(userMessage);
-
-      // If they used "Meal:" header, infer a meal type from NY clock
-      if (!guessed && /^\s*meal\s*[:\-–]/i.test(String(userMessage || ""))) {
-        guessed = pjInferMealTypeFromClock().toLowerCase();
-      }
-
-      // If they didn't specify meal type, ask and save pending text
-      if (!guessed) {
-        await setPendingMeal(customerGid, {
-          date: dateKey,
-          raw_text: String(foodText || "").trim()
-        });
-        debug.pendingMealSaved = true;
-
-        return res.status(200).json({
-          reply: "Got it — what meal was this? (breakfast, lunch, dinner, or snacks)",
-          free_chat_remaining: remainingAfter,
-          debug: { ...debug, ui_pending_reason: "missing_meal_type" }
-        });
-      }
-
-      const base = pjInternalUrl("");
-
-      const nutRes = await fetch(`${base}/api/nutrition`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: String(foodText || "").trim(),
-          customerId: customerNumericId || customerGid
-        })
-      });
-
-      const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
-      const items = Array.isArray(nut?.items) ? nut.items : [];
-      const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
-      const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
-      const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
-
-      const unitBased = pjIsUnitBasedFood(foodText);
-
-      // ✅ If nutrition is incomplete, ONLY ask portions when not unit-based
-      if ((!nut || nut.ok !== true || incomplete) && !unitBased) {
-        await setPendingMeal(customerGid, {
-          date: dateKey,
-          raw_text: String(foodText || "").trim(),
-          meal_type: normalizeMealType(guessed) || guessed
-        });
-
-        return res.status(200).json({
-          reply:
-            "To log this accurately, I need portions.\n\n" +
-            (needs.length
-              ? needs.map((q) => `- ${q.question}`).join("\n")
-              : "- What portion did you have? (examples: 6oz, 1 cup cooked, 200g)") +
-            "\n\nReply like: \"chicken 6oz, rice 1 cup cooked\". If you’re unsure, send a clear photo.",
-          debug: { ...debug, autoMealLog: { ok: false, reason: "needs_clarification", pendingSaved: true } },
-          free_chat_remaining: remainingAfter
-        });
-      }
-
-      // ✅ Unit-based and nutrition didn't give totals -> simple fallback estimate, no interrogation
-      if ((!totals || !items.length) && unitBased) {
-        const mt = normalizeMealType(guessed);
-        const fallbackMeal = {
-          date: dateKey,
-          meal_type: mt,
-          items: [String(foodText || "Item")],
-          calories: 200,
-          protein: 20,
-          carbs: 10,
-          fat: 5
-        };
-
-        await upsertMealLog(customerGid, fallbackMeal, dateKey);
-
-        return res.status(200).json({
-          reply:
-            `Logged your ${mt.toLowerCase()}:\n• ${fallbackMeal.items[0]}\n\n` +
-            `Estimated: ${fallbackMeal.calories} calories — ${fallbackMeal.protein}g protein, ${fallbackMeal.carbs}g carbs, ${fallbackMeal.fat}g fat.`,
-          debug,
-          free_chat_remaining: remainingAfter
-        });
-      }
-
-      if (items.length && totals) {
         const meal = {
           date: dateKey,
-          meal_type: normalizeMealType(guessed),
-          items: items.map(it => ({
-  name: String(it?.name || it?.matched_to || it?.text || "Food").trim(),
-  calories: Math.round(Number(it?.calories) || 0),
-  protein: pjRound1(Number(it?.protein) || 0),
-  carbs: pjRound1(Number(it?.carbs) || 0),
-  fat: pjRound1(Number(it?.fat) || 0),
-})),
-
-          calories: Number(totals.calories) || 0,
-          protein: Number(totals.protein) || 0,
-          carbs: Number(totals.carbs) || 0,
-          fat: Number(totals.fat) || 0
+          meal_type: mt,
+          items: items.map((it) => ({
+            name: String(it?.name || it?.matched_to || it?.text || "Food").trim(),
+            calories: Math.round(Number(it?.calories) || 0),
+            protein: pjRound1(Number(it?.protein) || 0),
+            carbs: pjRound1(Number(it?.carbs) || 0),
+            fat: pjRound1(Number(it?.fat) || 0)
+          })),
+          calories: Math.round(Number(totals?.calories) || 0),
+          protein: pjRound1(Number(totals?.protein) || 0),
+          carbs: pjRound1(Number(totals?.carbs) || 0),
+          fat: pjRound1(Number(totals?.fat) || 0)
         };
-
-        meal.calories = Math.round(Number(meal.calories) || 0);
-        meal.protein  = pjRound1(meal.protein);
-        meal.carbs    = pjRound1(meal.carbs);
-        meal.fat      = pjRound1(meal.fat);
-
-        // No-portion sanity cap (only when user gave no portions)
-        const hasPortions = pjHasPortionsOrUnits(foodText);
-        if (!hasPortions) {
-          const cap =
-            meal.meal_type === "Breakfast" ? 750 :
-            meal.meal_type === "Lunch" ? 950 :
-            meal.meal_type === "Dinner" ? 1100 :
-            500;
-
-          if (meal.calories > cap) {
-            const scale = cap / meal.calories;
-            meal.calories = cap;
-            meal.protein = Math.round(meal.protein * scale * 10) / 10;
-            meal.carbs   = Math.round(meal.carbs * scale * 10) / 10;
-            meal.fat     = Math.round(meal.fat * scale * 10) / 10;
-
-            debug.autoMealLog = debug.autoMealLog || {};
-            debug.autoMealLog.capped = true;
-            debug.autoMealLog.capApplied = cap;
-          }
-        }
 
         await upsertMealLog(customerGid, meal, dateKey);
 
-        debug.autoMealLog = {
-          ...(debug.autoMealLog || {}),
-          ok: true,
-          meal_type: meal.meal_type,
-          calories: meal.calories,
-          itemsCount: meal.items.length
-        };
-
-        const itemsList = (meal.items || []).map(it =>
-  `• ${it.name} — ${it.calories} cal (${it.protein}P / ${it.carbs}C / ${it.fat}F)`
-).join("\n");
-
-        const replyText =
-          `Logged your ${meal.meal_type.toLowerCase()}:\n${itemsList}\n\n` +
-          `Estimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`;
-
-        try {
-          await upsertCoachReview(customerGid, {
-            date: dateKey,
-            summary: `Meal logged via nutrition: ${meal.meal_type}.`,
-            wins: ["Logged a meal promptly"],
-            opportunities: [],
-            struggles: [],
-            next_focus: "If portions were different, tell me and I’ll adjust it.",
-            food_pattern: "",
-            mindset_pattern: ""
-          }, dateKey);
-          debug.coachReviewSavedToDailyLogs = true;
-        } catch (e) {
-          debug.coachReviewSavedToDailyLogs = false;
-          debug.coachReviewSaveError = String(e?.message || e);
-        }
+        const itemsList = (meal.items || [])
+          .map((it) => `• ${it.name} — ${it.calories} cal (${it.protein}P / ${it.carbs}C / ${it.fat}F)`)
+          .join("\n");
 
         return res.status(200).json({
-          reply: replyText,
-          debug,
+          reply: `Logged your ${mt.toLowerCase()}:\n${itemsList}\n\nEstimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`,
+          debug: { ...debug, pendingMealResolved: true, pendingMealResolvedType: mt },
           free_chat_remaining: remainingAfter
         });
-      } else {
-        debug.autoMealLog = { ok: false, reason: "nutrition_no_items" };
       }
-    }
-  } catch (e) {
-    debug.autoMealLog = { ok: false, error: String(e?.message || e) };
-  }
-}
 
-   let overrideMeal = detectMealOverride(userMessage);
+      // If pending already has meal_type and user adds more details (combine for nutrition only)
+      if (hasPending && pending.meal_type && !isMealTypeOnly(userMessage)) {
+        const mt = normalizeMealType(pending.meal_type) || pending.meal_type;
+        const base = pjInternalUrl("");
+        const combinedText = `${String(pending.raw_text || "").trim()}, ${String(userMessage || "").trim()}`.trim();
+
+        const nutRes = await fetch(`${base}/api/nutrition`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: combinedText, customerId: customerNumericId || customerGid })
+        });
+
+        const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
+        const items = Array.isArray(nut?.items) ? nut.items : [];
+        const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
+        const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
+        const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
+
+        const unitBased = pjIsUnitBasedFood(pending.raw_text);
+
+        if (!nut || nut.ok !== true || (incomplete && !unitBased)) {
+          await setPendingMeal(customerGid, { date: pending?.date || dateKey, meal_type: mt, raw_text: String(pending.raw_text || "").trim() });
+
+          const qText = needs.length
+            ? needs.map((q) => `- ${q.question}`).join("\n")
+            : "- What portion did you have for each item? (examples: 6oz, 1 cup cooked, 200g)";
+
+          return res.status(200).json({
+            reply:
+              "To log this accurately, I need portions.\n\n" +
+              qText +
+              "\n\nReply with amounts like: \"chicken 6oz, rice 1 cup cooked\".\n" +
+              "If you are not sure, you can also send a clear close-up photo of the plate.",
+            debug: { ...debug, pendingMealResolved: false, pendingMealResolvedReason: needs.length ? "needs_clarification" : "nutrition_incomplete" },
+            free_chat_remaining: remainingAfter
+          });
+        }
+
+        if ((!totals || !items.length) && unitBased) {
+          const fallbackMeal = { date: dateKey, meal_type: mt, items: [String(pending.raw_text || "Item")], calories: 200, protein: 20, carbs: 10, fat: 5 };
+          await setPendingMeal(customerGid, null);
+          await upsertMealLog(customerGid, fallbackMeal, dateKey);
+
+          return res.status(200).json({
+            reply:
+              `Logged your ${mt.toLowerCase()}:\n• ${fallbackMeal.items[0]}\n\n` +
+              `Estimated: ${fallbackMeal.calories} calories — ${fallbackMeal.protein}g protein, ${fallbackMeal.carbs}g carbs, ${fallbackMeal.fat}g fat.`,
+            debug,
+            free_chat_remaining: remainingAfter
+          });
+        }
+
+        await setPendingMeal(customerGid, null);
+
+        const meal = {
+          date: dateKey,
+          meal_type: mt,
+          items: items.map((it) => ({
+            name: String(it?.name || it?.matched_to || it?.text || "Food").trim(),
+            calories: Math.round(Number(it?.calories) || 0),
+            protein: pjRound1(Number(it?.protein) || 0),
+            carbs: pjRound1(Number(it?.carbs) || 0),
+            fat: pjRound1(Number(it?.fat) || 0)
+          })),
+          calories: Math.round(Number(totals?.calories) || 0),
+          protein: pjRound1(Number(totals?.protein) || 0),
+          carbs: pjRound1(Number(totals?.carbs) || 0),
+          fat: pjRound1(Number(totals?.fat) || 0)
+        };
+
+        await upsertMealLog(customerGid, meal, dateKey);
+
+        const itemsList = (meal.items || [])
+          .map((it) => `• ${it.name} — ${it.calories} cal (${it.protein}P / ${it.carbs}C / ${it.fat}F)`)
+          .join("\n");
+
+        return res.status(200).json({
+          reply: `Logged your ${mt.toLowerCase()}:\n${itemsList}\n\nEstimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`,
+          debug: { ...debug, pendingMealResolved: true, pendingMealResolvedType: mt },
+          free_chat_remaining: remainingAfter
+        });
+      }
+    } catch (e) {
+      debug.pendingMealResolveError = String(e?.message || e);
+    }
+  }
+
+  // ============================================================
+  // AUTO MEAL LOG FROM NATURAL CHAT (simple + reliable)
+  // ============================================================
+  if (customerGid && userMessage) {
+    try {
+      const foodText = extractFoodLikeText(userMessage);
+
+      if (foodText) {
+        let guessed = pjGuessMealTypeFromUserText(userMessage);
+
+        if (!guessed && /^\s*meal\s*[:\-–]/i.test(String(userMessage || ""))) {
+          guessed = pjInferMealTypeFromClock().toLowerCase();
+        }
+
+        if (!guessed) {
+          await setPendingMeal(customerGid, { date: dateKey, raw_text: String(foodText || "").trim() });
+          return res.status(200).json({
+            reply: "Got it — what meal was this? (breakfast, lunch, dinner, or snacks)",
+            free_chat_remaining: remainingAfter,
+            debug: { ...debug, pendingMealSaved: true, ui_pending_reason: "missing_meal_type" }
+          });
+        }
+
+        const base = pjInternalUrl("");
+        const nutRes = await fetch(`${base}/api/nutrition`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: String(foodText || "").trim(), customerId: customerNumericId || customerGid })
+        });
+
+        const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
+        const items = Array.isArray(nut?.items) ? nut.items : [];
+        const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
+        const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
+        const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
+        const unitBased = pjIsUnitBasedFood(foodText);
+
+        if ((!nut || nut.ok !== true || incomplete) && !unitBased) {
+          await setPendingMeal(customerGid, { date: dateKey, raw_text: String(foodText || "").trim(), meal_type: normalizeMealType(guessed) || guessed });
+
+          return res.status(200).json({
+            reply:
+              "To log this accurately, I need portions.\n\n" +
+              (needs.length ? needs.map((q) => `- ${q.question}`).join("\n") : "- What portion did you have? (examples: 6oz, 1 cup cooked, 200g)") +
+              "\n\nReply like: \"chicken 6oz, rice 1 cup cooked\". If you’re unsure, send a clear photo.",
+            debug: { ...debug, autoMealLog: { ok: false, reason: "needs_clarification", pendingSaved: true } },
+            free_chat_remaining: remainingAfter
+          });
+        }
+
+        if ((!totals || !items.length) && unitBased) {
+          const mt = normalizeMealType(guessed);
+          const fallbackMeal = { date: dateKey, meal_type: mt, items: [String(foodText || "Item")], calories: 200, protein: 20, carbs: 10, fat: 5 };
+          await upsertMealLog(customerGid, fallbackMeal, dateKey);
+
+          return res.status(200).json({
+            reply:
+              `Logged your ${mt.toLowerCase()}:\n• ${fallbackMeal.items[0]}\n\n` +
+              `Estimated: ${fallbackMeal.calories} calories — ${fallbackMeal.protein}g protein, ${fallbackMeal.carbs}g carbs, ${fallbackMeal.fat}g fat.`,
+            debug,
+            free_chat_remaining: remainingAfter
+          });
+        }
+
+        if (items.length && totals) {
+          const meal = {
+            date: dateKey,
+            meal_type: normalizeMealType(guessed),
+            items: items.map((it) => ({
+              name: String(it?.name || it?.matched_to || it?.text || "Food").trim(),
+              calories: Math.round(Number(it?.calories) || 0),
+              protein: pjRound1(Number(it?.protein) || 0),
+              carbs: pjRound1(Number(it?.carbs) || 0),
+              fat: pjRound1(Number(it?.fat) || 0)
+            })),
+            calories: Math.round(Number(totals.calories) || 0),
+            protein: pjRound1(Number(totals.protein) || 0),
+            carbs: pjRound1(Number(totals.carbs) || 0),
+            fat: pjRound1(Number(totals.fat) || 0)
+          };
+
+          const hasPortions = pjHasPortionsOrUnits(foodText);
+          if (!hasPortions) {
+            const cap = meal.meal_type === "Breakfast" ? 750 : meal.meal_type === "Lunch" ? 950 : meal.meal_type === "Dinner" ? 1100 : 500;
+            if (meal.calories > cap) {
+              const scale = cap / meal.calories;
+              meal.calories = cap;
+              meal.protein = pjRound1(meal.protein * scale);
+              meal.carbs = pjRound1(meal.carbs * scale);
+              meal.fat = pjRound1(meal.fat * scale);
+              debug.autoMealLog = { ...(debug.autoMealLog || {}), capped: true, capApplied: cap };
+            }
+          }
+
+          await upsertMealLog(customerGid, meal, dateKey);
+
+          const itemsList = (meal.items || [])
+            .map((it) => `• ${it.name} — ${it.calories} cal (${it.protein}P / ${it.carbs}C / ${it.fat}F)`)
+            .join("\n");
+
+          return res.status(200).json({
+            reply: `Logged your ${meal.meal_type.toLowerCase()}:\n${itemsList}\n\nEstimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`,
+            debug: { ...debug, autoMealLog: { ok: true, meal_type: meal.meal_type, calories: meal.calories, itemsCount: meal.items.length } },
+            free_chat_remaining: remainingAfter
+          });
+        }
+      }
+    } catch (e) {
+      debug.autoMealLog = { ok: false, error: String(e?.message || e) };
+    }
+  }
+
+  // ============================================================
   // DAILY TOTAL CALORIES FROM USER MESSAGE
+  // ============================================================
   if (customerGid && userMessage) {
     const parsedDailyCals = parseDailyCaloriesFromMessage(userMessage);
     if (parsedDailyCals) {
@@ -2911,34 +2169,37 @@ if (customerGid && userMessage) {
       }
     }
   }
-   if (overrideMeal) {
-  debug.mealOverrideDetected = overrideMeal;
-} else if (customerGid && detectMealCorrection(userMessage)) {
-  // ✅ Auto-replace last logged meal for today when user is correcting
-  try {
-    const { logs } = await getDailyLogsMetafield(customerGid);
-    const lastType = getLastMealTypeFromLogs(logs, dateKey);
-    if (lastType) {
-      overrideMeal = { meal_type: lastType, __replaceLast: true };
-      debug.mealAutoCorrectionDetected = true;
-      debug.mealAutoReplaceMealType = lastType;
-    }
-  } catch (e) {
-    debug.mealAutoCorrectionError = String(e?.message || e);
-  }
-}
 
+  // ============================================================
+  // MEAL OVERRIDE / AUTO CORRECTION
+  // ============================================================
+  let overrideMeal = detectMealOverride(userMessage);
+  if (overrideMeal) {
+    debug.mealOverrideDetected = overrideMeal;
+  } else if (customerGid && detectMealCorrection(userMessage)) {
+    try {
+      const { logs } = await getDailyLogsMetafield(customerGid);
+      const lastType = getLastMealTypeFromLogs(logs, dateKey);
+      if (lastType) {
+        overrideMeal = { meal_type: lastType, __replaceLast: true };
+        debug.mealAutoCorrectionDetected = true;
+        debug.mealAutoReplaceMealType = lastType;
+      }
+    } catch (e) {
+      debug.mealAutoCorrectionError = String(e?.message || e);
+    }
+  }
+
+  // ============================================================
+  // INTRO ALREADY SENT DETECTOR
+  // ============================================================
   let introAlreadySent = false;
   if (history.length) {
     const recentForIntro = history.slice(-40);
     for (const m of recentForIntro) {
       if (!m) continue;
-      const text =
-        typeof m.text === "string" ? m.text :
-        typeof m.message === "string" ? m.message :
-        typeof m.content === "string" ? m.content : null;
+      const text = typeof m.text === "string" ? m.text : typeof m.message === "string" ? m.message : typeof m.content === "string" ? m.content : null;
       if (!text) continue;
-
       const lower = text.toLowerCase();
       if (lower.includes("i’m your pjifitness coach") || lower.includes("i'm your pjifitness coach")) {
         introAlreadySent = true;
@@ -2948,46 +2209,36 @@ if (customerGid && userMessage) {
   }
   debug.introAlreadySent = introAlreadySent;
 
+  // ============================================================
   // BUILD MESSAGES FOR OPENAI
+  // ============================================================
   const messages = [{ role: "system", content: SYSTEM_PROMPT }];
 
   messages.push({
     role: "system",
     content:
       `TODAY_DATE: ${dateKey}. ` +
-      `Use this exact date in all JSON blocks: ` +
-      `DAILY_LOG_JSON, MEAL_LOG_JSON, DAILY_REVIEW_JSON, COACH_REVIEW_JSON. ` +
+      `Use this exact date in all JSON blocks: DAILY_LOG_JSON, MEAL_LOG_JSON, DAILY_REVIEW_JSON, COACH_REVIEW_JSON. ` +
       `Do NOT output any other date.`
   });
 
-  messages.push({
-    role: "system",
-    content: `custom.onboarding_complete: ${onboardingComplete === true ? "true" : "false"}`
-  });
+  messages.push({ role: "system", content: `custom.onboarding_complete: ${onboardingComplete === true ? "true" : "false"}` });
 
   if (introAlreadySent) {
     messages.push({
       role: "system",
       content:
-        "SYSTEM_FLAG: INTRO_ALREADY_SENT = true. You have already sent your onboarding intro earlier in this conversation. Do NOT repeat your intro again. Treat the user's latest message as their answer (likely their name, weight, etc.) and continue the onboarding questions from where you left off."
+        "SYSTEM_FLAG: INTRO_ALREADY_SENT = true. You have already sent your onboarding intro earlier in this conversation. Do NOT repeat your intro again. Treat the user's latest message as their answer and continue the onboarding questions from where you left off."
     });
   }
 
-  if (overrideMeal) {
-    messages.push({
-      role: "system",
-      content: `USER_REQUEST_OVERRIDE_MEAL: ${JSON.stringify(overrideMeal)}`
-    });
-  }
+  if (overrideMeal) messages.push({ role: "system", content: `USER_REQUEST_OVERRIDE_MEAL: ${JSON.stringify(overrideMeal)}` });
 
   if (history.length) {
     const recent = history.slice(-20);
     for (const m of recent) {
       if (!m) continue;
-      const text =
-        typeof m.text === "string" ? m.text :
-        typeof m.message === "string" ? m.message :
-        typeof m.content === "string" ? m.content : null;
+      const text = typeof m.text === "string" ? m.text : typeof m.message === "string" ? m.message : typeof m.content === "string" ? m.content : null;
       if (!text) continue;
 
       let role;
@@ -2999,11 +2250,7 @@ if (customerGid && userMessage) {
     }
   }
 
-  if (appendUserMessage && userMessage) {
-    messages.push({ role: "user", content: userMessage });
-  }
-
-  debug.messagesCount = messages.length;
+  if (appendUserMessage && userMessage) messages.push({ role: "user", content: userMessage });
 
   messages.push({
     role: "system",
@@ -3013,34 +2260,27 @@ if (customerGid && userMessage) {
 
   debug.messagesCount = messages.length;
 
+  // ============================================================
+  // CALL OPENAI
+  // ============================================================
   try {
     const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: "gpt-4.1-mini",
-        messages,
-        temperature: 0.7
-      })
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify({ model: "gpt-4.1-mini", messages, temperature: 0.7 })
     });
 
     if (!openaiRes.ok) {
       const errText = await openaiRes.text();
       console.error("OpenAI error:", errText);
       debug.openaiError = errText;
-      res.status(500).json({ error: "OpenAI API error", debug });
-      return;
+      return res.status(500).json({ error: "OpenAI API error", debug });
     }
 
     const data = await openaiRes.json();
-    const rawReply =
-      data.choices?.[0]?.message?.content ||
-      "Sorry, I’m not sure what to say to that.";
+    const rawReply = data.choices?.[0]?.message?.content || "Sorry, I’m not sure what to say to that.";
 
-    // DAILY_LOG_JSON -> save to daily_logs
+    // DAILY_LOG_JSON -> save
     if (customerGid) {
       const dailyLog = extractDailyLogFromText(rawReply);
       if (dailyLog) {
@@ -3060,22 +2300,15 @@ if (customerGid && userMessage) {
     debug.rawReplyTail = rawReply.slice(-600);
     debug.modelReplyTruncated = !data.choices?.[0]?.message?.content;
 
+    // COACH_PLAN_JSON
     let planJson = null;
-    let planSource = null;
-
     const blockPlan = extractCoachPlanJson(rawReply);
     debug.planBlockFound = !!blockPlan;
-    if (blockPlan) {
-      planJson = blockPlan;
-      planSource = "block";
-    }
-
-    // ✅ SAFETY: never derive/save plan from normal text
-    debug.planFromText = false;
+    if (blockPlan) planJson = blockPlan;
 
     if (planJson) {
       debug.planJson = planJson;
-      debug.planSource = planSource;
+      debug.planSource = "block";
 
       let shouldSave = false;
       let skipReason = null;
@@ -3083,15 +2316,8 @@ if (customerGid && userMessage) {
       if (!customerGid) {
         shouldSave = false;
         skipReason = "no_customer_id";
-      } else if (planSource === "block") {
-        shouldSave = true;
       } else {
-        if (onboardingComplete === false || onboardingComplete === null) {
-          shouldSave = true;
-        } else {
-          shouldSave = false;
-          skipReason = "onboarding_already_complete_text_plan";
-        }
+        shouldSave = true;
       }
 
       if (shouldSave) {
@@ -3101,43 +2327,25 @@ if (customerGid && userMessage) {
           onboardingComplete = true;
           debug.onboardingCompleteAfterSave = true;
 
-          // ✅ Post-plan stage marker: user should ask questions first
-try {
-  await setPostPlanStage(customerGid, "plan_questions");
-  postPlanStage = "plan_questions";
-  debug.postPlanStageSet = "plan_questions";
-  debug.planJustSaved = true;
-} catch (e) {
-  console.warn("Failed to set post_plan_stage:", e?.message || e);
-}
+          try {
+            await setPostPlanStage(customerGid, "plan_questions");
+            postPlanStage = "plan_questions";
+            debug.postPlanStageSet = "plan_questions";
+            debug.planJustSaved = true;
+          } catch (e) {
+            console.warn("Failed to set post_plan_stage:", e?.message || e);
+          }
 
-
-          // ✅ ONBOARDING FINALIZATION: Write TODAY'S weight = CURRENT onboarding weight
-          const cw =
-            planJson?.current_weight_lbs ??
-            planJson?.current_weight ??
-            planJson?.start_weight_lbs ??
-            planJson?.start_weight;
-
-          if (customerGid && onboardingComplete === true && cw != null) {
+          const cw = planJson?.current_weight_lbs ?? planJson?.current_weight ?? planJson?.start_weight_lbs ?? planJson?.start_weight;
+          if (cw != null) {
             try {
               const currentW = Number(cw);
               if (Number.isFinite(currentW) && currentW > 0) {
                 await upsertDailyLog(
                   customerGid,
-                  {
-                    date: dateKey,
-                    weight: currentW,
-                    calories: null,
-                    protein_g: null,
-                    carbs_g: null,
-                    fat_g: null,
-                    steps: null,
-                    notes: "Initial weight from onboarding."
-                  },
+                  { date: dateKey, weight: currentW, calories: null, protein_g: null, carbs_g: null, fat_g: null, steps: null, notes: "Initial weight from onboarding." },
                   dateKey
                 );
-
                 debug.onboardingInitialWeightWritten = currentW;
               }
             } catch (e) {
@@ -3145,7 +2353,6 @@ try {
               debug.onboardingInitialWeightError = String(e?.message || e);
             }
           }
-
         } catch (e) {
           console.error("Error saving coach_plan metafield", e);
           debug.planSavedToShopify = false;
@@ -3158,41 +2365,34 @@ try {
       }
     }
 
-   // MEAL LOGS (ONLY from model MEAL_LOG_JSON)
-if (customerGid) {
-  const mealLogs = extractMealLogsFromText(rawReply);
+    // MEAL LOGS (ONLY from model MEAL_LOG_JSON)
+    if (customerGid) {
+      const mealLogs = extractMealLogsFromText(rawReply);
 
-  if (mealLogs && mealLogs.length) {
-    debug.mealLogsFound = mealLogs.length;
-    debug.mealLogsSample = mealLogs.slice(0, 2);
+      if (mealLogs && mealLogs.length) {
+        debug.mealLogsFound = mealLogs.length;
 
-    try {
-      for (const meal of mealLogs) {
-        // If we're replacing a meal, force the bucket
-        if (overrideMeal && overrideMeal.meal_type) {
-          meal.meal_type = overrideMeal.meal_type;
+        try {
+          for (const meal of mealLogs) {
+            if (overrideMeal && overrideMeal.meal_type) meal.meal_type = overrideMeal.meal_type;
+
+            await upsertMealLog(
+              customerGid,
+              meal,
+              dateKey,
+              overrideMeal ? (overrideMeal.__replaceLast ? { replaceLast: true } : { replaceMealType: overrideMeal.meal_type }) : {}
+            );
+          }
+          debug.mealLogsSavedToDailyLogs = true;
+        } catch (e) {
+          console.error("Error saving meal logs from chat", e);
+          debug.mealLogsSavedToDailyLogs = false;
+          debug.mealLogsSaveError = String(e?.message || e);
         }
-
-        await upsertMealLog(
-          customerGid,
-          meal,
-          dateKey,
-          overrideMeal
-            ? (overrideMeal.__replaceLast ? { replaceLast: true } : { replaceMealType: overrideMeal.meal_type })
-            : {}
-        );
+      } else {
+        debug.mealLogsFound = 0;
       }
-
-      debug.mealLogsSavedToDailyLogs = true;
-    } catch (e) {
-      console.error("Error saving meal logs from chat", e);
-      debug.mealLogsSavedToDailyLogs = false;
-      debug.mealLogsSaveError = String(e?.message || e);
     }
-  } else {
-    debug.mealLogsFound = 0;
-  }
-}
 
     // DAILY_REVIEW_JSON
     if (customerGid) {
@@ -3227,18 +2427,16 @@ if (customerGid) {
       }
     }
 
-// ✅ FINAL USER REPLY (sanitized)
-const cleanedReply = pjSanitizeForUser(rawReply);
+    const cleanedReply = pjSanitizeForUser(rawReply);
 
-
-    res.status(200).json({
+    return res.status(200).json({
       reply: cleanedReply,
       debug,
-      free_chat_remaining: remainingAfter,
+      free_chat_remaining: remainingAfter
     });
   } catch (e) {
     console.error("Chat handler error", e);
     const debugError = { ...debug, serverError: String(e?.message || e) };
-    res.status(500).json({ error: "Server error", debug: debugError });
+    return res.status(500).json({ error: "Server error", debug: debugError });
   }
 }
