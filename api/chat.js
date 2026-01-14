@@ -2059,6 +2059,42 @@ let weeklyContextText = null;
     console.warn("Free-preview gate failed open:", err);
     remainingAfter = null;
   }
+// ===============================
+// WEEKLY CONTEXT (pull plan + last 7 days summary)
+// ===============================
+if (customerGid) {
+  try {
+    // 1) Get coach_plan
+    const planData = await shopifyGraphQL(
+      `
+      query GetCoachPlan($id: ID!) {
+        customer(id: $id) {
+          plan: metafield(namespace:"custom", key:"coach_plan") { value }
+        }
+      }
+      `,
+      { id: customerGid }
+    );
+
+    const pv = planData?.customer?.plan?.value;
+    if (pv) {
+      try { coachPlanObj = JSON.parse(pv); } catch { coachPlanObj = null; }
+    }
+
+    // 2) Get daily logs array (already used elsewhere)
+    const dl = await getDailyLogsMetafield(customerGid);
+    const logs = Array.isArray(dl?.logs) ? dl.logs : [];
+
+    const weekly = pjComputeWeeklySummary(logs, dateKey, coachPlanObj);
+    weeklyContextText = pjWeeklySummaryToSystemText(weekly, coachPlanObj);
+
+    debug.weeklyContextBuilt = !!weeklyContextText;
+    debug.weeklyContextSample = weekly;
+  } catch (e) {
+    debug.weeklyContextBuilt = false;
+    debug.weeklyContextError = String(e?.message || e);
+  }
+}
 
   // ============================================================
   // PENDING MEAL RESOLUTION (runtime)
