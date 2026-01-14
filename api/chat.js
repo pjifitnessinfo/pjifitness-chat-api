@@ -1876,6 +1876,9 @@ export default async function handler(req, res) {
   let shopifyMetafieldReadStatus = "not_attempted";
   let onboardingComplete = null;
   let postPlanStage = null;
+  let coachPlanObj = null;
+let weeklyContextText = null;
+
 
   if (customerGid) {
     try {
