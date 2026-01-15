@@ -2238,7 +2238,12 @@ if (customerGid) {
         const unitBased = pjIsUnitBasedFood(pending.raw_text);
 
        if (!nut || nut.ok !== true || incomplete) {
-  const est = estimateFallbackNutrition(items);
+  const est = pjEstimateMealFallback(
+  items.map(i => i.name || i).join(", "),
+  mt,
+  dateKey
+);
+
 
   await setPendingMeal(customerGid, null);
 
