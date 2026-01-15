@@ -4,11 +4,9 @@
 // Returns: { reply, debug, free_chat_remaining }
 export const config = {
   api: {
-    bodyParser: false,      // you already parse manually
-    externalResolver: true  // tells Vercel “do NOT short-circuit”
+    bodyParser: false
   }
 };
-
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 // ===============================
