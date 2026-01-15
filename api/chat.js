@@ -2358,27 +2358,6 @@ if (customerGid) {
     }
   }
 
-  // Otherwise ask ONCE (but keep pending stable so it doesn't loop)
-  await setPendingMeal(customerGid, {
-    date: pending?.date || dateKey,
-    meal_type: mt,
-    raw_text: String(pending.raw_text || "").trim()
-  });
-
-  const qText = needs.length
-    ? needs.map((q) => `- ${q.question}`).join("\n")
-    : "- Rough estimate is fine: how many slices + what shake size? (or say “not sure” and I’ll estimate)";
-
-  return res.status(200).json({
-    reply:
-      "Quick question so I can be closer (or say “not sure” and I’ll estimate):\n\n" +
-      qText,
-    debug: { ...debug, pendingMealResolved: false, pendingMealResolvedReason: needs.length ? "needs_clarification" : "nutrition_incomplete" },
-    free_chat_remaining: remainingAfter
-  });
-}
-
-
         if ((!totals || !items.length) && unitBased) {
           const fallbackMeal = { date: dateKey, meal_type: mt, items: [String(pending.raw_text || "Item")], calories: 200, protein: 20, carbs: 10, fat: 5 };
           await setPendingMeal(customerGid, null);
