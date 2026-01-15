@@ -1880,19 +1880,25 @@ function pjEstimateMealFallback(rawText, mealType, dateKey) {
    ========================================================== */
 export default async function handler(req, res) {
     // ===== CORS (SHOPIFY -> VERCEL) =====
-  const origin = req.headers.origin || "";
+const origin = req.headers.origin;
 
-  // ALWAYS return CORS headers on EVERY request (including OPTIONS)
-  res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Access-Control-Max-Age", "86400");
+if (origin === "https://www.pjifitness.com") {
+  res.setHeader("Access-Control-Allow-Origin", origin);
+}
 
-  // Preflight must exit EARLY
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
-  // ===== END CORS =====
+res.setHeader(
+  "Access-Control-Allow-Headers",
+  "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Shopify-Shop-Domain, X-Shopify-Session-Token"
+);
+res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+res.setHeader("Access-Control-Max-Age", "86400");
+
+// MUST exit early for preflight
+if (req.method === "OPTIONS") {
+  return res.status(204).end();
+}
+// ===== END CORS =====
+
 
 
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
