@@ -2238,54 +2238,31 @@ if (customerGid) {
         const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
         const unitBased = pjIsUnitBasedFood(pending.raw_text);
 
-       if (!nut || nut.ok !== true || (incomplete && !unitBased)) {
-  // ✅ If user is unsure, STOP asking and estimate like ChatGPT
-  const userUnsure = pjUserIsUnsure(userMessage);
+       if (!nut || nut.ok !== true || incomplete) {
+  const est = estimateFallbackNutrition(items);
 
-  if (userUnsure) {
-    const est = pjEstimateMealFallback(
-      `${String(pending.raw_text || "").trim()} ${String(userMessage || "").trim()}`,
-      mt,
-      dateKey
-    );
+  await setPendingMeal(customerGid, null);
 
-    if (est) {
-      await setPendingMeal(customerGid, null);
-      await upsertMealLog(customerGid, est, dateKey);
-
-      return res.status(200).json({
-        reply:
-          `No worries — I’ll estimate this.\n\n` +
-          `Logged your ${mt.toLowerCase()}:\n` +
-          est.items.map(x => `• ${x}`).join("\n") + `\n\n` +
-          `Estimated: ${est.calories} calories — ${est.protein}g P, ${est.carbs}g C, ${est.fat}g F.\n\n` +
-          `If you ever want it tighter, just tell me “3 slices” or “thin crust”.`,
-        debug: { ...debug, portionFallbackUsed: true },
-        free_chat_remaining: remainingAfter
-      });
-    }
-  }
-
-  // Otherwise ask ONCE (but keep pending stable so it doesn't loop)
-  await setPendingMeal(customerGid, {
-    date: pending?.date || dateKey,
+  await upsertMealLog(customerGid, {
+    date: dateKey,
     meal_type: mt,
-    raw_text: String(pending.raw_text || "").trim()
+    items: items.map(i => i.name || i),
+    calories: est.calories,
+    protein: est.protein,
+    carbs: est.carbs,
+    fat: est.fat
   });
-
-  const qText = needs.length
-    ? needs.map((q) => `- ${q.question}`).join("\n")
-    : "- Rough estimate is fine: how many slices + what shake size? (or say “not sure” and I’ll estimate)";
 
   return res.status(200).json({
     reply:
-      "Quick question so I can be closer (or say “not sure” and I’ll estimate):\n\n" +
-      qText,
-    debug: { ...debug, pendingMealResolved: false, pendingMealResolvedReason: needs.length ? "needs_clarification" : "nutrition_incomplete" },
+      `Logged your ${mt.toLowerCase()} (estimated):\n` +
+      items.map(i => `• ${i.name || i}`).join("\n") +
+      `\n\nEstimated: ${est.calories} calories — ${est.protein}g P, ${est.carbs}g C, ${est.fat}g F.\n\n` +
+      `If you want this tighter later, you can say things like “burger 6oz” or “medium fries”.`,
+    debug: { portionFallbackUsed: true },
     free_chat_remaining: remainingAfter
   });
 }
-
 
         // unit-based fallback if totals missing
         if ((!totals || !items.length) && unitBased) {
