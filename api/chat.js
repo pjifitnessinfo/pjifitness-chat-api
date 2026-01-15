@@ -2419,16 +2419,15 @@ if (customerGid) {
           .map((it) => `• ${it.name} — ${it.calories} cal (${it.protein}P / ${it.carbs}C / ${it.fat}F)`)
           .join("\n");
 
-        return res.status(200).json({
-          reply: `Logged your ${mt.toLowerCase()}:\n${itemsList}\n\nEstimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`,
-          debug: { ...debug, pendingMealResolved: true, pendingMealResolvedType: mt },
-          free_chat_remaining: remainingAfter
-        });
-      }
-    } catch (e) {
-      debug.pendingMealResolveError = String(e?.message || e);
-    }
-  }
+        try {
+  return res.status(200).json({
+    reply: `Logged your ${mt.toLowerCase()}:\n${itemsList}\n\nEstimated: ${meal.calories} calories`,
+    debug: { ...debug, pendingMealResolved: true, pendingMealResolvedType: mt },
+    free_chat_remaining: remainingAfter
+  });
+} catch (e) {
+  debug.pendingMealResolveError = String(e?.message || e);
+}
 
   // ============================================================
   // AUTO MEAL LOG FROM NATURAL CHAT (simple + reliable)
