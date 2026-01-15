@@ -1885,33 +1885,21 @@ function pjEstimateMealFallback(rawText, mealType, dateKey) {
    MAIN HANDLER
    ========================================================== */
 export default async function handler(req, res) {
-  // ===== CORS (SHOPIFY -> VERCEL) =====
- const origin = req.headers.origin || "";
+    // ===== CORS (SHOPIFY -> VERCEL) =====
+  const origin = req.headers.origin || "";
 
-const ALLOWED_ORIGINS = new Set([
-  "https://www.pjifitness.com",
-  "https://pjifitness.com",
-  "https://pjifitness.myshopify.com",
-  "https://pjifitness.vercel.app"
-]);
+  // ALWAYS return CORS headers on EVERY request (including OPTIONS)
+  res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Max-Age", "86400");
 
-if (ALLOWED_ORIGINS.has(origin)) {
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-}
-
-res.setHeader("Vary", "Origin");
-res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-res.setHeader(
-  "Access-Control-Allow-Headers",
-  req.headers["access-control-request-headers"] || "Content-Type"
-);
-
-if (req.method === "OPTIONS") {
-  return res.status(204).end();
-}
-
+  // Preflight must exit EARLY
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
   // ===== END CORS =====
+
 
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   if (!OPENAI_API_KEY) return res.status(500).json({ error: "Missing OPENAI_API_KEY env var" });
