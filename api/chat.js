@@ -2,9 +2,6 @@
 // Chat endpoint using OpenAI REST API.
 // Expects: { message, email, customerId, threadId, history, appendUserMessage, clientDate, isSubscriber } in JSON body.
 // Returns: { reply, debug, free_chat_remaining }
-export const config = {
-  runtime: "nodejs"
-};
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
