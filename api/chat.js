@@ -1799,6 +1799,81 @@ async function setPendingMeal(customerGid, payloadOrNull) {
   const userErrors = data?.metafieldsSet?.userErrors || [];
   if (userErrors.length) console.error("metafieldsSet userErrors (pending_meal):", userErrors);
 }
+// ===============================
+// COACH FALLBACK ESTIMATOR (stops portion loops)
+// ===============================
+
+function pjUserIsUnsure(text) {
+  const t = String(text || "").toLowerCase();
+  return (
+    t.includes("not sure") ||
+    t.includes("no idea") ||
+    t.includes("dont know") ||
+    t.includes("don't know") ||
+    t.includes("idk") ||
+    t.includes("guess") ||
+    t.includes("rough") ||
+    t.includes("approx") ||
+    t.includes("approximately")
+  );
+}
+
+function pjEstimateMealFallback(rawText, mealType, dateKey) {
+  const t = String(rawText || "").toLowerCase();
+
+  let calories = 0, protein = 0, carbs = 0, fat = 0;
+  const items = [];
+
+  // --- Pizza slices heuristic ---
+  // NY slice often 280-350 cals. Default 320 unless "small/thin" mentioned.
+  const sliceMatch = t.match(/(\d+)\s*(?:slice|slices)\s*(?:of\s*)?pizza/);
+  if (sliceMatch) {
+    const n = Math.max(1, parseInt(sliceMatch[1], 10) || 1);
+    let per = 320;
+    if (t.includes("thin")) per = 280;
+    if (t.includes("deep dish")) per = 420;
+    calories += n * per;
+    protein += n * 12;
+    carbs   += n * 36;
+    fat     += n * 12;
+    items.push(`${n} slice(s) pizza (estimated)`);
+  } else if (t.includes("pizza")) {
+    // If they said pizza but not slices, assume 2 slices
+    calories += 640; protein += 24; carbs += 72; fat += 24;
+    items.push("pizza (estimated ~2 slices)");
+  }
+
+  // --- Muscle Milk / RTD shake heuristic ---
+  // If they say "muscle milk" assume 1 bottle unless they say "2" or "half"
+  if (t.includes("muscle milk")) {
+    let bottles = 1;
+    const m = t.match(/(\d+)\s*(?:muscle milk|shake)/);
+    if (m) bottles = Math.max(1, parseInt(m[1], 10) || 1);
+    // Classic RTD varies by product; use a safe mid estimate:
+    // ~160-200 cals, ~25g protein
+    calories += bottles * 180;
+    protein  += bottles * 25;
+    carbs    += bottles * 10;
+    fat      += bottles * 5;
+    items.push(`${bottles} Muscle Milk shake (estimated)`);
+  } else if (t.includes("protein shake") || t.includes("protein shake")) {
+    calories += 200; protein += 25; carbs += 10; fat += 5;
+    items.push("protein shake (estimated)");
+  }
+
+  // Safety minimums: if we couldn't parse anything, return null so caller can ask once
+  if (!items.length) return null;
+
+  return {
+    date: dateKey,
+    meal_type: mealType,
+    items,
+    calories: Math.round(calories),
+    protein: pjRound1(protein),
+    carbs: pjRound1(carbs),
+    fat: pjRound1(fat)
+  };
+}
 
 /* ==========================================================
    MAIN HANDLER
