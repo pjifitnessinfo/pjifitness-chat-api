@@ -2444,7 +2444,7 @@ if (customerGid) {
         const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
         const unitBased = pjIsUnitBasedFood(foodText);
 
-        if (!nut || nut.ok !== true || (incomplete && !unitBased)) {
+        if (!nut || nut.ok !== true || incomplete) {
   // ✅ If user is unsure, STOP asking and estimate like ChatGPT
   const userUnsure = pjUserIsUnsure(userMessage);
 
