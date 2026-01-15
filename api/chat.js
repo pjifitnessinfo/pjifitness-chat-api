@@ -1880,26 +1880,31 @@ function pjEstimateMealFallback(rawText, mealType, dateKey) {
    ========================================================== */
 export default async function handler(req, res) {
   // ===== CORS (SHOPIFY -> VERCEL) =====
-  const origin = req.headers.origin || "";
+ const origin = req.headers.origin || "";
 
-  const ALLOWED_ORIGINS = new Set([
-    "https://www.pjifitness.com",
-    "https://pjifitness.com",
-    "https://pjifitness.myshopify.com"
-  ]);
+const ALLOWED_ORIGINS = new Set([
+  "https://www.pjifitness.com",
+  "https://pjifitness.com",
+  "https://pjifitness.myshopify.com",
+  "https://pjifitness.vercel.app"
+]);
 
-  if (ALLOWED_ORIGINS.has(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Access-Control-Allow-Credentials", "true");
-  }
+if (ALLOWED_ORIGINS.has(origin)) {
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+}
 
-  res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+res.setHeader("Vary", "Origin");
+res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+res.setHeader(
+  "Access-Control-Allow-Headers",
+  req.headers["access-control-request-headers"] || "Content-Type"
+);
 
-  const reqHeaders = req.headers["access-control-request-headers"];
-  res.setHeader("Access-Control-Allow-Headers", reqHeaders ? String(reqHeaders) : "Content-Type, Authorization, X-Requested-With, Accept");
+if (req.method === "OPTIONS") {
+  return res.status(204).end();
+}
 
-  if (req.method === "OPTIONS") return res.status(204).end();
   // ===== END CORS =====
 
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
