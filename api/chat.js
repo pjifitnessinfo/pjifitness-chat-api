@@ -1881,7 +1881,12 @@ function pjEstimateMealFallback(rawText, mealType, dateKey) {
 /* ==========================================================
    MAIN HANDLER
    ========================================================== */
-export default async function handler(req, res) {
+async function handler(req, res) {
+  // existing code unchanged
+}
+
+module.exports = handler;
+
   // ===== CORS (SHOPIFY -> VERCEL) =====
   const origin = req.headers.origin || "";
 
