@@ -881,6 +881,19 @@ function pjGuessMealTypeFromUserText(text) {
 // ===============================
 function pjIsUnitBasedFood(text) {
   const t = String(text || "").toLowerCase();
+
+  // ✅ If it contains obvious "non-unit" foods, DO NOT treat as unit-based
+  // (prevents pizza + shake from becoming 200 calories)
+  const nonUnitTriggers = [
+    "pizza", "burrito", "taco", "burger", "fries", "rice", "pasta",
+    "steak", "chicken", "ground", "potato", "chips", "wings",
+    "sandwich", "sub", "wrap", "salad"
+  ];
+  for (let i = 0; i < nonUnitTriggers.length; i++) {
+    if (t.includes(nonUnitTriggers[i])) return false;
+  }
+
+  // “countable / packaged / standard” foods
   const keywords = [
     "protein shake", "muscle milk", "premier protein", "fairlife", "core power",
     "ready to drink", "rtf",
@@ -889,17 +902,21 @@ function pjIsUnitBasedFood(text) {
     "string cheese", "cheese stick",
     "banana", "apple",
     "egg", "eggs",
-    "wrap", "mission", "carb balance",
     "647", "slice of bread", "toast"
   ];
+
   for (let i = 0; i < keywords.length; i++) {
-    if (t.indexOf(keywords[i]) !== -1) return true;
+    if (t.includes(keywords[i])) return true;
   }
+
+  // explicit counts like "2 bars" or "1 shake"
   if (/\b(\d+)\b/.test(t) && (t.includes("shake") || t.includes("bar") || t.includes("yogurt") || t.includes("egg"))) {
     return true;
   }
+
   return false;
 }
+
 
 function pjLooksLikeFoodText(text) {
   const t = (text || "").toLowerCase();
