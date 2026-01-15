@@ -2855,3 +2855,4 @@ if (weeklyContextText) {
     return res.status(500).json({ error: "Server error", debug: debugError });
   }
 }
+module.exports = { handler };
