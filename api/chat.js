@@ -1882,10 +1882,6 @@ function pjEstimateMealFallback(rawText, mealType, dateKey) {
    MAIN HANDLER
    ========================================================== */
 async function handler(req, res) {
-  // existing code unchanged
-}
-
-module.exports = handler;
 
   // ===== CORS (SHOPIFY -> VERCEL) =====
   const origin = req.headers.origin || "";
@@ -1905,20 +1901,35 @@ module.exports = handler;
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
 
   const reqHeaders = req.headers["access-control-request-headers"];
-  res.setHeader("Access-Control-Allow-Headers", reqHeaders ? String(reqHeaders) : "Content-Type, Authorization, X-Requested-With, Accept");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    reqHeaders
+      ? String(reqHeaders)
+      : "Content-Type, Authorization, X-Requested-With, Accept"
+  );
 
-  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
   // ===== END CORS =====
 
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
-  if (!OPENAI_API_KEY) return res.status(500).json({ error: "Missing OPENAI_API_KEY env var" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  if (!OPENAI_API_KEY) {
+    return res.status(500).json({ error: "Missing OPENAI_API_KEY env var" });
+  }
 
   let body;
   try {
     body = await parseBody(req);
   } catch (e) {
     console.error("Error parsing body", e);
-    return res.status(400).json({ error: "Invalid request body", debug: { parseError: String(e?.message || e) } });
+    return res.status(400).json({
+      error: "Invalid request body",
+      debug: { parseError: String(e?.message || e) }
+    });
   }
 
   const clientDate = body?.clientDate;
@@ -1929,12 +1940,19 @@ module.exports = handler;
   const appendUserMessage = !!body.appendUserMessage;
   const email = body.email || null;
 
-  if (!userMessage && !history.length) return res.status(400).json({ error: "Missing 'message' in body" });
+  if (!userMessage && !history.length) {
+    return res.status(400).json({ error: "Missing 'message' in body" });
+  }
 
   let customerGid = null;
   let customerNumericId = null;
 
-  let rawId = body.customerId || body.shopifyCustomerId || body.customer_id || body.customer_id_raw || null;
+  let rawId =
+    body.customerId ||
+    body.shopifyCustomerId ||
+    body.customer_id ||
+    body.customer_id_raw ||
+    null;
 
   if (rawId != null) {
     const str = String(rawId);
@@ -1977,8 +1995,7 @@ module.exports = handler;
   let onboardingComplete = null;
   let postPlanStage = null;
   let coachPlanObj = null;
-let weeklyContextText = null;
-
+  let weeklyContextText = null;
 
   if (customerGid) {
     try {
@@ -2028,6 +2045,10 @@ let weeklyContextText = null;
   // ============================================================
   // OVERLAY ONBOARDING SHORT-CIRCUIT (<ONBOARDING_JSON>)
   // ============================================================
+}
+
+module.exports = handler;
+
   const onboardingJsonText = extractTagBlock(userMessage, "ONBOARDING_JSON");
   const hasOnboardingJson = !!onboardingJsonText;
 
