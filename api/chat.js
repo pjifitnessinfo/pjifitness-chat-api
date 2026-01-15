@@ -2042,9 +2042,6 @@ async function handler(req, res) {
   // ============================================================
   // OVERLAY ONBOARDING SHORT-CIRCUIT (<ONBOARDING_JSON>)
   // ============================================================
-}
-
-module.exports = handler;
 
   const onboardingJsonText = extractTagBlock(userMessage, "ONBOARDING_JSON");
   const hasOnboardingJson = !!onboardingJsonText;
@@ -2877,3 +2874,4 @@ if (weeklyContextText) {
     return res.status(500).json({ error: "Server error", debug: debugError });
   }
 }
+module.exports = handler;
