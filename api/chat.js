@@ -1878,28 +1878,29 @@ function pjEstimateMealFallback(rawText, mealType, dateKey) {
 /* ==========================================================
    MAIN HANDLER
    ========================================================== */
-async function handler(req, res) {
-    // ===== CORS (SHOPIFY -> VERCEL) =====
-const origin = req.headers.origin;
+export default async function handler(req, res) {
+  // ===== CORS (SHOPIFY -> VERCEL) =====
+  const origin = req.headers.origin || "";
 
-if (origin === "https://www.pjifitness.com") {
-  res.setHeader("Access-Control-Allow-Origin", origin);
-}
+  const ALLOWED_ORIGINS = new Set([
+    "https://www.pjifitness.com",
+    "https://pjifitness.com",
+    "https://pjifitness.myshopify.com"
+  ]);
 
-res.setHeader(
-  "Access-Control-Allow-Headers",
-  "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Shopify-Shop-Domain, X-Shopify-Session-Token"
-);
-res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-res.setHeader("Access-Control-Max-Age", "86400");
+  if (ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
 
-// MUST exit early for preflight
-if (req.method === "OPTIONS") {
-  return res.status(204).end();
-}
-// ===== END CORS =====
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
 
+  const reqHeaders = req.headers["access-control-request-headers"];
+  res.setHeader("Access-Control-Allow-Headers", reqHeaders ? String(reqHeaders) : "Content-Type, Authorization, X-Requested-With, Accept");
 
+  if (req.method === "OPTIONS") return res.status(204).end();
+  // ===== END CORS =====
 
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   if (!OPENAI_API_KEY) return res.status(500).json({ error: "Missing OPENAI_API_KEY env var" });
@@ -2238,12 +2239,7 @@ if (customerGid) {
         const unitBased = pjIsUnitBasedFood(pending.raw_text);
 
        if (!nut || nut.ok !== true || incomplete) {
-  const est = pjEstimateMealFallback(
-  items.map(i => i.name || i).join(", "),
-  mt,
-  dateKey
-);
-
+  const est = estimateFallbackNutrition(items);
 
   await setPendingMeal(customerGid, null);
 
@@ -2855,4 +2851,3 @@ if (weeklyContextText) {
     return res.status(500).json({ error: "Server error", debug: debugError });
   }
 }
-module.exports = { handler };
