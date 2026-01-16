@@ -56,9 +56,11 @@
   }
 
   function formatTextToHtml(text) {
-    // Keep it simple & safe: escape + line breaks.
-    // Bullets display fine as text with <br>.
     return escapeHtml(text).replace(/\n/g, "<br>");
+  }
+
+  function normalizeText(s) {
+    return String(s || "").trim();
   }
 
   function loadHistory() {
@@ -109,7 +111,6 @@
       .pj-bubble{padding:10px 12px;border-radius:14px;line-height:1.35;font-size:15px;word-wrap:break-word;white-space:normal;}
       .pj-bubble--user{background:#f1f5f9;color:#0f172a;border-top-right-radius:6px;}
       .pj-text--assistant{color:#334155;font-size:15px;line-height:1.45;padding:2px 2px;}
-      .pj-meta{font-size:12px;color:#94a3b8;margin-top:2px}
       #pj-chat-form{display:flex;gap:10px;align-items:flex-end;margin-top:10px;}
       #pj-chat-input{flex:1;min-height:44px;max-height:140px;resize:vertical;padding:10px 12px;border-radius:12px;border:1px solid rgba(0,0,0,.12);font-size:16px;line-height:1.3;outline:none;}
       #pj-chat-input:focus{border-color:rgba(34,197,94,.6);box-shadow:0 0 0 3px rgba(34,197,94,.12);}
@@ -158,7 +159,7 @@
       send = $("#pj-chat-send", root);
     }
 
-    // iOS zoom prevention: ensure input font-size >=16px
+    // iOS zoom prevention
     try { input.style.fontSize = "16px"; } catch {}
 
     return { root, messages, form, input, send };
@@ -243,14 +244,11 @@
     const msg = normalizeText(userText);
     if (!msg) return;
 
-    // Render user message immediately
     renderMessage(ui.messages, "user", msg);
     history.push({ role: "user", content: msg });
     saveHistory(history);
 
-    // Disable UI
     ui.send.disabled = true;
-
     const typingEl = showTyping(ui.messages);
 
     try {
@@ -268,7 +266,6 @@
 
       const data = await resp.json().catch(() => ({}));
 
-      // Remove typing
       if (typingEl && typingEl.parentNode) typingEl.parentNode.removeChild(typingEl);
 
       if (!resp.ok) {
@@ -281,7 +278,6 @@
 
       const reply = String(data?.reply || "I didn't catch that — try again.").trim();
 
-      // Typewriter assistant
       await typewriter(ui.messages, reply);
 
       history.push({ role: "assistant", content: reply });
@@ -304,7 +300,7 @@
     let history = loadHistory();
     renderHistory(ui.messages, history);
 
-    // If empty history, show a welcome message in the chat (assistant)
+    // Welcome message only when there's no history
     if (history.length === 0) {
       const welcome =
         "Welcome — log meals in plain English and I’ll estimate calories, keep a running total, and give you 1–2 realistic lower-cal swaps. You can also ask anything about cravings, motivation, plateaus, or what to do next.\n\nFor now, just focus on logging your next meal.";
@@ -313,7 +309,6 @@
       saveHistory(history);
     }
 
-    // Submit handler
     ui.form.addEventListener("submit", function (e) {
       e.preventDefault();
       const text = ui.input.value;
