@@ -18,11 +18,9 @@ export default async function handler(req, res) {
   }
 
   try {
-    // ===============================
-    // BODY (tolerant)
-    // ===============================
     const body = req.body || {};
 
+    // Pull message safely
     let message =
       body.message ||
       body.input ||
@@ -31,65 +29,61 @@ export default async function handler(req, res) {
       body.value ||
       "";
 
-    if (typeof message !== "string") {
-      message = "";
-    }
-
+    // Normalize history
     const history = Array.isArray(body.history)
       ? body.history.filter(
           m =>
             m &&
             typeof m === "object" &&
-            (m.role === "user" || m.role === "assistant") &&
-            typeof m.content === "string"
+            m.role === "user" &&
+            typeof m.content === "string" &&
+            m.content.trim()
         )
       : [];
 
+    // 🔑 CRITICAL DEFENSIVE FIX:
+    // If message is empty BUT we have user history, use the latest user message
+    if (!message.trim() && history.length > 0) {
+      message = history[history.length - 1].content;
+    }
+
+    // Absolute final fallback
+    if (!message.trim()) {
+      message = "Food log provided.";
+    }
+
     // ===============================
-    // SYSTEM PROMPT (ANTI-BULLSHIT)
+    // SYSTEM PROMPT (ANTI-RESET)
     // ===============================
     const systemPrompt =
       "CRITICAL RULE:\n" +
-      "If the user message contains food, meals, eating, calories, brands, portions, or quantities, you MUST immediately analyze the food.\n" +
+      "If the user message contains food, meals, brands, portions, calories, or quantities, you MUST analyze it immediately.\n" +
+      "Do NOT say the user has not shared food.\n" +
       "Do NOT greet the user.\n" +
-      "Do NOT ask what they ate.\n" +
-      "Do NOT reset the conversation.\n" +
-      "Always assume the user is continuing their day.\n\n" +
+      "Do NOT reset the conversation.\n\n" +
 
-      "You are PJ Coach, an elite fat loss and diet coach.\n\n" +
-      "You sound like ChatGPT coaching a real person. Calm, practical, supportive, confident, and human.\n" +
-      "You never sound like an app, article, or calorie tracker.\n\n" +
+      "You are PJ Coach, an elite fat loss and diet coach.\n" +
+      "You coach like a real human helping a real person.\n\n" +
 
       "Your job:\n" +
       "- Interpret messy food logs\n" +
-      "- Automatically estimate calories when food is mentioned\n" +
-      "- Keep a running daily calorie total unless told otherwise\n" +
+      "- Estimate calories automatically\n" +
+      "- Keep a running daily total\n" +
       "- Help the user make the day better, not perfect\n\n" +
 
-      "Coaching rules:\n" +
+      "Rules:\n" +
       "- Always acknowledge effort first\n" +
-      "- Use calorie ranges, never exact numbers\n" +
-      "- Identify the biggest calorie driver of the day\n" +
-      "- Suggest easy food swaps only if helpful\n" +
-      "- Prefer protein forward and high volume swaps\n\n" +
+      "- Use calorie ranges\n" +
+      "- Identify the biggest leverage point\n" +
+      "- Suggest easy swaps only if helpful\n\n" +
 
-      "Do not:\n" +
-      "- Greet the user when food is present\n" +
-      "- Ask questions that slow progress\n" +
-      "- Teach nutrition theory\n" +
-      "- List macro percentages\n" +
-      "- Give calorie targets unless asked\n" +
-      "- Shame or lecture\n\n" +
-
-      "Response format (always):\n" +
-      "1. One short acknowledgement of effort\n" +
-      "2. Simple food breakdown with calorie estimates\n" +
-      "3. Running daily total\n" +
-      "4. One clear coaching insight\n" +
-      "5. One or two food swaps ONLY if useful\n" +
-      "6. End EXACTLY with: For now, just focus on ...\n\n" +
-
-      "Your goal is trust, clarity, and momentum. You are a coach, not a tracker.";
+      "Response format:\n" +
+      "1. Short acknowledgement\n" +
+      "2. Food breakdown with calories\n" +
+      "3. Running total\n" +
+      "4. Coaching insight\n" +
+      "5. Optional swaps\n" +
+      "6. End EXACTLY with: For now, just focus on ...";
 
     // ===============================
     // OPENAI CALL
@@ -107,7 +101,6 @@ export default async function handler(req, res) {
           temperature: 0.6,
           messages: [
             { role: "system", content: systemPrompt },
-            ...history,
             { role: "user", content: message }
           ]
         })
@@ -117,13 +110,8 @@ export default async function handler(req, res) {
     const data = await openaiRes.json();
 
     const reply =
-      data &&
-      data.choices &&
-      data.choices[0] &&
-      data.choices[0].message &&
-      data.choices[0].message.content
-        ? data.choices[0].message.content
-        : "For now, just focus on staying consistent today.";
+      data?.choices?.[0]?.message?.content ||
+      "For now, just focus on staying consistent today.";
 
     return res.status(200).json({ reply });
 
