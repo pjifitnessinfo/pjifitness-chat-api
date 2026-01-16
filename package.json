@@ -1,12 +1,9 @@
 {
   "name": "pjifitness-chat-api",
   "version": "1.0.0",
-  "private": true,
-  "scripts": {
-    "dev": "vercel dev"
-  },
-  "dependencies": {},
-  "engines": {
-    "node": "24.x"
+  "type": "module",
+  "dependencies": {
+    "openai": "^4.26.0"
   }
-} 
+}
+
