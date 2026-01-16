@@ -1,6 +1,6 @@
 export default async function handler(req, res) {
   // ===============================
-  // CORS (stable)
+  // CORS (do not touch)
   // ===============================
   res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -20,8 +20,8 @@ export default async function handler(req, res) {
   try {
     const body = req.body || {};
 
-    // Pull message safely
-    let message =
+    // Pull ANY possible user text
+    let rawMessage =
       body.message ||
       body.input ||
       body.text ||
@@ -29,61 +29,54 @@ export default async function handler(req, res) {
       body.value ||
       "";
 
-    // Normalize history
-    const history = Array.isArray(body.history)
-      ? body.history.filter(
-          m =>
-            m &&
-            typeof m === "object" &&
-            m.role === "user" &&
-            typeof m.content === "string" &&
-            m.content.trim()
-        )
-      : [];
-
-    // 🔑 CRITICAL DEFENSIVE FIX:
-    // If message is empty BUT we have user history, use the latest user message
-    if (!message.trim() && history.length > 0) {
-      message = history[history.length - 1].content;
+    if (typeof rawMessage !== "string") {
+      rawMessage = "";
     }
 
-    // Absolute final fallback
-    if (!message.trim()) {
-      message = "Food log provided.";
+    // Absolute last-resort fallback
+    if (!rawMessage.trim()) {
+      rawMessage = "User provided a food log.";
     }
 
     // ===============================
-    // SYSTEM PROMPT (ANTI-RESET)
+    // SYSTEM PROMPT (HARD LOCKED)
     // ===============================
     const systemPrompt =
-      "CRITICAL RULE:\n" +
-      "If the user message contains food, meals, brands, portions, calories, or quantities, you MUST analyze it immediately.\n" +
-      "Do NOT say the user has not shared food.\n" +
-      "Do NOT greet the user.\n" +
-      "Do NOT reset the conversation.\n\n" +
+      "YOU ARE IN FOOD LOG ANALYSIS MODE.\n\n" +
+      "The user HAS provided a food log.\n" +
+      "You MUST analyze it.\n\n" +
 
-      "You are PJ Coach, an elite fat loss and diet coach.\n" +
-      "You coach like a real human helping a real person.\n\n" +
+      "STRICT RULES:\n" +
+      "- NEVER say you do not see food\n" +
+      "- NEVER ask the user to re-enter details\n" +
+      "- NEVER ask clarifying questions\n" +
+      "- NEVER reset the conversation\n\n" +
 
-      "Your job:\n" +
-      "- Interpret messy food logs\n" +
-      "- Estimate calories automatically\n" +
+      "ASSUME:\n" +
+      "- The text you receive is the full food log\n" +
+      "- Brands, quantities, and meals may be messy but are real\n\n" +
+
+      "YOUR JOB:\n" +
+      "- Estimate calories for each item\n" +
       "- Keep a running daily total\n" +
-      "- Help the user make the day better, not perfect\n\n" +
+      "- Identify the biggest calorie driver\n" +
+      "- Offer one or two easy food swaps if helpful\n\n" +
 
-      "Rules:\n" +
-      "- Always acknowledge effort first\n" +
-      "- Use calorie ranges\n" +
-      "- Identify the biggest leverage point\n" +
-      "- Suggest easy swaps only if helpful\n\n" +
+      "RESPONSE FORMAT (MANDATORY):\n" +
+      "1. Short acknowledgement of effort\n" +
+      "2. Food breakdown with calorie estimates\n" +
+      "3. Running daily total\n" +
+      "4. One coaching insight\n" +
+      "5. Optional swaps (max two)\n" +
+      "6. End EXACTLY with: For now, just focus on ...\n\n" +
 
-      "Response format:\n" +
-      "1. Short acknowledgement\n" +
-      "2. Food breakdown with calories\n" +
-      "3. Running total\n" +
-      "4. Coaching insight\n" +
-      "5. Optional swaps\n" +
-      "6. End EXACTLY with: For now, just focus on ...";
+      "You are a diet coach. You do not ask questions.";
+
+    // ===============================
+    // FORCE FOOD LOG CONTEXT
+    // ===============================
+    const forcedUserMessage =
+      "FOOD LOG (analyze this exactly as written):\n\n" + rawMessage;
 
     // ===============================
     // OPENAI CALL
@@ -98,10 +91,10 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           model: "gpt-4.1-mini",
-          temperature: 0.6,
+          temperature: 0.4,
           messages: [
             { role: "system", content: systemPrompt },
-            { role: "user", content: message }
+            { role: "user", content: forcedUserMessage }
           ]
         })
       }
