@@ -1,333 +1,245 @@
-/* chat.js — PJ Coach Frontend
-   - ChatGPT-like UI
-   - Sends history + onboarded flag
-   - Typewriter assistant
-   - LocalStorage persistence
-*/
+export const config = {
+  api: { bodyParser: false }
+};
 
-(function () {
-  "use strict";
+// -----------------------------
+// Helpers
+// -----------------------------
+function safeJsonParse(str) {
+  try { return JSON.parse(str); } catch { return null; }
+}
 
-  // =========================
-  // CONFIG
-  // =========================
-  const API_URL = "https://pjifitness-chat-api.vercel.app/api/coach-simple";
+function normalizeText(s) {
+  return String(s || "").trim();
+}
 
-  // DOM selectors (works with your existing HTML if ids match; otherwise it will create UI)
-  const SEL = {
-    root: "#pj-coach-chat",           // optional root container
-    messages: "#pj-chat-messages",    // messages container
-    form: "#pj-chat-form",            // form
-    input: "#pj-chat-input",          // textarea/input
-    send: "#pj-chat-send"             // send button
-  };
+function detectIntent(message) {
+  const t = normalizeText(message);
+  const low = t.toLowerCase();
 
-  // LocalStorage keys
-  const LS = {
-    history: "PJ_CHAT_HISTORY_V1",
-    onboarded: "PJ_ONBOARDED"
-  };
+  if (/^(hi|hey|hello|yo|sup|test)\b[\s\!\.\?]*$/i.test(t)) return "greeting";
 
-  // History settings
-  const MAX_HISTORY = 20;
+  const startsQuestion =
+    /^(why|how|what|does|do|can|should|is|are|am i|i am|im)\b/i.test(t) && t.includes("?");
 
-  // Typewriter settings
-  const TYPE_MS = 10;          // per-character delay
-  const TYPE_CHUNK = 3;        // chars per tick
-  const TYPE_MAX_MS = 4000;    // hard cap so long replies don't take forever
+  const struggleSignals =
+    /\b(struggling|discouraged|frustrated|confused|stuck|binge|cravings|can't stop|cant stop|overeat|overeating|hate my body|no motivation|give up|i feel)\b/i.test(low);
 
-  // If your theme already has styling, set this false.
-  const INJECT_BASE_STYLES = true;
+  const hasMealWords = /\b(breakfast|lunch|dinner|snack|meal)\b/i.test(low);
+  const hasAteWords = /\b(i had|i ate|ate|have had|for breakfast|for lunch|for dinner)\b/i.test(low);
+  const hasQtyUnits = /\b(\d+(\.\d+)?\s?(g|gram|grams|oz|ounce|ounces|lb|lbs|pound|cups?|tbsp|tsp|ml|mL|cal|kcal))\b/i.test(t);
 
-  // =========================
-  // Utilities
-  // =========================
-  function $(q, root) {
-    return (root || document).querySelector(q);
-  }
+  const hasFoodNouns =
+    /\b(eggs?|toast|bread|rice|pasta|chicken|beef|burger|shake|protein bar|bar|pizza|salad|milk|almond milk|oreo|cheese|yogurt|fries|potato|oatmeal|banana|apple)\b/i.test(low);
 
-  function escapeHtml(str) {
-    return String(str || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
-  }
+  const looksLikeFoodLog = hasMealWords || hasAteWords || hasQtyUnits || hasFoodNouns;
 
-  function formatTextToHtml(text) {
-    return escapeHtml(text).replace(/\n/g, "<br>");
-  }
+  if (looksLikeFoodLog) return "food_log";
+  if (startsQuestion || struggleSignals) return "coaching_question";
+  return "coaching_question";
+}
 
-  function normalizeText(s) {
-    return String(s || "").trim();
-  }
+function sanitizeHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+    .slice(-20);
+}
 
-  function loadHistory() {
-    try {
-      const raw = localStorage.getItem(LS.history);
-      const arr = raw ? JSON.parse(raw) : [];
-      if (!Array.isArray(arr)) return [];
-      return arr
-        .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-        .slice(-MAX_HISTORY);
-    } catch {
-      return [];
+// Ensures replies always end with a complete "For now..." line
+function ensureClosingLine(text) {
+  let s = String(text || "").trim();
+  if (!s) return s;
+
+  s = s.replace(
+    /(For now,\s*just\s*focus\s*on)(\.\.\.)?\s*$/i,
+    "For now, just focus on your next meal choice and one small win today."
+  );
+
+  const lines = s.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const ln = lines[i].trim();
+    if (/^For now,\s*just\s*focus\s*on/i.test(ln)) {
+      if (!/[.!?]$/.test(ln)) lines[i] = ln + ".";
+      s = lines.join("\n");
+      return s;
     }
   }
 
-  function saveHistory(history) {
-    try {
-      localStorage.setItem(LS.history, JSON.stringify(history.slice(-MAX_HISTORY)));
-    } catch {}
-  }
+  s += "\n\nFor now, just focus on your next meal choice and one small win today.";
+  return s;
+}
 
-  function isOnboarded() {
-    return localStorage.getItem(LS.onboarded) === "1";
-  }
+// -----------------------------
+// Prompts
+// -----------------------------
+const FOOD_LOG_PROMPT = `
+You are PJ Coach, a highly effective, human-feeling fat-loss coach.
 
-  function setOnboarded() {
-    try { localStorage.setItem(LS.onboarded, "1"); } catch {}
-  }
+Your job is to:
+- interpret messy food logs
+- keep a running mental tally of calories for the day unless told otherwise
+- proactively help without being asked
 
-  function scrollToBottom(el) {
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }
+CRITICAL BEHAVIOR:
+- If the user mentions food, ALWAYS estimate calories automatically
+- Keep a running total for the day unless told otherwise
+- If the user asks "total so far" — ROLL IT UP
+- Use ranges, not fake precision
+- Never ask them to repeat foods already mentioned
 
-  // =========================
-  // UI creation / styling
-  // =========================
-  function injectStyles() {
-    if (!INJECT_BASE_STYLES) return;
-    if (document.getElementById("pj-chatjs-style")) return;
+THE APP'S CORE VALUE (LOCK THIS IN):
+- After every food log, ALWAYS include 1–2 LOWER-CALORIE swap ideas.
+- Each swap MUST include an estimated calorie savings like: "(saves ~50–120 calories)".
+- A “swap” MUST reduce calories. If it doesn’t reduce calories, label it as an "upgrade" (optional), not a swap.
+- Swaps should be realistic (same vibe/meal), not weird diet food.
+- If the meal is already lean, say: "No swap needed" AND give ONE tiny upgrade for fullness (more protein/volume).
 
-    const css = `
-      #pj-coach-chat{max-width:720px;margin:0 auto;padding:12px;}
-      #pj-chat-messages{display:flex;flex-direction:column;gap:10px;min-height:260px;max-height:60vh;overflow:auto;padding:10px;border:1px solid rgba(0,0,0,.08);border-radius:14px;background:#fff;}
-      .pj-msg{display:flex;flex-direction:column;gap:4px;max-width:85%;}
-      .pj-msg--user{align-self:flex-end;text-align:left;}
-      .pj-msg--assistant{align-self:flex-start;}
-      .pj-bubble{padding:10px 12px;border-radius:14px;line-height:1.35;font-size:15px;word-wrap:break-word;white-space:normal;}
-      .pj-bubble--user{background:#f1f5f9;color:#0f172a;border-top-right-radius:6px;}
-      .pj-text--assistant{color:#334155;font-size:15px;line-height:1.45;padding:2px 2px;}
-      #pj-chat-form{display:flex;gap:10px;align-items:flex-end;margin-top:10px;}
-      #pj-chat-input{flex:1;min-height:44px;max-height:140px;resize:vertical;padding:10px 12px;border-radius:12px;border:1px solid rgba(0,0,0,.12);font-size:16px;line-height:1.3;outline:none;}
-      #pj-chat-input:focus{border-color:rgba(34,197,94,.6);box-shadow:0 0 0 3px rgba(34,197,94,.12);}
-      #pj-chat-send{background:#22c55e;border:none;color:#fff;padding:10px 14px;border-radius:12px;font-weight:700;cursor:pointer;min-width:92px;}
-      #pj-chat-send:disabled{opacity:.6;cursor:not-allowed;}
-      .pj-typing{font-size:14px;color:#64748b;padding:2px 2px;}
-      .pj-welcome{color:#334155;font-size:14px;margin:0 0 10px 2px;}
-    `;
+ACCURACY NOTE (ONLY WHEN RELEVANT)
+- If the user seems stuck/plateaued, close to goal, or unsure about portions, suggest checking serving sizes and using a food scale for a short “audit week” to tighten accuracy.
+- Keep it practical and non-judgmental (1–2 sentences).
 
-    const style = document.createElement("style");
-    style.id = "pj-chatjs-style";
-    style.textContent = css;
-    document.head.appendChild(style);
-  }
+STRICT LIMITS:
+- Do not lecture
+- Do not sound clinical
+- Calories are allowed
+- Macros ONLY if user asks
 
-  function ensureUI() {
-    injectStyles();
+RESPONSE FORMAT:
+1) One short acknowledgement (1 sentence max)
+2) Breakdown (bullets) if food exists
+3) Running total (range OK)
+4) Coaching insight (leverage point)
+5) Swap ideas (ALWAYS 1–2 lower-cal swaps WITH savings; or "No swap needed")
+6) End with a final line that starts with: "For now, just focus on" and completes the thought.
+`;
 
-    let root = $(SEL.root);
-    if (!root) {
-      root = document.createElement("div");
-      root.id = SEL.root.replace("#", "");
-      document.body.appendChild(root);
-    }
+const COACHING_PROMPT = `
+You are PJ Coach — a practical, human, real-world health & fat-loss coach.
+You help people with fat loss, nutrition habits, cravings, binge patterns, consistency, motivation, routines, and mindset around food.
 
-    let messages = $(SEL.messages, root);
-    let form = $(SEL.form, root);
-    let input = $(SEL.input, root);
-    let send = $(SEL.send, root);
+CORE STYLE
+- Sound like a smart friend + coach: calm, direct, non-judgmental.
+- Be practical and grounded.
+- Don’t lecture. Don’t overwhelm. Don’t ramble.
 
-    // Create minimal UI if not present
-    if (!messages || !form || !input || !send) {
-      root.innerHTML = `
-        <div class="pj-welcome" id="pj-chat-welcome">
-          Log meals or ask anything — I’ll keep a running total and give you easy lower-cal swaps.
-        </div>
-        <div id="pj-chat-messages"></div>
-        <form id="pj-chat-form" autocomplete="off">
-          <textarea id="pj-chat-input" placeholder="Type a meal log or a question…"></textarea>
-          <button id="pj-chat-send" type="submit">Send</button>
-        </form>
-      `;
-      messages = $("#pj-chat-messages", root);
-      form = $("#pj-chat-form", root);
-      input = $("#pj-chat-input", root);
-      send = $("#pj-chat-send", root);
-    }
+IMPORTANT (NON-NEGOTIABLE)
+- NEVER say: "Since you didn't list foods..." or "I can't estimate calories..." unless they explicitly asked you to calculate a total.
+- Never scold them for not logging perfectly.
+- Don’t mention calories unless they asked or it’s essential to answer the question.
 
-    // iOS zoom prevention
-    try { input.style.fontSize = "16px"; } catch {}
+HOW TO ANSWER (ALWAYS)
+1) Acknowledge what they’re feeling or asking (1–2 sentences).
+2) Give the clearest explanation in plain English (short).
+3) Give ONE concrete next step they can do today (very specific).
+4) Optionally ask ONE high-signal question if it would change the advice.
+5) End with a final line that starts with: "For now, just focus on" and completes the thought.
 
-    return { root, messages, form, input, send };
-  }
+HIGH-SIGNAL FOLLOW-UP QUESTIONS (CHOOSE ONLY ONE WHEN NEEDED)
+- Consistency: "Are you consistent 6–7 days/week, or do weekends look different?"
+- Hidden calories: "Any snacks/drinks/sauces you don’t usually count?"
+- Activity: "Have your daily steps dropped lately?"
+- Timeline: "How long has the scale been stuck — days, ~2 weeks, or a month+?"
+- Cravings: "When do cravings hit hardest — afternoon, night, or stress moments?"
+- Hunger: "On a typical day, what time do you first get really hungry?"
 
-  // =========================
-  // Render messages
-  // =========================
-  function renderMessage(messagesEl, role, content) {
-    const wrap = document.createElement("div");
-    wrap.className = `pj-msg ${role === "user" ? "pj-msg--user" : "pj-msg--assistant"}`;
+PLATEAU / ACCURACY (USE WHEN RELEVANT)
+- If they’re plateaued or progress is slow near goal weight, explain that accuracy matters more, and a short “audit week” helps:
+  checking serving sizes/labels + weighing key foods with a food scale for 5–7 days.
+- Keep it non-judgmental and framed as a short experiment, not forever.
 
-    if (role === "user") {
-      const bubble = document.createElement("div");
-      bubble.className = "pj-bubble pj-bubble--user";
-      bubble.innerHTML = formatTextToHtml(content);
-      wrap.appendChild(bubble);
-    } else {
-      const txt = document.createElement("div");
-      txt.className = "pj-text--assistant";
-      txt.innerHTML = formatTextToHtml(content);
-      wrap.appendChild(txt);
-    }
+BOUNDARIES (LIGHT, NOT ROBOTIC)
+- Do NOT diagnose medical conditions.
+- If symptoms/medical issues come up, suggest they talk to a clinician, while still offering safe general guidance.
+- Avoid extreme or unsafe dieting advice.
+`;
 
-    messagesEl.appendChild(wrap);
-    scrollToBottom(messagesEl);
-    return wrap;
-  }
+// -----------------------------
+// Handler
+// -----------------------------
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Max-Age", "86400");
 
-  function renderHistory(messagesEl, history) {
-    messagesEl.innerHTML = "";
-    history.forEach(m => renderMessage(messagesEl, m.role, m.content));
-    scrollToBottom(messagesEl);
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ reply: "Method not allowed." });
 
-  // =========================
-  // Typewriter assistant
-  // =========================
-  function typewriter(messagesEl, fullText) {
-    return new Promise(resolve => {
-      const wrap = document.createElement("div");
-      wrap.className = "pj-msg pj-msg--assistant";
-      const txt = document.createElement("div");
-      txt.className = "pj-text--assistant";
-      wrap.appendChild(txt);
-      messagesEl.appendChild(wrap);
-      scrollToBottom(messagesEl);
-
-      const start = Date.now();
-      let i = 0;
-
-      function tick() {
-        const elapsed = Date.now() - start;
-        if (i >= fullText.length || elapsed >= TYPE_MAX_MS) {
-          txt.innerHTML = formatTextToHtml(fullText);
-          scrollToBottom(messagesEl);
-          return resolve();
-        }
-        i = Math.min(fullText.length, i + TYPE_CHUNK);
-        txt.innerHTML = formatTextToHtml(fullText.slice(0, i));
-        scrollToBottom(messagesEl);
-        setTimeout(tick, TYPE_MS);
-      }
-
-      tick();
+  try {
+    let rawBody = "";
+    await new Promise((resolve, reject) => {
+      req.on("data", chunk => (rawBody += chunk.toString("utf8")));
+      req.on("end", resolve);
+      req.on("error", reject);
     });
-  }
 
-  function showTyping(messagesEl) {
-    const el = document.createElement("div");
-    el.className = "pj-typing";
-    el.textContent = "PJ Coach is typing…";
-    messagesEl.appendChild(el);
-    scrollToBottom(messagesEl);
-    return el;
-  }
+    const body = safeJsonParse(rawBody) || {};
+    const message = normalizeText(body.message || body.input || body.text || "");
+    const history = sanitizeHistory(body.history);
 
-  // =========================
-  // Send message
-  // =========================
-  async function sendMessage(ui, history, userText) {
-    const msg = normalizeText(userText);
-    if (!msg) return;
+    if (!message) {
+      return res.status(400).json({ reply: "No message received.", debug: { intent: "unknown" } });
+    }
 
-    renderMessage(ui.messages, "user", msg);
-    history.push({ role: "user", content: msg });
-    saveHistory(history);
+    const intent = detectIntent(message);
 
-    ui.send.disabled = true;
-    const typingEl = showTyping(ui.messages);
-
-    try {
-      const payload = {
-        message: msg,
-        history: history.slice(-MAX_HISTORY),
-        onboarded: isOnboarded()
-      };
-
-      const resp = await fetch(API_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+    // Greeting handled locally
+    if (intent === "greeting") {
+      return res.status(200).json({
+        reply: ensureClosingLine(
+          "All good — quick heads up: I’ll estimate calories from your logs, keep a running total, and always give you 1–2 realistic lower-cal swaps that still feel like your normal food.\n\nTell me what you’ve eaten today, or tell me what’s been hardest lately."
+        ),
+        debug: { intent },
+        set_onboarded: true
       });
-
-      const data = await resp.json().catch(() => ({}));
-
-      if (typingEl && typingEl.parentNode) typingEl.parentNode.removeChild(typingEl);
-
-      if (!resp.ok) {
-        const errText = data?.reply || data?.error || "Request failed.";
-        renderMessage(ui.messages, "assistant", `Something went wrong: ${errText}`);
-        return;
-      }
-
-      if (data && data.set_onboarded) setOnboarded();
-
-      const reply = String(data?.reply || "I didn't catch that — try again.").trim();
-
-      await typewriter(ui.messages, reply);
-
-      history.push({ role: "assistant", content: reply });
-      saveHistory(history);
-
-    } catch (e) {
-      if (typingEl && typingEl.parentNode) typingEl.parentNode.removeChild(typingEl);
-      renderMessage(ui.messages, "assistant", "Network error — please try again.");
-    } finally {
-      ui.send.disabled = false;
-      ui.input.focus();
-    }
-  }
-
-  // =========================
-  // Boot
-  // =========================
-  function boot() {
-    const ui = ensureUI();
-    let history = loadHistory();
-    renderHistory(ui.messages, history);
-
-    // Welcome message only when there's no history
-    if (history.length === 0) {
-      const welcome =
-        "Welcome — log meals in plain English and I’ll estimate calories, keep a running total, and give you 1–2 realistic lower-cal swaps. You can also ask anything about cravings, motivation, plateaus, or what to do next.\n\nFor now, just focus on logging your next meal.";
-      renderMessage(ui.messages, "assistant", welcome);
-      history.push({ role: "assistant", content: welcome });
-      saveHistory(history);
     }
 
-    ui.form.addEventListener("submit", function (e) {
-      e.preventDefault();
-      const text = ui.input.value;
-      ui.input.value = "";
-      sendMessage(ui, history, text);
+    const systemPrompt = intent === "food_log" ? FOOD_LOG_PROMPT : COACHING_PROMPT;
+
+    const onboarded = !!body.onboarded;
+    const isFirstTurn = history.length === 0 && !onboarded;
+
+    const messages = [{ role: "system", content: systemPrompt.trim() }];
+
+    if (isFirstTurn) {
+      messages.push({
+        role: "system",
+        content:
+          "FIRST_TURN: In your first response, include ONE short sentence explaining: you estimate calories from messy logs, keep a running total, and give 1–2 realistic lower-cal swaps to help long-term weight management. Then continue normally."
+      });
+    }
+
+    messages.push(...history);
+    messages.push({ role: "user", content: message });
+
+    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        temperature: 0.6,
+        messages
+      })
     });
 
-    // Enter to send; Shift+Enter for newline
-    ui.input.addEventListener("keydown", function (e) {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        ui.form.requestSubmit();
-      }
-    });
-  }
+    if (!openaiRes.ok) {
+      const t = await openaiRes.text();
+      console.error("[coach-simple] OpenAI error:", t);
+      return res.status(500).json({ reply: "Something went wrong. Try again.", debug: { intent } });
+    }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", boot);
-  } else {
-    boot();
+    const data = await openaiRes.json();
+    const rawReply = data?.choices?.[0]?.message?.content || "I didn't catch that — try again.";
+    const reply = ensureClosingLine(rawReply);
+
+    return res.status(200).json({ reply, debug: { intent }, set_onboarded: true });
+
+  } catch (err) {
+    console.error("[coach-simple] fatal:", err);
+    return res.status(500).json({ reply: "Something went wrong. Try again." });
   }
-})();
+}
