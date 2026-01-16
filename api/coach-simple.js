@@ -21,7 +21,6 @@ function detectIntent(message) {
   if (/^(hi|hey|hello|yo|sup|test)\b[\s\!\.\?]*$/i.test(t)) return "greeting";
 
   // 2) Explicit coaching / questions / struggle
-  // If it starts like a question OR contains struggle words and does NOT look like a food log
   const startsQuestion =
     /^(why|how|what|does|do|can|should|is|are|am i|i am|im)\b/i.test(t) && t.includes("?");
 
@@ -39,13 +38,10 @@ function detectIntent(message) {
 
   const looksLikeFoodLog = hasMealWords || hasAteWords || hasQtyUnits || hasFoodNouns;
 
-  // If it clearly looks like a log, it's a food_log even if there's a question mark
   if (looksLikeFoodLog) return "food_log";
-
-  // If it looks like a question/struggle and not a log, it's coaching
   if (startsQuestion || struggleSignals) return "coaching_question";
 
-  // Default: coaching (prevents the annoying "no foods listed" behavior)
+  // Default: coaching (prevents "no foods listed" behavior)
   return "coaching_question";
 }
 
@@ -54,6 +50,34 @@ function sanitizeHistory(history) {
   return history
     .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
     .slice(-20);
+}
+
+// Ensures replies always end with a complete "For now..." line
+function ensureClosingLine(text) {
+  let s = String(text || "").trim();
+  if (!s) return s;
+
+  // If it ends with an unfinished line like "For now, just focus on..." (or only the phrase)
+  s = s.replace(
+    /(For now,\s*just\s*focus\s*on)(\.\.\.)?\s*$/i,
+    "For now, just focus on your next meal choice and one small win today."
+  );
+
+  // If it contains the phrase but ends without punctuation, add a period.
+  // (This avoids leaving a dangling last line.)
+  const lines = s.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const ln = lines[i].trim();
+    if (/^For now,\s*just\s*focus\s*on/i.test(ln)) {
+      if (!/[.!?]$/.test(ln)) lines[i] = ln + ".";
+      s = lines.join("\n");
+      return s;
+    }
+  }
+
+  // If there is no closing line at all, append it.
+  s += "\n\nFor now, just focus on your next meal choice and one small win today.";
+  return s;
 }
 
 // -----------------------------
@@ -75,6 +99,11 @@ CRITICAL BEHAVIOR:
 - Use ranges, not fake precision
 - Never ask them to repeat foods already mentioned
 
+THE APP'S CORE VALUE (LOCK THIS IN):
+- After every food log, ALWAYS include 1–2 LOWER-CALORIE swap ideas with estimated calorie savings.
+- If the meal is already lean, say "No swap needed" and give one tiny upgrade (more protein/volume) instead.
+- Swaps should be realistic (same vibe/meal), not weird diet food.
+
 STRICT LIMITS:
 - Do not lecture
 - Do not sound clinical
@@ -86,8 +115,8 @@ RESPONSE FORMAT:
 2) Breakdown (bullets) if food exists
 3) Running total (range OK)
 4) Coaching insight (leverage point)
-5) Optional swaps (max 2, quantify savings)
-6) End with exactly: "For now, just focus on..."
+5) Swap ideas (ALWAYS 1–2 unless already lean; quantify savings)
+6) End with a final line that starts with: "For now, just focus on" and completes the thought.
 `;
 
 const COACHING_PROMPT = `
@@ -113,7 +142,7 @@ HOW TO ANSWER (ALWAYS)
 2) Give the clearest explanation in plain English (short).
 3) Give ONE concrete next step they can do today (very specific).
 4) Optionally ask ONE high-signal question if it would change the advice.
-5) End with exactly: "For now, just focus on..."
+5) End with a final line that starts with: "For now, just focus on" and completes the thought.
 
 HIGH-SIGNAL FOLLOW-UP QUESTIONS (CHOOSE ONLY ONE WHEN NEEDED)
 - Consistency: "Are you consistent 6–7 days/week, or do weekends look different?"
@@ -129,11 +158,9 @@ FAT LOSS CLARITY (USE WHEN RELEVANT)
 - Fat loss is repeatable habits over time, not perfection.
 
 OPEN-ENDED SCOPE (BE HELPFUL)
-- If they ask about fat loss, explain the basics simply.
 - If they ask about cravings, binge patterns, or motivation, coach behaviorally and compassionately.
 - If they ask practical food questions (restaurant choices, snacks, meal ideas), give 2–3 options and a quick “why”.
-- If they ask fitness/lifestyle questions (steps, lifting, sleep, routines), give simple guidance.
-- If they ask something outside your expertise, still help if you can, but be honest and suggest the right professional when needed.
+- If relevant, offer ONE practical lower-cal alternative (a “swap”) but don't force it on every message.
 
 BOUNDARIES (LIGHT, NOT ROBOTIC)
 - Do NOT diagnose medical conditions.
@@ -176,14 +203,32 @@ export default async function handler(req, res) {
     // Greeting handled locally (no OpenAI call)
     if (intent === "greeting") {
       return res.status(200).json({
-        reply: "All good — tell me what you've eaten today, or ask me what's been hardest lately, and I'll help you make a plan. For now, just focus on getting your next meal right.",
+        reply: ensureClosingLine(
+          "All good — quick heads up: I’ll estimate calories from your logs, keep a running total, and always give you 1–2 lower-cal swaps that still feel realistic.\n\nTell me what you’ve eaten today, or tell me what’s been hardest lately."
+        ),
         debug: { intent }
       });
     }
 
     const systemPrompt = intent === "food_log" ? FOOD_LOG_PROMPT : COACHING_PROMPT;
+    const isFirstTurn = history.length === 0;
 
-    // OpenAI call
+    const messages = [
+      { role: "system", content: systemPrompt.trim() }
+    ];
+
+    // One-time onboarding nudge on first real turn (kept short)
+    if (isFirstTurn) {
+      messages.push({
+        role: "system",
+        content:
+          "FIRST_TURN: In your first response, include ONE short sentence explaining: you estimate calories from messy logs, keep a running total, and give 1–2 realistic lower-cal swaps to help long-term weight management. Then continue normally."
+      });
+    }
+
+    messages.push(...history);
+    messages.push({ role: "user", content: message });
+
     const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -193,11 +238,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: "gpt-4.1-mini",
         temperature: 0.6,
-        messages: [
-          { role: "system", content: systemPrompt.trim() },
-          ...history,
-          { role: "user", content: message }
-        ]
+        messages
       })
     });
 
@@ -208,7 +249,8 @@ export default async function handler(req, res) {
     }
 
     const data = await openaiRes.json();
-    const reply = data?.choices?.[0]?.message?.content || "I didn't catch that — try again.";
+    const rawReply = data?.choices?.[0]?.message?.content || "I didn't catch that — try again.";
+    const reply = ensureClosingLine(rawReply);
 
     return res.status(200).json({ reply, debug: { intent } });
 
