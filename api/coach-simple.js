@@ -1,21 +1,30 @@
 import OpenAI from "openai";
 
+/**
+ * IMPORTANT:
+ * - File path MUST be: /api/coach-simple.js
+ * - Redeploy after saving
+ */
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
 export default async function handler(req, res) {
-  // ===============================
-  // CORS HEADERS (CRITICAL)
-  // ===============================
-  res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
+
+  // =====================================================
+  // 🔒 CORS — MUST RUN BEFORE ANY OTHER LOGIC
+  // =====================================================
+  res.setHeader("Access-Control-Allow-Origin", "*"); // TEMP wildcard
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
+  // ✅ Preflight request
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
 
+  // ⛔ Block non-POST
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -27,9 +36,9 @@ export default async function handler(req, res) {
       return res.status(400).json({ reply: "No message received." });
     }
 
-    // ===============================
-    // PJ COACH — SYSTEM PROMPT
-    // ===============================
+    // =====================================================
+    // 🧠 PJ COACH — SYSTEM PROMPT (LOCKED)
+    // =====================================================
     const systemPrompt = `
 You are PJ Coach, an elite fat-loss and habit-building diet coach.
 
@@ -53,8 +62,6 @@ You MUST handle chaos gracefully and never scold for uncertainty.
 ────────────────────────
 RESPONSE STRUCTURE (ALWAYS FOLLOW)
 ────────────────────────
-
-Every response MUST follow this order:
 
 1) Acknowledge the effort (ONE sentence max)
 
@@ -101,16 +108,16 @@ Your goal is trust, clarity, and momentum.
 You are a coach, not a tracker.
 `;
 
-    // ===============================
-    // OPENAI CALL
-    // ===============================
+    // =====================================================
+    // 🤖 OPENAI CALL
+    // =====================================================
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
+      temperature: 0.6,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: message }
-      ],
-      temperature: 0.6
+      ]
     });
 
     const reply =
