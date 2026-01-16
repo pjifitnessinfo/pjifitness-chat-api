@@ -1,117 +1,187 @@
+export const config = {
+  api: { bodyParser: false }
+};
+
+// -----------------------------
+// Helpers
+// -----------------------------
+function safeJsonParse(str) {
+  try { return JSON.parse(str); } catch { return null; }
+}
+
+function normalizeText(s) {
+  return String(s || "").trim();
+}
+
+function detectIntent(message) {
+  const t = normalizeText(message);
+  const low = t.toLowerCase();
+
+  // 1) Greeting / filler
+  if (/^(hi|hey|hello|yo|sup|test)\b[\s\!\.\?]*$/i.test(t)) return "greeting";
+
+  // 2) Explicit coaching / questions / struggle
+  // If it starts like a question OR contains struggle words and does NOT look like a food log
+  const startsQuestion =
+    /^(why|how|what|does|do|can|should|is|are|am i|i am|im)\b/i.test(t) && t.includes("?");
+
+  const struggleSignals =
+    /\b(struggling|discouraged|frustrated|confused|stuck|binge|cravings|can't stop|cant stop|overeat|overeating|hate my body|no motivation|give up|i feel)\b/i.test(low);
+
+  // 3) Food-log signals (strong)
+  const hasMealWords = /\b(breakfast|lunch|dinner|snack|meal)\b/i.test(low);
+  const hasAteWords = /\b(i had|i ate|ate|have had|for breakfast|for lunch|for dinner)\b/i.test(low);
+  const hasQtyUnits = /\b(\d+(\.\d+)?\s?(g|gram|grams|oz|ounce|ounces|lb|lbs|pound|cups?|tbsp|tsp|ml|mL|cal|kcal))\b/i.test(t);
+
+  // common food nouns (kept small on purpose)
+  const hasFoodNouns =
+    /\b(eggs?|toast|bread|rice|pasta|chicken|beef|burger|shake|protein bar|bar|pizza|salad|milk|almond milk|oreo|cheese|yogurt|fries|potato|oatmeal|banana|apple)\b/i.test(low);
+
+  const looksLikeFoodLog = hasMealWords || hasAteWords || hasQtyUnits || hasFoodNouns;
+
+  // If it clearly looks like a log, it's a food_log even if there's a question mark
+  if (looksLikeFoodLog) return "food_log";
+
+  // If it looks like a question/struggle and not a log, it's coaching
+  if (startsQuestion || struggleSignals) return "coaching_question";
+
+  // Default: coaching (prevents the annoying "no foods listed" behavior)
+  return "coaching_question";
+}
+
+function sanitizeHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+    .slice(-20);
+}
+
+// -----------------------------
+// Prompts
+// -----------------------------
+const FOOD_LOG_PROMPT = `
+You are PJ Coach, a highly effective, human-feeling fat-loss coach.
+
+Your job is to:
+- interpret messy food logs
+- keep a running mental tally of calories for the day unless told otherwise
+- proactively help without being asked
+
+CRITICAL BEHAVIOR:
+- If the user mentions food, ALWAYS estimate calories automatically
+- Keep a running total for the day unless told otherwise
+- If the user asks "total so far" — roll it up
+- If calories are stacking up — offer 1-2 smart swaps (protein-forward preferred)
+- Use ranges, not fake precision
+- Never ask them to repeat foods already mentioned
+
+STRICT LIMITS:
+- Do not lecture
+- Do not sound clinical
+- Calories are allowed
+- Macros ONLY if user asks
+
+RESPONSE FORMAT:
+1) One short acknowledgement (1 sentence max)
+2) Breakdown (bullets) if food exists
+3) Running total (range OK)
+4) Coaching insight (leverage point)
+5) Optional swaps (max 2, quantify savings)
+6) End with exactly: "For now, just focus on..."
+`;
+
+const COACHING_PROMPT = `
+You are PJ Coach, a real-world fat-loss coach.
+
+The user may NOT be logging food. They may be confused, discouraged, or asking how fat loss works.
+
+GOAL:
+- Respond like a human coach: calm, practical, supportive.
+- Give clarity without lecturing.
+- If they ask a general question, answer it directly in plain language.
+- If they share struggle/emotion, validate first, then give one small next step.
+
+RULES:
+- NEVER say "Since you didn't list foods..." or "I can't estimate calories" unless they explicitly asked for calorie math.
+- Do not dump long textbook nutrition.
+- Ask at most ONE gentle follow-up question if needed.
+- Keep it actionable: 1-2 key points + 1 next action.
+- End with exactly: "For now, just focus on..."
+`;
+
+// -----------------------------
+// Handler
+// -----------------------------
 export default async function handler(req, res) {
-  // ===============================
-  // CORS (do not touch)
-  // ===============================
+  // CORS (Shopify-safe)
   res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Requested-With"
-  );
+  res.setHeader("Access-Control-Max-Age", "86400");
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-
-  if (req.method !== "POST") {
-    return res.status(200).json({ reply: "OK" });
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ reply: "Method not allowed." });
 
   try {
-    const body = req.body || {};
+    // Manual body parse
+    let rawBody = "";
+    await new Promise((resolve, reject) => {
+      req.on("data", chunk => (rawBody += chunk.toString("utf8")));
+      req.on("end", resolve);
+      req.on("error", reject);
+    });
 
-    // Pull ANY possible user text
-    let rawMessage =
-      body.message ||
-      body.input ||
-      body.text ||
-      body.prompt ||
-      body.value ||
-      "";
+    const body = safeJsonParse(rawBody) || {};
+    const message = normalizeText(body.message || body.input || body.text || "");
+    const history = sanitizeHistory(body.history);
 
-    if (typeof rawMessage !== "string") {
-      rawMessage = "";
+    if (!message) {
+      return res.status(400).json({ reply: "No message received.", debug: { intent: "unknown" } });
     }
 
-    // Absolute last-resort fallback
-    if (!rawMessage.trim()) {
-      rawMessage = "User provided a food log.";
+    const intent = detectIntent(message);
+
+    // Greeting handled locally (no OpenAI call)
+    if (intent === "greeting") {
+      return res.status(200).json({
+        reply: "All good — tell me what you've eaten today, or ask me what's been hardest lately, and I'll help you make a plan. For now, just focus on getting your next meal right.",
+        debug: { intent }
+      });
     }
 
-    // ===============================
-    // SYSTEM PROMPT (HARD LOCKED)
-    // ===============================
-    const systemPrompt =
-      "YOU ARE IN FOOD LOG ANALYSIS MODE.\n\n" +
-      "The user HAS provided a food log.\n" +
-      "You MUST analyze it.\n\n" +
+    const systemPrompt = intent === "food_log" ? FOOD_LOG_PROMPT : COACHING_PROMPT;
 
-      "STRICT RULES:\n" +
-      "- NEVER say you do not see food\n" +
-      "- NEVER ask the user to re-enter details\n" +
-      "- NEVER ask clarifying questions\n" +
-      "- NEVER reset the conversation\n\n" +
+    // OpenAI call
+    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        temperature: 0.6,
+        messages: [
+          { role: "system", content: systemPrompt.trim() },
+          ...history,
+          { role: "user", content: message }
+        ]
+      })
+    });
 
-      "ASSUME:\n" +
-      "- The text you receive is the full food log\n" +
-      "- Brands, quantities, and meals may be messy but are real\n\n" +
-
-      "YOUR JOB:\n" +
-      "- Estimate calories for each item\n" +
-      "- Keep a running daily total\n" +
-      "- Identify the biggest calorie driver\n" +
-      "- Offer one or two easy food swaps if helpful\n\n" +
-
-      "RESPONSE FORMAT (MANDATORY):\n" +
-      "1. Short acknowledgement of effort\n" +
-      "2. Food breakdown with calorie estimates\n" +
-      "3. Running daily total\n" +
-      "4. One coaching insight\n" +
-      "5. Optional swaps (max two)\n" +
-      "6. End EXACTLY with: For now, just focus on ...\n\n" +
-
-      "You are a diet coach. You do not ask questions.";
-
-    // ===============================
-    // FORCE FOOD LOG CONTEXT
-    // ===============================
-    const forcedUserMessage =
-      "FOOD LOG (analyze this exactly as written):\n\n" + rawMessage;
-
-    // ===============================
-    // OPENAI CALL
-    // ===============================
-    const openaiRes = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer " + process.env.OPENAI_API_KEY,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: "gpt-4.1-mini",
-          temperature: 0.4,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: forcedUserMessage }
-          ]
-        })
-      }
-    );
+    if (!openaiRes.ok) {
+      const t = await openaiRes.text();
+      console.error("[coach-simple] OpenAI error:", t);
+      return res.status(500).json({ reply: "Something went wrong. Try again.", debug: { intent } });
+    }
 
     const data = await openaiRes.json();
+    const reply = data?.choices?.[0]?.message?.content || "I didn't catch that — try again.";
 
-    const reply =
-      data?.choices?.[0]?.message?.content ||
-      "For now, just focus on staying consistent today.";
-
-    return res.status(200).json({ reply });
+    return res.status(200).json({ reply, debug: { intent } });
 
   } catch (err) {
-    console.error("[coach-simple]", err);
-    return res.status(200).json({
-      reply: "For now, just focus on staying consistent today."
-    });
+    console.error("[coach-simple] fatal:", err);
+    return res.status(500).json({ reply: "Something went wrong. Try again." });
   }
 }
