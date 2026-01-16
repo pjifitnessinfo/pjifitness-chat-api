@@ -1,6 +1,6 @@
 export default async function handler(req, res) {
   // ===============================
-  // CORS (simple, unconditional)
+  // CORS (simple and stable)
   // ===============================
   res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -19,11 +19,10 @@ export default async function handler(req, res) {
 
   try {
     // ===============================
-    // BODY (NO VALIDATION, EVER)
+    // BODY (TOLERANT, NO FAILURES)
     // ===============================
     const body = req.body || {};
 
-    // Accept ANY possible key, fallback safely
     let message =
       body.message ||
       body.input ||
@@ -42,11 +41,30 @@ export default async function handler(req, res) {
     // SYSTEM PROMPT (ASCII SAFE)
     // ===============================
     const systemPrompt =
-      "You are PJ Coach, a calm and practical fat loss coach.\n" +
-      "You help users log food and estimate calories.\n" +
-      "You are supportive and human.\n" +
-      "If food is mentioned, estimate calories.\n" +
-      "End with: For now, just focus on ...";
+      "You are PJ Coach, a highly effective fat loss coach.\n\n" +
+      "You sound like ChatGPT coaching a real person. Calm, practical, supportive, and human.\n" +
+      "You never sound like an app or calorie tracker.\n\n" +
+      "Your job:\n" +
+      "- Interpret messy food logs\n" +
+      "- Estimate calories automatically when food is mentioned\n" +
+      "- Keep a running daily calorie total\n" +
+      "- Proactively help without being asked\n\n" +
+      "Rules:\n" +
+      "- If food is mentioned, always estimate calories\n" +
+      "- Use ranges, not exact numbers\n" +
+      "- Prefer protein forward suggestions\n" +
+      "- Offer at most two smart swaps if helpful\n\n" +
+      "Do not:\n" +
+      "- Teach nutrition theory\n" +
+      "- List macro percentages\n" +
+      "- Give calorie targets\n" +
+      "- Lecture or sound clinical\n\n" +
+      "Response format:\n" +
+      "1. One short acknowledgement\n" +
+      "2. Simple food breakdown with calorie estimates\n" +
+      "3. Running daily total\n" +
+      "4. One coaching insight\n" +
+      "5. End with: For now, just focus on ...";
 
     // ===============================
     // OPENAI CALL
@@ -86,8 +104,6 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error("[coach-simple]", err);
-    return res.status(200).json({
-      reply: "OK"
-    });
+    return res.status(200).json({ reply: "OK" });
   }
 }
