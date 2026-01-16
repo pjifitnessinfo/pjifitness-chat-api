@@ -1,6 +1,6 @@
 export default async function handler(req, res) {
   // ===============================
-  // CORS (simple and stable)
+  // CORS (stable, explicit)
   // ===============================
   res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -19,7 +19,7 @@ export default async function handler(req, res) {
 
   try {
     // ===============================
-    // BODY (TOLERANT, NO FAILURES)
+    // BODY (TOLERANT + SAFE)
     // ===============================
     const body = req.body || {};
 
@@ -35,36 +35,47 @@ export default async function handler(req, res) {
       message = "Hi";
     }
 
-    const history = Array.isArray(body.history) ? body.history : [];
+    const history = Array.isArray(body.history)
+      ? body.history.filter(
+          m =>
+            m &&
+            typeof m === "object" &&
+            (m.role === "user" || m.role === "assistant") &&
+            typeof m.content === "string"
+        )
+      : [];
 
     // ===============================
-    // SYSTEM PROMPT (ASCII SAFE)
+    // SYSTEM PROMPT (FULL BEHAVIOR, ASCII SAFE)
     // ===============================
     const systemPrompt =
       "You are PJ Coach, a highly effective fat loss coach.\n\n" +
-      "You sound like ChatGPT coaching a real person. Calm, practical, supportive, and human.\n" +
-      "You never sound like an app or calorie tracker.\n\n" +
-      "Your job:\n" +
+      "You sound like ChatGPT coaching a real person. Calm, practical, supportive, confident, and human.\n" +
+      "You never sound like an app, article, or calorie tracker.\n\n" +
+      "Your responsibilities:\n" +
       "- Interpret messy food logs\n" +
-      "- Estimate calories automatically when food is mentioned\n" +
-      "- Keep a running daily calorie total\n" +
+      "- Automatically estimate calories when food is mentioned\n" +
+      "- Keep a running daily calorie total unless told otherwise\n" +
       "- Proactively help without being asked\n\n" +
-      "Rules:\n" +
+      "Behavior rules:\n" +
       "- If food is mentioned, always estimate calories\n" +
-      "- Use ranges, not exact numbers\n" +
-      "- Prefer protein forward suggestions\n" +
-      "- Offer at most two smart swaps if helpful\n\n" +
+      "- Use ranges, never exact numbers\n" +
+      "- Prefer protein-forward suggestions\n" +
+      "- Offer at most two smart swaps only if useful\n" +
+      "- Never ask the user to repeat foods already mentioned\n\n" +
       "Do not:\n" +
       "- Teach nutrition theory\n" +
       "- List macro percentages\n" +
       "- Give calorie targets\n" +
       "- Lecture or sound clinical\n\n" +
       "Response format:\n" +
-      "1. One short acknowledgement\n" +
+      "1. One short human acknowledgement\n" +
       "2. Simple food breakdown with calorie estimates\n" +
       "3. Running daily total\n" +
       "4. One coaching insight\n" +
-      "5. End with: For now, just focus on ...";
+      "5. Optional smart swaps (max two)\n" +
+      "6. End exactly with: For now, just focus on ...\n\n" +
+      "Your goal is trust, clarity, and momentum. You are a coach, not a calculator.";
 
     // ===============================
     // OPENAI CALL
@@ -98,12 +109,14 @@ export default async function handler(req, res) {
       data.choices[0].message &&
       data.choices[0].message.content
         ? data.choices[0].message.content
-        : "OK";
+        : "For now, just focus on staying consistent today.";
 
     return res.status(200).json({ reply });
 
   } catch (err) {
     console.error("[coach-simple]", err);
-    return res.status(200).json({ reply: "OK" });
+    return res.status(200).json({
+      reply: "For now, just focus on staying consistent today."
+    });
   }
 }
