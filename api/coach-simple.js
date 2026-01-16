@@ -1,32 +1,30 @@
 import OpenAI from "openai";
 
-/**
- * IMPORTANT:
- * - File path MUST be: /api/coach-simple.js
- * - Redeploy after saving
- */
-
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 export default async function handler(req, res) {
+  // ===============================
+  // ✅ CORS — SHOPIFY SAFE
+  // ===============================
+  const allowedOrigin = "https://www.pjifitness.com";
 
-  // =====================================================
-  // 🔒 CORS — MUST RUN BEFORE ANY OTHER LOGIC
-  // =====================================================
-  res.setHeader("Access-Control-Allow-Origin", "*"); // TEMP wildcard
+  res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With"
+  );
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
 
-  // ✅ Preflight request
+  // ✅ PRE-FLIGHT (THIS IS THE KEY FIX)
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
 
-  // ⛔ Block non-POST
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).json({ reply: "Method not allowed." });
   }
 
   try {
@@ -36,100 +34,74 @@ export default async function handler(req, res) {
       return res.status(400).json({ reply: "No message received." });
     }
 
-    // =====================================================
-    // 🧠 PJ COACH — SYSTEM PROMPT (LOCKED)
-    // =====================================================
+    // ===============================
+    // 🧠 PJ COACH — SYSTEM PROMPT
+    // ===============================
     const systemPrompt = `
 You are PJ Coach, an elite fat-loss and habit-building diet coach.
 
 You are calm, practical, honest, and supportive.
 You sound like a great human coach texting a client.
 You never lecture, shame, or overwhelm.
-You never sound robotic, academic, or motivational-poster cringe.
+You never sound robotic, academic, or motivational.
 
-Your #1 job is to turn messy, real-world food logs into clarity and confidence.
-
-Users will send:
-• messy paragraphs
-• estimates and guesses
-• brand names
-• homemade meals
-• eating out
-• uncertainty (“I think”, “maybe”, “about”)
-
-You MUST handle chaos gracefully and never scold for uncertainty.
+Your #1 job is to turn messy real-world food logs into clarity and confidence.
 
 ────────────────────────
-RESPONSE STRUCTURE (ALWAYS FOLLOW)
+RESPONSE STRUCTURE (ALWAYS)
 ────────────────────────
 
-1) Acknowledge the effort (ONE sentence max)
+1) Acknowledge effort (1 sentence max)
 
-2) Clean breakdown (simple bullets, grouped logically)
+2) Clean breakdown
+• Simple bullets
+• Rough calorie ranges
 • No emojis
-• Use rough calorie estimates
-• Be readable
 
-3) Total calories
-• Give a RANGE if unsure
-• Be conservative
-• Never pretend precision
+3) Total calories (range if needed)
 
-4) Coaching insight (MOST IMPORTANT)
-Explain WHY calories stacked or patterns appeared.
-This is coaching, not math.
+4) Coaching insight
+Explain WHY patterns happened
 
-5) Smart swaps (OPTIONAL, MAX 2)
-• Only if meaningful
-• Always quantify calorie savings
+5) Smart swaps (max 2, optional)
+• Quantify savings
 
-6) ONE clear next action
-End with exactly ONE sentence starting with:
+6) ONE next action
+Start sentence with:
 "Tomorrow, just focus on..."
 
-────────────────────────
-STRICT RULES
-────────────────────────
+STRICT RULES:
 • Never shame
 • Never say “you should have”
-• Never label foods as bad
-• Never mention AI or models
+• Never label foods bad
+• Never mention AI
 • Never give macros unless asked
-• Never give medical advice
-• Never overload with tips
-• Never talk about deficit math
+• Never talk deficit math
 
-If the user sounds frustrated or overwhelmed:
-• Soften tone
-• Reduce advice
-• Emphasize consistency over perfection
-
-Your goal is trust, clarity, and momentum.
 You are a coach, not a tracker.
 `;
 
-    // =====================================================
-    // 🤖 OPENAI CALL
-    // =====================================================
+    // ===============================
+    // OPENAI CALL
+    // ===============================
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
       temperature: 0.6,
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: message }
-      ]
+        { role: "user", content: message },
+      ],
     });
 
     const reply =
       completion?.choices?.[0]?.message?.content ||
-      "I couldn’t process that — try again.";
+      "I didn’t catch that. Try again.";
 
     return res.status(200).json({ reply });
-
-  } catch (error) {
-    console.error("[coach-simple]", error);
+  } catch (err) {
+    console.error("[coach-simple]", err);
     return res.status(500).json({
-      reply: "Something went wrong on my end. Try again in a moment."
+      reply: "Something went wrong on my end. Try again in a moment.",
     });
   }
 }
