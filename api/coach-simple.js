@@ -18,10 +18,27 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { message, history = [] } = req.body || {};
+    // ===============================
+    // SAFE BODY PARSING
+    // ===============================
+    const body = req.body || {};
+
+    console.log("[coach-simple] body:", body);
+
+    const message =
+      body.message ||
+      body.input ||
+      body.text ||
+      "";
+
+    const history = Array.isArray(body.history) ? body.history : [];
 
     if (!message || typeof message !== "string") {
-      return res.status(400).json({ reply: "No message received." });
+      return res.status(400).json({
+        error: "Missing message",
+        expected: ["message | input | text"],
+        received: body
+      });
     }
 
     // ===============================
@@ -127,6 +144,12 @@ You are a coach, not a calculator.
       })
     });
 
+    if (!openaiRes.ok) {
+      const errText = await openaiRes.text();
+      console.error("[coach-simple] OpenAI error:", errText);
+      throw new Error("OpenAI request failed");
+    }
+
     const data = await openaiRes.json();
 
     const reply =
@@ -136,7 +159,7 @@ You are a coach, not a calculator.
     return res.status(200).json({ reply });
 
   } catch (err) {
-    console.error("[coach-simple]", err);
+    console.error("[coach-simple] fatal:", err);
     return res.status(500).json({
       reply: "Something went wrong. Try again in a moment."
     });
