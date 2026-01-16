@@ -1,105 +1,42 @@
-// /api/coach-simple.js
-// Clean, stateless coaching endpoint for the Today tab ONLY.
-// Purpose: respond like a real coach with clear calorie + macro breakdowns.
-// No memory. No Shopify. No logging. No side effects.
+export default async function handler(req, res) {
+  // ===== CORS HEADERS (CRITICAL) =====
+  res.setHeader('Access-Control-Allow-Origin', 'https://www.pjifitness.com');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
-module.exports = async function handler(req, res) {
-  // ---- Basic guards ----
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+  // Handle preflight request
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
   }
 
-  if (!OPENAI_API_KEY) {
-    return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
   }
-
-  let body = {};
-  try {
-    body = typeof req.body === "object" ? req.body : JSON.parse(req.body || "{}");
-  } catch {
-    body = {};
-  }
-
-  const userMessage = String(body.message || "").trim();
-  if (!userMessage) {
-    return res.status(400).json({ error: "Missing message" });
-  }
-
-  // ---- System prompt: THIS is the behavior you liked ----
-  const SYSTEM_PROMPT = `
-You are PJ — a calm, experienced online fitness coach.
-
-Your ONLY job:
-- Respond clearly and confidently to the user's message
-- If food is mentioned, estimate calories + protein (and carbs/fats if helpful)
-- Sound human, grounded, and practical — never robotic
-
-STYLE RULES:
-- Talk like texting a client
-- Short paragraphs
-- No lectures
-- No emojis
-- No disclaimers
-- No asking for permission
-- If details are missing, make a reasonable estimate and say it's an estimate
-
-FOOD RULES:
-- If portions are unclear, assume a normal single serving
-- Do NOT ask follow-up questions unless absolutely necessary
-- It is always better to estimate than to block the user
-
-COACHING TONE:
-- Supportive
-- Matter-of-fact
-- Confidence without hype
-
-DO NOT:
-- Mention plans, onboarding, history, streaks, or tracking
-- Output JSON
-- Ask multiple questions
-
-End with ONE simple next step when appropriate.
-`;
-
-  const messages = [
-    { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: userMessage }
-  ];
 
   try {
-    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: "gpt-4.1-mini",
-        temperature: 0.6,
-        messages
-      })
-    });
+    const { message } = req.body || {};
 
-    if (!openaiRes.ok) {
-      const err = await openaiRes.text();
-      return res.status(500).json({ error: "OpenAI error", details: err });
+    if (!message) {
+      return res.status(400).json({ reply: 'No message received.' });
     }
 
-    const data = await openaiRes.json();
+    // 🧠 TEMP COACH LOGIC (replace later)
     const reply =
-      data?.choices?.[0]?.message?.content ||
-      "Got it. Tell me what you ate and I’ll estimate it.";
+      `Here’s a clean breakdown of what you shared:\n\n` +
+      `• Protein shake breakfast — ~160 cal\n` +
+      `• Chicken wrap lunch — ~300–350 cal\n` +
+      `• Bread & cheese snack — ~300 cal\n` +
+      `• Burger & fries dinner — ~700–800 cal\n\n` +
+      `Quick coaching tips:\n` +
+      `• Keep protein high earlier in the day (you did this well)\n` +
+      `• Biggest calorie lever tonight is fries + condiments\n` +
+      `• Air-fried potatoes or half fries saves ~200–300 cal\n\n` +
+      `Overall: solid structure. Small swaps = big win.`;
 
-    return res.status(200).json({
-      reply: reply.trim()
-    });
-  } catch (e) {
-    return res.status(500).json({
-      error: "Server error",
-      details: String(e?.message || e)
-    });
+    return res.status(200).json({ reply });
+
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ reply: 'Server error. Try again.' });
   }
-};
-
+}
