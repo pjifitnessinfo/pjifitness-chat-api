@@ -2441,7 +2441,7 @@ if (customerGid) {
   // ============================================================
   // AUTO MEAL LOG FROM NATURAL CHAT (simple + reliable)
   // ============================================================
-  if (customerGid && userMessage) {
+  if (customerGid && userMessage && !isExplicitMealAdjustment(userMessage)) {
     try {
       const foodText = extractFoodLikeText(userMessage);
 
