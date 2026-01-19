@@ -1553,6 +1553,15 @@ function detectMealCorrection(userMsg) {
   const t = userMsg.toLowerCase();
   return /\b(wrong|incorrect|actually|should be|not right|label|nutrition label|it’s|its)\b/.test(t) || /\b(\d{1,4})\s*(cal|cals|calories|kcal)\b/.test(t);
 }
+function isExplicitMealAdjustment(text) {
+  if (!text || typeof text !== "string") return false;
+  const t = text.toLowerCase();
+
+  return (
+    /\b(adjust|actually|correction|wrong|incorrect|should be|it was|its)\b/.test(t) &&
+    /\b(\d{2,4})\s*(cal|cals|calories|kcal|protein|g)\b/.test(t)
+  );
+}
 
 function getLastMealTypeFromLogs(logs, dateKey) {
   if (!Array.isArray(logs) || !dateKey) return null;
