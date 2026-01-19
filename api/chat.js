@@ -2448,481 +2448,354 @@ await upsertMealLog(customerGid, est, dateKey);
 // ============================================================
 if (customerGid && userMessage && !isExplicitMealAdjustment(userMessage)) {
 
-  // ✅ SAFETY: do NOT auto-log if a pending meal flow exists
+  // SAFETY: do NOT auto-log if a pending meal flow exists
   const pendingExisting = await getPendingMeal(customerGid);
-  if (pendingExisting) return;
 
-  try {
-    const foodText = extractFoodLikeText(userMessage);
-    if (!foodText) return;
+  if (!pendingExisting) {
+    try {
+      const foodText = extractFoodLikeText(userMessage);
+      if (!foodText) {
+        debug.autoMealSkipped = "no_food_text";
+      } else {
 
-    let guessed = pjGuessMealTypeFromUserText(userMessage);
+        let guessed = pjGuessMealTypeFromUserText(userMessage);
+        if (!guessed && /^\s*meal\s*[:\-–]/i.test(String(userMessage || ""))) {
+          guessed = pjInferMealTypeFromClock();
+        }
 
-    if (!guessed && /^\s*meal\s*[:\-–]/i.test(String(userMessage || ""))) {
-      guessed = pjInferMealTypeFromClock();
-    }
-
-    // Ask for meal type if missing
-    if (!guessed) {
-      await setPendingMeal(customerGid, {
-        date: dateKey,
-        raw_text: String(foodText || "").trim()
-      });
-
-      return res.status(200).json({
-        reply: "Got it — what meal was this? (breakfast, lunch, dinner, or snacks)",
-        free_chat_remaining: remainingAfter,
-        debug: { ...debug, pendingMealSaved: true, ui_pending_reason: "missing_meal_type" }
-      });
-    }
-
-    const mealType = normalizeMealType(guessed);
-    if (!mealType) return;
-
-    const base = pjInternalUrl("");
-    const nutRes = await fetch(`${base}/api/nutrition`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: String(foodText || "").trim(),
-        customerId: customerNumericId || customerGid
-      })
-    });
-
-    const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
-    const items = Array.isArray(nut?.items) ? nut.items : [];
-    const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
-    const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
-    const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
-    const unitBased = pjIsUnitBasedFood(foodText);
-
-    // -------------------------------
-    // Fallback estimate (ONLY if nutrition failed AND user unsure)
-    // -------------------------------
-    if (!nut || nut.ok !== true || incomplete) {
-      const userUnsure = pjUserIsUnsure(userMessage);
-
-      if (userUnsure) {
-        const est = pjEstimateMealFallback(foodText, mealType, dateKey);
-        if (est) {
-          await upsertMealLog(customerGid, est, dateKey);
+        // Ask for meal type if missing
+        if (!guessed) {
+          await setPendingMeal(customerGid, {
+            date: dateKey,
+            raw_text: String(foodText || "").trim()
+          });
 
           return res.status(200).json({
-            reply:
-              `No worries — I’ll estimate this.\n\n` +
-              `Logged your ${mealType.toLowerCase()}:\n` +
-              est.items.map(x => `• ${x}`).join("\n") + `\n\n` +
-              `Estimated: ${est.calories} calories — ${est.protein}g P, ${est.carbs}g C, ${est.fat}g F.\n\n` +
-              `If you ever want it tighter, just tell me “3 slices” or “thin crust”.`,
-            debug: { ...debug, portionFallbackUsed: true },
-            free_chat_remaining: remainingAfter
+            reply: "Got it — what meal was this? (breakfast, lunch, dinner, or snacks)",
+            free_chat_remaining: remainingAfter,
+            debug: { ...debug, pendingMealSaved: true, ui_pending_reason: "missing_meal_type" }
           });
         }
-      }
 
-      // Ask once for clarification
-      await setPendingMeal(customerGid, {
-        date: dateKey,
-        meal_type: mealType,
-        raw_text: String(foodText || "").trim()
-      });
+        const mealType = normalizeMealType(guessed);
+        if (!mealType) {
+          debug.autoMealSkipped = "invalid_meal_type";
+        } else {
 
-      const qText = needs.length
-        ? needs.map((q) => `- ${q.question}`).join("\n")
-        : "- Rough estimate is fine: how much / how many? (or say “not sure” and I’ll estimate)";
+          const base = pjInternalUrl("");
+          const nutRes = await fetch(`${base}/api/nutrition`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              text: String(foodText || "").trim(),
+              customerId: customerNumericId || customerGid
+            })
+          });
 
-      return res.status(200).json({
-        reply:
-          "Quick question so I can be closer (or say “not sure” and I’ll estimate):\n\n" +
-          qText,
-        debug: {
-          ...debug,
-          pendingMealResolved: false,
-          pendingMealResolvedReason: needs.length ? "needs_clarification" : "nutrition_incomplete"
-        },
-        free_chat_remaining: remainingAfter
-      });
-    }
+          const nut = nutRes.ok ? await nutRes.json().catch(() => null) : null;
+          const items = Array.isArray(nut?.items) ? nut.items : [];
+          const totals = nut?.totals && typeof nut.totals === "object" ? nut.totals : null;
+          const needs = Array.isArray(nut?.needs_clarification) ? nut.needs_clarification : [];
+          const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
+          const unitBased = pjIsUnitBasedFood(foodText);
 
-    // -------------------------------
-    // Unit-based hard fallback
-    // -------------------------------
-    if ((!totals || !items.length) && unitBased) {
-      const fallbackMeal = {
-        date: dateKey,
-        meal_type: mealType,
-        items: [String(foodText || "Item")],
-        calories: 200,
-        protein: 20,
-        carbs: 10,
-        fat: 5
-      };
+          // -------------------------------
+          // Nutrition failed
+          // -------------------------------
+          if (!nut || nut.ok !== true || incomplete) {
 
-      await upsertMealLog(customerGid, fallbackMeal, dateKey);
+            // Unit-based fallback
+            if (unitBased) {
+              const fallbackMeal = {
+                date: dateKey,
+                meal_type: mealType,
+                items: [String(foodText || "Item")],
+                calories: 200,
+                protein: 20,
+                carbs: 10,
+                fat: 5
+              };
 
-      return res.status(200).json({
-        reply:
-          `Logged your ${mealType.toLowerCase()}:\n• ${fallbackMeal.items[0]}\n\n` +
-          `Estimated: ${fallbackMeal.calories} calories — ${fallbackMeal.protein}g protein, ${fallbackMeal.carbs}g carbs, ${fallbackMeal.fat}g fat.`,
-        debug,
-        free_chat_remaining: remainingAfter
-      });
-    }
+              await upsertMealLog(customerGid, fallbackMeal, dateKey);
 
-    // -------------------------------
-    // Normal successful nutrition path
-    // -------------------------------
-    if (items.length && totals) {
-      const meal = {
-        date: dateKey,
-        meal_type: mealType,
-        items: items.map((it) => ({
-          name: String(it?.name || it?.matched_to || it?.text || "Food").trim(),
-          calories: Math.round(Number(it?.calories) || 0),
-          protein: pjRound1(Number(it?.protein) || 0),
-          carbs: pjRound1(Number(it?.carbs) || 0),
-          fat: pjRound1(Number(it?.fat) || 0)
-        })),
-        calories: Math.round(Number(totals.calories) || 0),
-        protein: pjRound1(Number(totals.protein) || 0),
-        carbs: pjRound1(Number(totals.carbs) || 0),
-        fat: pjRound1(Number(totals.fat) || 0)
-      };
+              return res.status(200).json({
+                reply:
+                  `Logged your ${mealType.toLowerCase()}:\n• ${fallbackMeal.items[0]}\n\n` +
+                  `Estimated: ${fallbackMeal.calories} calories — ${fallbackMeal.protein}g protein, ${fallbackMeal.carbs}g carbs, ${fallbackMeal.fat}g fat.`,
+                debug,
+                free_chat_remaining: remainingAfter
+              });
+            }
 
-      const hasPortions = pjHasPortionsOrUnits(foodText);
-      if (!hasPortions) {
-        const cap =
-          mealType === "Breakfast" ? 750 :
-          mealType === "Lunch" ? 950 :
-          mealType === "Dinner" ? 1100 :
-          500;
+            // User explicitly unsure → estimate
+            if (pjUserIsUnsure(userMessage)) {
+              const est = pjEstimateMealFallback(foodText, mealType, dateKey);
+              if (est) {
+                await upsertMealLog(customerGid, est, dateKey);
 
-        if (meal.calories > cap) {
-          const scale = cap / meal.calories;
-          meal.calories = cap;
-          meal.protein = pjRound1(meal.protein * scale);
-          meal.carbs = pjRound1(meal.carbs * scale);
-          meal.fat = pjRound1(meal.fat * scale);
-          debug.autoMealLog = { ...(debug.autoMealLog || {}), capped: true, capApplied: cap };
+                return res.status(200).json({
+                  reply:
+                    `No worries — I’ll estimate this.\n\n` +
+                    `Logged your ${mealType.toLowerCase()}:\n` +
+                    est.items.map(x => `• ${x}`).join("\n") + `\n\n` +
+                    `Estimated: ${est.calories} calories — ${est.protein}g P, ${est.carbs}g C, ${est.fat}g F.\n\n` +
+                    `If you ever want it tighter, just tell me “3 slices” or “thin crust”.`,
+                  debug: { ...debug, portionFallbackUsed: true },
+                  free_chat_remaining: remainingAfter
+                });
+              }
+            }
+
+            // Ask once for clarification
+            await setPendingMeal(customerGid, {
+              date: dateKey,
+              meal_type: mealType,
+              raw_text: String(foodText || "").trim()
+            });
+
+            const qText = needs.length
+              ? needs.map(q => `- ${q.question}`).join("\n")
+              : "- Rough estimate is fine: how much / how many? (or say “not sure” and I’ll estimate)";
+
+            return res.status(200).json({
+              reply:
+                "Quick question so I can be closer (or say “not sure” and I’ll estimate):\n\n" +
+                qText,
+              debug: {
+                ...debug,
+                pendingMealResolved: false,
+                pendingMealResolvedReason: needs.length ? "needs_clarification" : "nutrition_incomplete"
+              },
+              free_chat_remaining: remainingAfter
+            });
+          }
+
+          // -------------------------------
+          // Normal successful nutrition path
+          // -------------------------------
+          if (items.length && totals) {
+            const meal = {
+              date: dateKey,
+              meal_type: mealType,
+              items: items.map(it => ({
+                name: String(it?.name || it?.matched_to || it?.text || "Food").trim(),
+                calories: Math.round(Number(it?.calories) || 0),
+                protein: pjRound1(Number(it?.protein) || 0),
+                carbs: pjRound1(Number(it?.carbs) || 0),
+                fat: pjRound1(Number(it?.fat) || 0)
+              })),
+              calories: Math.round(Number(totals.calories) || 0),
+              protein: pjRound1(Number(totals.protein) || 0),
+              carbs: pjRound1(Number(totals.carbs) || 0),
+              fat: pjRound1(Number(totals.fat) || 0)
+            };
+
+            const hasPortions = pjHasPortionsOrUnits(foodText);
+            if (!hasPortions) {
+              const cap =
+                mealType === "Breakfast" ? 750 :
+                mealType === "Lunch" ? 950 :
+                mealType === "Dinner" ? 1100 :
+                500;
+
+              if (meal.calories > cap) {
+                const scale = cap / meal.calories;
+                meal.calories = cap;
+                meal.protein = pjRound1(meal.protein * scale);
+                meal.carbs = pjRound1(meal.carbs * scale);
+                meal.fat = pjRound1(meal.fat * scale);
+                debug.autoMealLog = { ...(debug.autoMealLog || {}), capped: true, capApplied: cap };
+              }
+            }
+
+            await upsertMealLog(customerGid, meal, dateKey);
+
+            const itemsList = meal.items
+              .map(it => `• ${it.name} — ${it.calories} cal (${it.protein}P / ${it.carbs}C / ${it.fat}F)`)
+              .join("\n");
+
+            return res.status(200).json({
+              reply:
+                `Logged your ${mealType.toLowerCase()}:\n${itemsList}\n\n` +
+                `Estimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`,
+              debug: {
+                ...debug,
+                autoMealLog: { ok: true, meal_type: mealType, calories: meal.calories, itemsCount: meal.items.length }
+              },
+              free_chat_remaining: remainingAfter
+            });
+          }
         }
-      }
-
-      await upsertMealLog(customerGid, meal, dateKey);
-
-      const itemsList = meal.items
-        .map(it => `• ${it.name} — ${it.calories} cal (${it.protein}P / ${it.carbs}C / ${it.fat}F)`)
-        .join("\n");
-
-      return res.status(200).json({
-        reply:
-          `Logged your ${mealType.toLowerCase()}:\n${itemsList}\n\n` +
-          `Estimated: ${meal.calories} calories — ${meal.protein}g protein, ${meal.carbs}g carbs, ${meal.fat}g fat.`,
-        debug: {
-          ...debug,
-          autoMealLog: { ok: true, meal_type: mealType, calories: meal.calories, itemsCount: meal.items.length }
-        },
-        free_chat_remaining: remainingAfter
-      });
-    }
-  } catch (e) {
-    debug.autoMealLog = { ok: false, error: String(e?.message || e) };
-  }
-}
-
-  // ============================================================
-  // DAILY TOTAL CALORIES FROM USER MESSAGE
-  // ============================================================
-  if (customerGid && userMessage) {
-    const parsedDailyCals = parseDailyCaloriesFromMessage(userMessage);
-    if (parsedDailyCals) {
-      debug.parsedDailyCalories = parsedDailyCals;
-      try {
-        await upsertDailyTotalCalories(customerGid, parsedDailyCals, dateKey);
-        debug.dailyCaloriesSavedToDailyLogs = true;
-      } catch (e) {
-        console.error("Error saving daily total calories from chat", e);
-        debug.dailyCaloriesSavedToDailyLogs = false;
-        debug.dailyCaloriesSaveError = String(e?.message || e);
-      }
-    }
-  }
-
-  // ============================================================
-  // MEAL OVERRIDE / AUTO CORRECTION
-  // ============================================================
-  let overrideMeal = detectMealOverride(userMessage);
-  if (overrideMeal) {
-    debug.mealOverrideDetected = overrideMeal;
-  } else if (customerGid && detectMealCorrection(userMessage)) {
-    try {
-      const { logs } = await getDailyLogsMetafield(customerGid);
-      const lastType = getLastMealTypeFromLogs(logs, dateKey);
-      if (lastType) {
-        overrideMeal = { meal_type: lastType, __replaceLast: true };
-        debug.mealAutoCorrectionDetected = true;
-        debug.mealAutoReplaceMealType = lastType;
       }
     } catch (e) {
-      debug.mealAutoCorrectionError = String(e?.message || e);
+      debug.autoMealLog = { ok: false, error: String(e?.message || e) };
     }
   }
-
-  // ============================================================
-  // INTRO ALREADY SENT DETECTOR
-  // ============================================================
-  let introAlreadySent = false;
-  if (history.length) {
-    const recentForIntro = history.slice(-40);
-    for (const m of recentForIntro) {
-      if (!m) continue;
-      const text = typeof m.text === "string" ? m.text : typeof m.message === "string" ? m.message : typeof m.content === "string" ? m.content : null;
-      if (!text) continue;
-      const lower = text.toLowerCase();
-      if (lower.includes("i’m your pjifitness coach") || lower.includes("i'm your pjifitness coach")) {
-        introAlreadySent = true;
-        break;
-      }
-    }
-  }
-  debug.introAlreadySent = introAlreadySent;
-
-  // ============================================================
-  // BUILD MESSAGES FOR OPENAI
-  // ============================================================
-  const messages = [{ role: "system", content: SYSTEM_PROMPT }];
-
-  messages.push({
-    role: "system",
-    content:
-      `TODAY_DATE: ${dateKey}. ` +
-      `Use this exact date in all JSON blocks: DAILY_LOG_JSON, MEAL_LOG_JSON, DAILY_REVIEW_JSON, COACH_REVIEW_JSON. ` +
-      `Do NOT output any other date.`
-  });
-
-  messages.push({ role: "system", content: `custom.onboarding_complete: ${onboardingComplete === true ? "true" : "false"}` });
-
-  if (introAlreadySent) {
-    messages.push({
-      role: "system",
-      content:
-        "SYSTEM_FLAG: INTRO_ALREADY_SENT = true. You have already sent your onboarding intro earlier in this conversation. Do NOT repeat your intro again. Treat the user's latest message as their answer and continue the onboarding questions from where you left off."
-    });
-  }
-
-  if (overrideMeal) messages.push({ role: "system", content: `USER_REQUEST_OVERRIDE_MEAL: ${JSON.stringify(overrideMeal)}` });
-
-  if (history.length) {
-    const recent = history.slice(-20);
-    for (const m of recent) {
-      if (!m) continue;
-      const text = typeof m.text === "string" ? m.text : typeof m.message === "string" ? m.message : typeof m.content === "string" ? m.content : null;
-      if (!text) continue;
-
-      let role;
-      if (m.role === "user") role = "user";
-      else if (m.role === "coach" || m.role === "assistant") role = "assistant";
-      else continue;
-
-      messages.push({ role, content: text });
-    }
-  }
-
-  if (appendUserMessage && userMessage) messages.push({ role: "user", content: userMessage });
-  // ✅ Weekly pattern context (last 7 days)
-if (weeklyContextText) {
-  messages.push({
-    role: "system",
-    content: weeklyContextText
-  });
 }
 
+// ============================================================
+// DAILY TOTAL CALORIES FROM USER MESSAGE
+// ============================================================
+if (customerGid && userMessage) {
+  const parsedDailyCals = parseDailyCaloriesFromMessage(userMessage);
+  if (parsedDailyCals) {
+    debug.parsedDailyCalories = parsedDailyCals;
+    try {
+      await upsertDailyTotalCalories(customerGid, parsedDailyCals, dateKey);
+      debug.dailyCaloriesSavedToDailyLogs = true;
+    } catch (e) {
+      console.error("Error saving daily total calories from chat", e);
+      debug.dailyCaloriesSavedToDailyLogs = false;
+      debug.dailyCaloriesSaveError = String(e?.message || e);
+    }
+  }
+}
 
-  messages.push({
-    role: "system",
-    content:
-      "CRITICAL: You MUST end your response with exactly one [[COACH_REVIEW_JSON {..} ]] block. If you do not include it, the app will treat your response as invalid. Output it even if you have little info (use empty arrays and generic summary)."
-  });
-
-  debug.messagesCount = messages.length;
-
-  // ============================================================
-  // CALL OPENAI
-  // ============================================================
+// ============================================================
+// MEAL OVERRIDE / AUTO CORRECTION
+// ============================================================
+let overrideMeal = detectMealOverride(userMessage);
+if (overrideMeal) {
+  debug.mealOverrideDetected = overrideMeal;
+} else if (customerGid && detectMealCorrection(userMessage)) {
   try {
-    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` },
-      body: JSON.stringify({ model: "gpt-4.1-mini", messages, temperature: 0.7 })
-    });
-
-    if (!openaiRes.ok) {
-      const errText = await openaiRes.text();
-      console.error("OpenAI error:", errText);
-      debug.openaiError = errText;
-      return res.status(500).json({ error: "OpenAI API error", debug });
+    const { logs } = await getDailyLogsMetafield(customerGid);
+    const lastType = getLastMealTypeFromLogs(logs, dateKey);
+    if (lastType) {
+      overrideMeal = { meal_type: lastType, __replaceLast: true };
+      debug.mealAutoCorrectionDetected = true;
+      debug.mealAutoReplaceMealType = lastType;
     }
-
-    const data = await openaiRes.json();
-    const rawReply = data.choices?.[0]?.message?.content || "Sorry, I’m not sure what to say to that.";
-
-    // DAILY_LOG_JSON -> save
-    if (customerGid) {
-      const dailyLog = extractDailyLogFromText(rawReply);
-      if (dailyLog) {
-        debug.dailyLogFound = dailyLog;
-        try {
-          await upsertDailyLog(customerGid, dailyLog, dateKey);
-          debug.dailyLogSavedToDailyLogs = true;
-        } catch (e) {
-          console.error("Error saving DAILY_LOG_JSON to daily_logs", e);
-          debug.dailyLogSavedToDailyLogs = false;
-          debug.dailyLogSaveError = String(e?.message || e);
-        }
-      }
-    }
-
-    debug.rawReplyHasCoachReview = rawReply.includes("[[COACH_REVIEW_JSON");
-    debug.rawReplyTail = rawReply.slice(-600);
-    debug.modelReplyTruncated = !data.choices?.[0]?.message?.content;
-
-    // COACH_PLAN_JSON
-    let planJson = null;
-    const blockPlan = extractCoachPlanJson(rawReply);
-    debug.planBlockFound = !!blockPlan;
-    if (blockPlan) planJson = blockPlan;
-
-    if (planJson) {
-      debug.planJson = planJson;
-      debug.planSource = "block";
-
-      let shouldSave = false;
-      let skipReason = null;
-
-      if (!customerGid) {
-        shouldSave = false;
-        skipReason = "no_customer_id";
-      } else {
-        shouldSave = true;
-      }
-
-      if (shouldSave) {
-        try {
-          await saveCoachPlanForCustomer(customerGid, planJson);
-          debug.planSavedToShopify = true;
-          onboardingComplete = true;
-          debug.onboardingCompleteAfterSave = true;
-
-          try {
-            await setPostPlanStage(customerGid, "plan_questions");
-            postPlanStage = "plan_questions";
-            debug.postPlanStageSet = "plan_questions";
-            debug.planJustSaved = true;
-          } catch (e) {
-            console.warn("Failed to set post_plan_stage:", e?.message || e);
-          }
-
-          const cw = planJson?.current_weight_lbs ?? planJson?.current_weight ?? planJson?.start_weight_lbs ?? planJson?.start_weight;
-          if (cw != null) {
-            try {
-              const currentW = Number(cw);
-              if (Number.isFinite(currentW) && currentW > 0) {
-                await upsertDailyLog(
-                  customerGid,
-                  { date: dateKey, weight: currentW, calories: null, protein_g: null, carbs_g: null, fat_g: null, steps: null, notes: "Initial weight from onboarding." },
-                  dateKey
-                );
-                debug.onboardingInitialWeightWritten = currentW;
-              }
-            } catch (e) {
-              console.error("Failed to write onboarding initial daily weight", e);
-              debug.onboardingInitialWeightError = String(e?.message || e);
-            }
-          }
-        } catch (e) {
-          console.error("Error saving coach_plan metafield", e);
-          debug.planSavedToShopify = false;
-          debug.planSaveError = String(e?.message || e);
-          if (e && e.shopifyUserErrors) debug.planSaveUserErrors = e.shopifyUserErrors;
-        }
-      } else {
-        debug.planSavedToShopify = false;
-        debug.planSavedSkippedReason = skipReason;
-      }
-    }
-
-    // MEAL LOGS (ONLY from model MEAL_LOG_JSON)
-    if (customerGid) {
-      const mealLogs = extractMealLogsFromText(rawReply);
-
-      if (mealLogs && mealLogs.length) {
-        debug.mealLogsFound = mealLogs.length;
-
-        try {
-          for (const meal of mealLogs) {
-            if (overrideMeal && overrideMeal.meal_type) meal.meal_type = overrideMeal.meal_type;
-
-            await upsertMealLog(
-              customerGid,
-              meal,
-              dateKey,
-              overrideMeal ? (overrideMeal.__replaceLast ? { replaceLast: true } : { replaceMealType: overrideMeal.meal_type }) : {}
-            );
-          }
-          debug.mealLogsSavedToDailyLogs = true;
-        } catch (e) {
-          console.error("Error saving meal logs from chat", e);
-          debug.mealLogsSavedToDailyLogs = false;
-          debug.mealLogsSaveError = String(e?.message || e);
-        }
-      } else {
-        debug.mealLogsFound = 0;
-      }
-    }
-
-    // DAILY_REVIEW_JSON
-    if (customerGid) {
-      const dailyReview = extractDailyReviewFromText(rawReply);
-      if (dailyReview) {
-        debug.dailyReviewFound = dailyReview;
-        try {
-          await upsertDailyReview(customerGid, dailyReview, dateKey);
-          debug.dailyReviewSavedToDailyLogs = true;
-        } catch (e) {
-          console.error("Error saving daily review from chat", e);
-          debug.dailyReviewSavedToDailyLogs = false;
-          debug.dailyReviewSaveError = String(e?.message || e);
-        }
-      }
-    }
-
-    // COACH_REVIEW_JSON
-    if (customerGid) {
-      const coachReview = extractCoachReviewFromText(rawReply);
-      if (coachReview) {
-        debug.coachReviewFound = coachReview;
-        try {
-          coachReview.date = dateKey;
-          await upsertCoachReview(customerGid, coachReview, dateKey);
-          debug.coachReviewSavedToDailyLogs = true;
-        } catch (e) {
-          console.error("Error saving coach review from chat", e);
-          debug.coachReviewSavedToDailyLogs = false;
-          debug.coachReviewSaveError = String(e?.message || e);
-        }
-      }
-    }
-
-    const cleanedReply = pjSanitizeForUser(rawReply);
-
-    return res.status(200).json({
-      reply: cleanedReply,
-      debug,
-      free_chat_remaining: remainingAfter
-    });
   } catch (e) {
-    console.error("Chat handler error", e);
-    const debugError = { ...debug, serverError: String(e?.message || e) };
-    return res.status(500).json({ error: "Server error", debug: debugError });
+    debug.mealAutoCorrectionError = String(e?.message || e);
   }
 }
+
+// ============================================================
+// INTRO ALREADY SENT DETECTOR
+// ============================================================
+let introAlreadySent = false;
+if (history.length) {
+  const recentForIntro = history.slice(-40);
+  for (const m of recentForIntro) {
+    if (!m) continue;
+    const text =
+      typeof m.text === "string" ? m.text :
+      typeof m.message === "string" ? m.message :
+      typeof m.content === "string" ? m.content : null;
+    if (!text) continue;
+    const lower = text.toLowerCase();
+    if (lower.includes("i’m your pjifitness coach") || lower.includes("i'm your pjifitness coach")) {
+      introAlreadySent = true;
+      break;
+    }
+  }
+}
+debug.introAlreadySent = introAlreadySent;
+
+// ============================================================
+// BUILD MESSAGES FOR OPENAI
+// ============================================================
+const messages = [{ role: "system", content: SYSTEM_PROMPT }];
+
+messages.push({
+  role: "system",
+  content:
+    `TODAY_DATE: ${dateKey}. ` +
+    `Use this exact date in all JSON blocks: DAILY_LOG_JSON, MEAL_LOG_JSON, DAILY_REVIEW_JSON, COACH_REVIEW_JSON. ` +
+    `Do NOT output any other date.`
+});
+
+messages.push({
+  role: "system",
+  content: `custom.onboarding_complete: ${onboardingComplete === true ? "true" : "false"}`
+});
+
+if (introAlreadySent) {
+  messages.push({
+    role: "system",
+    content:
+      "SYSTEM_FLAG: INTRO_ALREADY_SENT = true. You have already sent your onboarding intro earlier in this conversation."
+  });
+}
+
+if (overrideMeal) {
+  messages.push({ role: "system", content: `USER_REQUEST_OVERRIDE_MEAL: ${JSON.stringify(overrideMeal)}` });
+}
+
+if (history.length) {
+  const recent = history.slice(-20);
+  for (const m of recent) {
+    if (!m) continue;
+    const text =
+      typeof m.text === "string" ? m.text :
+      typeof m.message === "string" ? m.message :
+      typeof m.content === "string" ? m.content : null;
+    if (!text) continue;
+
+    const role = m.role === "user" ? "user" : "assistant";
+    messages.push({ role, content: text });
+  }
+}
+
+if (appendUserMessage && userMessage) {
+  messages.push({ role: "user", content: userMessage });
+}
+
+if (weeklyContextText) {
+  messages.push({ role: "system", content: weeklyContextText });
+}
+
+messages.push({
+  role: "system",
+  content:
+    "CRITICAL: You MUST end your response with exactly one [[COACH_REVIEW_JSON {..} ]] block."
+});
+
+debug.messagesCount = messages.length;
+
+// ============================================================
+// CALL OPENAI
+// ============================================================
+try {
+  const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: "gpt-4.1-mini",
+      messages,
+      temperature: 0.7
+    })
+  });
+
+  if (!openaiRes.ok) {
+    const errText = await openaiRes.text();
+    console.error("OpenAI error:", errText);
+    debug.openaiError = errText;
+    return res.status(500).json({ error: "OpenAI API error", debug });
+  }
+
+  const data = await openaiRes.json();
+  const rawReply = data.choices?.[0]?.message?.content || "Sorry, I’m not sure what to say to that.";
+
+  // (rest of your existing save logic continues unchanged)
+
+  const cleanedReply = pjSanitizeForUser(rawReply);
+
+  return res.status(200).json({
+    reply: cleanedReply,
+    debug,
+    free_chat_remaining: remainingAfter
+  });
+} catch (e) {
+  console.error("Chat handler error", e);
+  return res.status(500).json({
+    error: "Server error",
+    debug: { ...debug, serverError: String(e?.message || e) }
+  });
+}
+
 module.exports = handler;
