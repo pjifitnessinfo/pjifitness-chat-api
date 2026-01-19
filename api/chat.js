@@ -2475,16 +2475,12 @@ if (customerGid) {
         const incomplete = nut?.incomplete === true || needs.length > 0 || !totals;
         const unitBased = pjIsUnitBasedFood(foodText);
 
-        if (!nut || nut.ok !== true || incomplete) {
-  // ✅ If user is unsure, STOP asking and estimate like ChatGPT
-  const userUnsure = pjUserIsUnsure(userMessage);
+       const est = pjEstimateMealFallback(
+  `${String(pending.raw_text || "").trim()} ${String(userMessage || "").trim()}`,
+  normalizeMealType(pending.meal_type),
+  dateKey
+);
 
-  if (userUnsure) {
-    const est = pjEstimateMealFallback(
-      `${String(pending.raw_text || "").trim()} ${String(userMessage || "").trim()}`,
-      mt,
-      dateKey
-    );
 
     if (est) {
       await setPendingMeal(customerGid, null);
