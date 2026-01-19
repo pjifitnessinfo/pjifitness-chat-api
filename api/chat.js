@@ -2271,19 +2271,24 @@ if (customerGid) {
         const unitBased = pjIsUnitBasedFood(pending.raw_text);
 
        if (!nut || nut.ok !== true || incomplete) {
-  const est = estimateFallbackNutrition(items);
+ const est = pjEstimateMealFallback(
+  String(pending.raw_text || "").trim(),
+  mt,
+  dateKey
+);
 
+if (!est) {
   await setPendingMeal(customerGid, null);
-
-  await upsertMealLog(customerGid, {
-    date: dateKey,
-    meal_type: mt,
-    items: items.map(i => i.name || i),
-    calories: est.calories,
-    protein: est.protein,
-    carbs: est.carbs,
-    fat: est.fat
+  return res.status(200).json({
+    reply: "I couldn’t confidently estimate that — can you add a bit more detail?",
+    free_chat_remaining: remainingAfter,
+    debug
   });
+}
+
+await setPendingMeal(customerGid, null);
+await upsertMealLog(customerGid, est, dateKey);
+
 
   return res.status(200).json({
     reply:
