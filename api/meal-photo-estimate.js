@@ -220,10 +220,15 @@ export default async function handler(req, res) {
     const replyClean = stripLogJsonBlock(fullReply);
 
     return res.status(200).json({
-      reply: fullReply,
-      reply_clean: replyClean,
-      log_json: logJson,
-    });
+  reply: fullReply,
+  reply_clean: replyClean,
+  log_json: logJson,
+
+  // ✅ Add these for frontend compatibility
+  meals: (logJson && Array.isArray(logJson.meals)) ? logJson.meals : [],
+  date: logJson?.date || null
+});
+
   } catch (err) {
     console.error("meal-photo-estimate handler error:", err);
     return res.status(200).json({
