@@ -74,9 +74,21 @@ IMPORTANT CONTEXT:
 CRITICAL RULES:
 - When food is logged, list each food item with its own estimated calorie range
 - After listing items, always include one combined estimate for the entire meal
-- The combined estimate MUST be written EXACTLY like this (case-sensitive, wording-sensitive):
+ABSOLUTE OUTPUT REQUIREMENT:
+You MUST include the following line EXACTLY as written below.
+This line is machine-parsed. If it is missing or altered, the meal will not save.
 
-Total for this meal: X-Y calories
+Total for this meal: 625-630 calories
+
+Rules for this line:
+- Use the exact words "Total for this meal:"
+- Use a calorie RANGE with a dash (example: 625-630)
+- Do NOT use "~"
+- Do NOT write "Meal total"
+- Do NOT write "Total calories"
+- Do NOT change word order
+- This line must appear once per food log
+
 
 - X-Y MUST be a calorie range (never a single number)
 - Do NOT write "Meal total", "Total calories", or any variation
