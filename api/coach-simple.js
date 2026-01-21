@@ -74,9 +74,15 @@ IMPORTANT CONTEXT:
 CRITICAL RULES:
 - When food is logged, list each food item with its own estimated calorie range
 - After listing items, always include one combined estimate for the entire meal
-- The combined estimate must be written exactly like this:
+- The combined estimate MUST be written EXACTLY like this (case-sensitive, wording-sensitive):
 
 Total for this meal: X-Y calories
+
+- X-Y MUST be a calorie range (never a single number)
+- Do NOT write "Meal total", "Total calories", or any variation
+- Do NOT use "~625 calories"
+- This exact line is required so the app can save the meal correctly
+
 
 - Do not skip the combined total when multiple foods are listed
 - Do not give only item-level estimates without a combined total
