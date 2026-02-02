@@ -2,9 +2,9 @@ export const config = {
   api: { bodyParser: false }
 };
 
-// -----------------------------
+// =============================
 // Helpers
-// -----------------------------
+// =============================
 function safeJsonParse(str) {
   try { return JSON.parse(str); } catch { return null; }
 }
@@ -13,34 +13,14 @@ function normalizeText(s) {
   return String(s || "").trim();
 }
 
-function detectIntent(message) {
-  const t = normalizeText(message);
-  const low = t.toLowerCase();
-
-  if (/^(hi|hey|hello|yo|sup|test)\b[\s\!\.\?]*$/i.test(t)) return "greeting";
-
-  const correctionSignals =
-    /\b(adjust|change|correct|fix|meant|actually|was lower|was higher|not that much|too high|too low)\b/i.test(low);
-
-  const hasMealWords = /\b(breakfast|lunch|dinner|snack|meal)\b/i.test(low);
-  const hasAteWords = /\b(i had|i ate|ate|have had|for breakfast|for lunch|for dinner)\b/i.test(low);
-  const hasQtyUnits = /\b(\d+(\.\d+)?\s?(g|gram|grams|oz|ounce|ounces|lb|lbs|cups?|tbsp|tsp|ml|cal|kcal))\b/i.test(t);
-
-  const hasFoodNouns =
-    /\b(eggs?|toast|bread|rice|pasta|chicken|beef|burger|shake|protein bar|bar|pizza|salad|milk|almond milk|cheese|yogurt|fries|potato|oatmeal|banana|apple)\b/i.test(low);
-
-  if (correctionSignals) return "meal_correction";
-
-  const looksLikeFoodLog = hasMealWords || hasAteWords || hasQtyUnits || hasFoodNouns;
-  if (looksLikeFoodLog) return "food_log";
-
-  return "coaching_question";
-}
-
 function sanitizeHistory(history) {
   if (!Array.isArray(history)) return [];
   return history
-    .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+    .filter(m =>
+      m &&
+      (m.role === "user" || m.role === "assistant") &&
+      typeof m.content === "string"
+    )
     .slice(-20);
 }
 
@@ -48,94 +28,85 @@ function ensureClosingLine(text) {
   let s = String(text || "").trim();
   if (!s) return s;
 
-  const lines = s.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const ln = lines[i].trim();
-    if (/^For now,\s*just\s*focus\s*on/i.test(ln)) {
-      if (!/[.!?]$/.test(ln)) lines[i] = ln + ".";
-      return lines.join("\n");
-    }
-  }
-
+  if (/For now,\s*just\s*focus\s*on/i.test(s)) return s;
   return s + "\n\nFor now, just focus on your next meal choice and one small win today.";
 }
 
-// -----------------------------
-// Prompts
-// -----------------------------
+// =============================
+// Intent Detection (V1 ONLY)
+// =============================
+function detectIntent(message) {
+  const t = normalizeText(message);
+  const low = t.toLowerCase();
+
+  if (/^(hi|hey|hello|yo|sup|test)\b[\s!.?]*$/i.test(t)) return "greeting";
+
+  if (
+    /\b(adjust|change|correct|fix|meant|actually|too high|too low|was higher|was lower)\b/i.test(low)
+  ) {
+    return "meal_correction";
+  }
+
+  const looksLikeFood =
+    /\b(i ate|i had|ate|for breakfast|for lunch|for dinner)\b/i.test(low) ||
+    /\b(eggs?|toast|rice|pasta|chicken|beef|burger|shake|protein bar|pizza|salad|milk|cheese|yogurt|fries|potato|oatmeal|banana|apple)\b/i.test(low) ||
+    /\b(\d+(\.\d+)?\s?(g|oz|lb|cups?|tbsp|tsp|ml|cal))\b/i.test(t);
+
+  if (looksLikeFood) return "food_log";
+
+  return "coaching_question";
+}
+
+// =============================
+// Prompts (V1)
+// =============================
 const FOOD_LOG_PROMPT = `
 You are PJ Coach, a practical fat-loss coach.
 
-IMPORTANT CONTEXT:
-- You estimate calories conversationally
-- You do NOT save or overwrite meals
-- The meal log UI is the source of truth
+RULES:
+- Estimate calories conversationally
+- Do NOT save meals (UI does)
+- Itemize foods with calorie ranges
+- Always include ONE combined total using EXACT format below
 
-CRITICAL RULES:
-- When food is logged, list each food item with its own estimated calorie range
-- After listing items, always include one combined estimate for the entire meal
-ABSOLUTE OUTPUT REQUIREMENT:
-You MUST include the following line EXACTLY as written below.
-This line is machine-parsed. If it is missing or altered, the meal will not save.
-
+ABSOLUTE REQUIREMENT (DO NOT CHANGE):
 Total for this meal: 625-630 calories
 
-Rules for this line:
-- Use the exact words "Total for this meal:"
-- Use a calorie RANGE with a dash (example: 625-630)
-- Do NOT use "~"
-- Do NOT write "Meal total"
-- Do NOT write "Total calories"
-- Do NOT change word order
-- This line must appear once per food log
+- Use a RANGE with a dash
+- Do not use "~"
+- Do not rename the line
+- Include this once per meal
 
-
-- X-Y MUST be a calorie range (never a single number)
-- Do NOT write "Meal total", "Total calories", or any variation
-- Do NOT use "~625 calories"
-- This exact line is required so the app can save the meal correctly
-
-
-- Do not skip the combined total when multiple foods are listed
-- Do not give only item-level estimates without a combined total
-- Daily totals are handled by the app UI, not you
-
-COACHING RULES:
-- Always give 1-2 realistic lower-calorie swaps with estimated savings
-- If the user wants to change or correct a logged meal, tell them to edit it in the meal log
-
-FORMAT:
-1) Acknowledge
-2) Itemized breakdown
-3) Total for this meal
-4) Coaching insight
-5) 1-2 lower-cal swaps
-6) End with "For now, just focus on ..."
+COACHING:
+- Give 1–2 realistic lower-cal swaps
+- End with "For now, just focus on ..."
 `;
 
 const COACHING_PROMPT = `
 You are PJ Coach — calm, practical, supportive.
 
 RULES:
-- Don’t lecture
-- Don’t shame
+- Don’t lecture or shame
 - Calories only if relevant
 - One clear next step
-- End with: "For now, just focus on ..."
+- End with "For now, just focus on ..."
 `;
 
-// -----------------------------
+// =============================
 // Handler
-// -----------------------------
+// =============================
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
 
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ reply: "Method not allowed." });
+  if (req.method !== "POST") {
+    return res.status(405).json({ reply: "Method not allowed." });
+  }
 
   try {
+    // -------- Read raw body --------
     let rawBody = "";
     await new Promise((resolve, reject) => {
       req.on("data", chunk => (rawBody += chunk.toString("utf8")));
@@ -146,39 +117,73 @@ export default async function handler(req, res) {
     const body = safeJsonParse(rawBody) || {};
     const message = normalizeText(body.message || "");
     const history = sanitizeHistory(body.history);
+    const isV3 = body.v3 === true;
 
     if (!message) {
       return res.status(400).json({ reply: "No message received." });
     }
 
+    // =============================
+    // V3 MODE — SIMPLE CHATGPT
+    // =============================
+    if (isV3) {
+      const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "gpt-4.1-mini",
+          temperature: 0.4,
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a calm, supportive fitness coach. Respond conversationally like ChatGPT. Do not calculate calories. Do not log meals. Do not give plans. Just be helpful."
+            },
+            { role: "user", content: message }
+          ]
+        })
+      });
+
+      const data = await openaiRes.json();
+      const reply = data?.choices?.[0]?.message?.content || "Try again.";
+
+      return res.status(200).json({ reply });
+    }
+
+    // =============================
+    // V1 MODE — FULL COACHING LOGIC
+    // =============================
     const intent = detectIntent(message);
 
-    // Meal correction → redirect to UI
     if (intent === "meal_correction") {
       return res.status(200).json({
         reply: ensureClosingLine(
-          "Good catch — since meals are saved in your log, the best move is to edit that meal directly there so your totals stay accurate.\n\nOnce that’s updated, I can help you think through swaps or the rest of the day."
+          "Good catch — since meals are saved in your log, the best move is to edit that meal directly so your totals stay accurate."
         ),
         debug: { intent }
       });
     }
 
-    // Greeting
     if (intent === "greeting") {
       return res.status(200).json({
         reply: ensureClosingLine(
-          "All good — I’ll estimate calories from your food logs, keep a running total, and always suggest 1–2 realistic lower-cal swaps.\n\nTell me what you’ve eaten today or what’s been toughest lately."
+          "All good — tell me what you’ve eaten today or what’s been toughest lately."
         ),
-        debug: { intent },
-        set_onboarded: true
+        debug: { intent }
       });
     }
 
-    const systemPrompt = intent === "food_log" ? FOOD_LOG_PROMPT : COACHING_PROMPT;
+    const systemPrompt =
+      intent === "food_log" ? FOOD_LOG_PROMPT : COACHING_PROMPT;
 
-    const messages = [{ role: "system", content: systemPrompt.trim() }];
-    messages.push(...history);
-    messages.push({ role: "user", content: message });
+    const messages = [
+      { role: "system", content: systemPrompt.trim() },
+      ...history,
+      { role: "user", content: message }
+    ];
 
     const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -197,10 +202,10 @@ export default async function handler(req, res) {
     const rawReply = data?.choices?.[0]?.message?.content || "Try again.";
     const reply = ensureClosingLine(rawReply);
 
-    return res.status(200).json({ reply, debug: { intent }, set_onboarded: true });
+    return res.status(200).json({ reply, debug: { intent } });
 
   } catch (err) {
-    console.error("[simple.js] fatal:", err);
+    console.error("[coach-simple] fatal:", err);
     return res.status(500).json({ reply: "Something went wrong." });
   }
 }
