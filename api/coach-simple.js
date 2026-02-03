@@ -33,7 +33,7 @@ function ensureClosingLine(text) {
 }
 
 // =============================
-// Intent Detection (V1 ONLY)
+// Intent Detection
 // =============================
 function detectIntent(message) {
   const t = normalizeText(message);
@@ -54,7 +54,24 @@ function detectIntent(message) {
 
   if (looksLikeFood) return "food_log";
 
+  if (/^\d+(\.\d+)?$/.test(t)) return "weight_log";
+
   return "coaching_question";
+}
+
+// =============================
+// Google Sheets Save Helper
+// =============================
+async function saveDailyLog(payload) {
+  try {
+    await fetch("https://pjifitness-chat-api.vercel.app/api/save-daily-log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+  } catch (err) {
+    console.error("[coach-simple] saveDailyLog failed:", err);
+  }
 }
 
 // =============================
@@ -65,7 +82,6 @@ You are PJ Coach, a practical fat-loss coach.
 
 RULES:
 - Estimate calories conversationally
-- Do NOT save meals (UI does)
 - Itemize foods with calorie ranges
 - Always include ONE combined total using EXACT format below
 
@@ -118,15 +134,40 @@ export default async function handler(req, res) {
     const message = normalizeText(body.message || "");
     const history = sanitizeHistory(body.history);
     const isV3 = body.v3 === true;
+    const userId = body.user_id || "guest";
 
     if (!message) {
       return res.status(400).json({ reply: "No message received." });
     }
 
+    const intent = detectIntent(message);
+
     // =============================
-    // V3 MODE — SIMPLE CHATGPT
+    // V3 MODE — CHAT + AUTO SAVE
     // =============================
     if (isV3) {
+
+      // 🔹 Save logs BEFORE replying
+      if (intent === "food_log") {
+        await saveDailyLog({
+          type: "meal",
+          user_id: userId,
+          data: {
+            meal_text: message
+          }
+        });
+      }
+
+      if (intent === "weight_log") {
+        await saveDailyLog({
+          type: "weight",
+          user_id: userId,
+          data: {
+            weight: parseFloat(message)
+          }
+        });
+      }
+
       const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -140,7 +181,7 @@ export default async function handler(req, res) {
             {
               role: "system",
               content:
-                "You are a calm, supportive fitness coach. Respond conversationally like ChatGPT. Do not calculate calories. Do not log meals. Do not give plans. Just be helpful."
+                "You are a calm, supportive fitness coach. Respond conversationally. Do not calculate calories unless asked."
             },
             { role: "user", content: message }
           ]
@@ -150,14 +191,12 @@ export default async function handler(req, res) {
       const data = await openaiRes.json();
       const reply = data?.choices?.[0]?.message?.content || "Try again.";
 
-      return res.status(200).json({ reply });
+      return res.status(200).json({ reply, debug: { intent } });
     }
 
     // =============================
-    // V1 MODE — FULL COACHING LOGIC
+    // V1 MODE — LEGACY COACH
     // =============================
-    const intent = detectIntent(message);
-
     if (intent === "meal_correction") {
       return res.status(200).json({
         reply: ensureClosingLine(
