@@ -4,15 +4,50 @@ export const config = {
   api: { bodyParser: true }
 };
 
+// =============================
+// ENV
+// =============================
 const SHEET_ID = process.env.SHEET_ID;
 const SERVICE_ACCOUNT = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
 
+// =============================
+// TAB MAP
+// =============================
 const TAB_MAP = {
   weight: "WEIGHT_LOGS",
   meal: "MEAL_LOGS",
   summary: "DAILY_SUMMARIES"
 };
 
+// =============================
+// CORS (REQUIRED)
+// =============================
+function applyCors(req, res) {
+  const origin = req.headers.origin || "";
+
+  const ALLOWED = new Set([
+    "https://www.pjifitness.com",
+    "https://pjifitness.com"
+  ]);
+
+  res.setHeader("Vary", "Origin");
+
+  if (ALLOWED.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
+
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With"
+  );
+}
+
+// =============================
+// HELPERS
+// =============================
 function todayYMD(clientDate) {
   if (typeof clientDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(clientDate)) {
     return clientDate;
@@ -33,7 +68,16 @@ async function getSheets() {
   return google.sheets({ version: "v4", auth });
 }
 
+// =============================
+// HANDLER
+// =============================
 export default async function handler(req, res) {
+  applyCors(req, res);
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
   if (req.method !== "POST") {
     return res.status(405).json({ ok: false, error: "POST only" });
   }
@@ -58,9 +102,9 @@ export default async function handler(req, res) {
     const tab = TAB_MAP[type];
     const now = new Date().toISOString();
 
-    // -----------------------------
-    // WEIGHT LOG (overwrite same day)
-    // -----------------------------
+    // =============================
+    // WEIGHT LOG (overwrite per day)
+    // =============================
     if (type === "weight") {
       const weight = Number(data.weight);
       if (!Number.isFinite(weight)) {
@@ -99,16 +143,11 @@ export default async function handler(req, res) {
       return res.json({ ok: true, saved: "weight", date, weight });
     }
 
-    // -----------------------------
+    // =============================
     // MEAL LOG (append only)
-    // -----------------------------
+    // =============================
     if (type === "meal") {
-      const {
-        meal_id,
-        meal_text,
-        ai_estimate,
-        ai_swaps
-      } = data;
+      const { meal_id, meal_text, ai_estimate, ai_swaps } = data;
 
       if (!meal_text) {
         return res.status(400).json({ ok: false, error: "Missing meal_text" });
@@ -134,9 +173,9 @@ export default async function handler(req, res) {
       return res.json({ ok: true, saved: "meal", date });
     }
 
-    // -----------------------------
+    // =============================
     // DAILY SUMMARY (overwrite)
-    // -----------------------------
+    // =============================
     if (type === "summary") {
       const {
         weight,
