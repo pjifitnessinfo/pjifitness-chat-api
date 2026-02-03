@@ -20,7 +20,7 @@ const TAB_MAP = {
 };
 
 // =============================
-// CORS (REQUIRED)
+// CORS (FIXED + PREFLIGHT SAFE)
 // =============================
 function applyCors(req, res) {
   const origin = req.headers.origin || "";
@@ -39,10 +39,15 @@ function applyCors(req, res) {
   }
 
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+
+  // IMPORTANT: echo requested headers for preflight
+  const reqHeaders = req.headers["access-control-request-headers"];
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Requested-With"
+    reqHeaders || "Content-Type, Authorization"
   );
+
+  res.setHeader("Access-Control-Max-Age", "86400");
 }
 
 // =============================
@@ -64,7 +69,6 @@ async function getSheets() {
     SERVICE_ACCOUNT.private_key,
     ["https://www.googleapis.com/auth/spreadsheets"]
   );
-
   return google.sheets({ version: "v4", auth });
 }
 
@@ -72,8 +76,10 @@ async function getSheets() {
 // HANDLER
 // =============================
 export default async function handler(req, res) {
+  // 🔑 ALWAYS APPLY CORS FIRST
   applyCors(req, res);
 
+  // 🔑 EXPLICITLY HANDLE PREFLIGHT
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
@@ -88,11 +94,9 @@ export default async function handler(req, res) {
     if (!type || !TAB_MAP[type]) {
       return res.status(400).json({ ok: false, error: "Invalid type" });
     }
-
     if (!user_id) {
       return res.status(400).json({ ok: false, error: "Missing user_id" });
     }
-
     if (!data || typeof data !== "object") {
       return res.status(400).json({ ok: false, error: "Missing data object" });
     }
@@ -103,7 +107,7 @@ export default async function handler(req, res) {
     const now = new Date().toISOString();
 
     // =============================
-    // WEIGHT LOG (overwrite per day)
+    // WEIGHT LOG
     // =============================
     if (type === "weight") {
       const weight = Number(data.weight);
@@ -125,18 +129,14 @@ export default async function handler(req, res) {
           spreadsheetId: SHEET_ID,
           range: `${tab}!C${rowNum}:E${rowNum}`,
           valueInputOption: "RAW",
-          requestBody: {
-            values: [[weight, "v3", now]]
-          }
+          requestBody: { values: [[weight, "v3", now]] }
         });
       } else {
         await sheets.spreadsheets.values.append({
           spreadsheetId: SHEET_ID,
           range: `${tab}!A:E`,
           valueInputOption: "RAW",
-          requestBody: {
-            values: [[date, user_id, weight, "v3", now]]
-          }
+          requestBody: { values: [[date, user_id, weight, "v3", now]] }
         });
       }
 
@@ -144,11 +144,10 @@ export default async function handler(req, res) {
     }
 
     // =============================
-    // MEAL LOG (append only)
+    // MEAL LOG
     // =============================
     if (type === "meal") {
       const { meal_id, meal_text, ai_estimate, ai_swaps } = data;
-
       if (!meal_text) {
         return res.status(400).json({ ok: false, error: "Missing meal_text" });
       }
@@ -174,7 +173,7 @@ export default async function handler(req, res) {
     }
 
     // =============================
-    // DAILY SUMMARY (overwrite)
+    // SUMMARY
     // =============================
     if (type === "summary") {
       const {
