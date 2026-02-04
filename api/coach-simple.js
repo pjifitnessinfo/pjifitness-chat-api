@@ -1,119 +1,67 @@
 export const config = {
-  api: { bodyParser: false }
+  api: { bodyParser: true }
 };
 
-// =============================
-// Helpers
-// =============================
-function safeJsonParse(str) {
-  try { return JSON.parse(str); } catch { return null; }
-}
+/* ======================================
+   SYSTEM PROMPT (CORE BEHAVIOR)
+====================================== */
+const SYSTEM_PROMPT = `
+You are PJ Coach — a calm, supportive, practical fitness coach.
 
-function normalizeText(s) {
-  return String(s || "").trim();
-}
-
-function sanitizeHistory(history) {
-  if (!Array.isArray(history)) return [];
-  return history
-    .filter(m =>
-      m &&
-      (m.role === "user" || m.role === "assistant") &&
-      typeof m.content === "string"
-    )
-    .slice(-20);
-}
-
-function ensureClosingLine(text) {
-  let s = String(text || "").trim();
-  if (!s) return s;
-
-  if (/For now,\s*just\s*focus\s*on/i.test(s)) return s;
-  return s + "\n\nFor now, just focus on your next meal choice and one small win today.";
-}
-
-// =============================
-// Intent Detection
-// =============================
-function detectIntent(message) {
-  const t = normalizeText(message);
-  const low = t.toLowerCase();
-
-  if (/^(hi|hey|hello|yo|sup|test)\b[\s!.?]*$/i.test(t)) return "greeting";
-
-  if (
-    /\b(adjust|change|correct|fix|meant|actually|too high|too low|was higher|was lower)\b/i.test(low)
-  ) {
-    return "meal_correction";
-  }
-
-  const looksLikeFood =
-    /\b(i ate|i had|ate|for breakfast|for lunch|for dinner)\b/i.test(low) ||
-    /\b(eggs?|toast|rice|pasta|chicken|beef|burger|shake|protein bar|pizza|salad|milk|cheese|yogurt|fries|potato|oatmeal|banana|apple)\b/i.test(low) ||
-    /\b(\d+(\.\d+)?\s?(g|oz|lb|cups?|tbsp|tsp|ml|cal))\b/i.test(t);
-
-  if (looksLikeFood) return "food_log";
-
-  if (/^\d+(\.\d+)?$/.test(t)) return "weight_log";
-
-  return "coaching_question";
-}
-
-// =============================
-// Google Sheets Save Helper
-// =============================
-async function saveDailyLog(payload) {
-  try {
-    await fetch("https://pjifitness-chat-api.vercel.app/api/save-daily-log", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-  } catch (err) {
-    console.error("[coach-simple] saveDailyLog failed:", err);
-  }
-}
-
-// =============================
-// Prompts (V1)
-// =============================
-const FOOD_LOG_PROMPT = `
-You are PJ Coach, a practical fat-loss coach.
-
-RULES:
-- Estimate calories conversationally
-- Itemize foods with calorie ranges
-- Always include ONE combined total using EXACT format below
-
-ABSOLUTE REQUIREMENT (DO NOT CHANGE):
-Total for this meal: 625-630 calories
-
-- Use a RANGE with a dash
-- Do not use "~"
-- Do not rename the line
-- Include this once per meal
+STYLE:
+- Talk naturally like ChatGPT
+- Be conversational, human, reassuring
+- No rigid formatting
+- No lectures or shaming
+- Explain things clearly if asked
+- Give guidance when useful
+- If user sounds stressed, reassure them
 
 COACHING:
-- Give 1–2 realistic lower-cal swaps
-- End with "For now, just focus on ..."
+- Help the user make sense of their day
+- If food is mentioned, reason about calories internally
+- If weight is mentioned, reason about trends and water weight
+- Guide what to do next without being strict
+
+IMPORTANT:
+- Never say "I logged this"
+- Never mention databases, tracking, or sheets
+- Never ask the user to confirm logging
+- Logging happens silently via signals
+
+OUTPUT:
+You MUST return JSON with:
+{
+  reply: string,
+  signals: {
+    meal?: {
+      detected: boolean,
+      text?: string,
+      estimated_calories?: number,
+      confidence?: number
+    },
+    weight?: {
+      detected: boolean,
+      value?: number,
+      confidence?: number
+    }
+  }
+}
+
+RULES FOR SIGNALS:
+- Only set detected=true if confidence is HIGH
+- Body weight requires phrases like:
+  "I weigh", "weighed in", "today's weight", "scale said"
+- Food weights (oz, grams) are NOT body weight
+- If unsure, set detected=false
 `;
 
-const COACHING_PROMPT = `
-You are PJ Coach — calm, practical, supportive.
-
-RULES:
-- Don’t lecture or shame
-- Calories only if relevant
-- One clear next step
-- End with "For now, just focus on ..."
-`;
-
-// =============================
-// Handler
-// =============================
+/* ======================================
+   HANDLER
+====================================== */
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
 
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -122,105 +70,19 @@ export default async function handler(req, res) {
   }
 
   try {
-    // -------- Read raw body --------
-    let rawBody = "";
-    await new Promise((resolve, reject) => {
-      req.on("data", chunk => (rawBody += chunk.toString("utf8")));
-      req.on("end", resolve);
-      req.on("error", reject);
-    });
+    const { message, history = [] } = req.body;
 
-    const body = safeJsonParse(rawBody) || {};
-    const message = normalizeText(body.message || "");
-    const history = sanitizeHistory(body.history);
-    const isV3 = body.v3 === true;
-    const userId = body.user_id || "guest";
-
-    if (!message) {
+    if (!message || typeof message !== "string") {
       return res.status(400).json({ reply: "No message received." });
     }
 
-    const intent = detectIntent(message);
-
-    // =============================
-    // V3 MODE — CHAT + AUTO SAVE
-    // =============================
-    if (isV3) {
-
-      // 🔹 Save logs BEFORE replying
-      if (intent === "food_log") {
-        await saveDailyLog({
-          type: "meal",
-          user_id: userId,
-          data: {
-            meal_text: message
-          }
-        });
-      }
-
-      if (intent === "weight_log") {
-        await saveDailyLog({
-          type: "weight",
-          user_id: userId,
-          data: {
-            weight: parseFloat(message)
-          }
-        });
-      }
-
-      const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: "gpt-4.1-mini",
-          temperature: 0.4,
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are a calm, supportive fitness coach. Respond conversationally. Do not calculate calories unless asked."
-            },
-            { role: "user", content: message }
-          ]
-        })
-      });
-
-      const data = await openaiRes.json();
-      const reply = data?.choices?.[0]?.message?.content || "Try again.";
-
-      return res.status(200).json({ reply, debug: { intent } });
-    }
-
-    // =============================
-    // V1 MODE — LEGACY COACH
-    // =============================
-    if (intent === "meal_correction") {
-      return res.status(200).json({
-        reply: ensureClosingLine(
-          "Good catch — since meals are saved in your log, the best move is to edit that meal directly so your totals stay accurate."
-        ),
-        debug: { intent }
-      });
-    }
-
-    if (intent === "greeting") {
-      return res.status(200).json({
-        reply: ensureClosingLine(
-          "All good — tell me what you’ve eaten today or what’s been toughest lately."
-        ),
-        debug: { intent }
-      });
-    }
-
-    const systemPrompt =
-      intent === "food_log" ? FOOD_LOG_PROMPT : COACHING_PROMPT;
-
     const messages = [
-      { role: "system", content: systemPrompt.trim() },
-      ...history,
+      { role: "system", content: SYSTEM_PROMPT.trim() },
+      ...Array.isArray(history)
+        ? history
+            .filter(m => m && m.role && m.content)
+            .slice(-12)
+        : [],
       { role: "user", content: message }
     ];
 
@@ -232,19 +94,43 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: "gpt-4.1-mini",
-        temperature: 0.6,
+        temperature: 0.45,
         messages
       })
     });
 
     const data = await openaiRes.json();
-    const rawReply = data?.choices?.[0]?.message?.content || "Try again.";
-    const reply = ensureClosingLine(rawReply);
+    const content = data?.choices?.[0]?.message?.content;
 
-    return res.status(200).json({ reply, debug: { intent } });
+    if (!content) {
+      return res.status(200).json({
+        reply: "I didn’t catch that — try again.",
+        signals: {}
+      });
+    }
+
+    // Ensure valid JSON response from model
+    let parsed;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      // Safety fallback: show text, no logging
+      return res.status(200).json({
+        reply: content,
+        signals: {}
+      });
+    }
+
+    return res.status(200).json({
+      reply: parsed.reply || "Okay.",
+      signals: parsed.signals || {}
+    });
 
   } catch (err) {
-    console.error("[coach-simple] fatal:", err);
-    return res.status(500).json({ reply: "Something went wrong." });
+    console.error("[coach-simple]", err);
+    return res.status(500).json({
+      reply: "Something went wrong. Try again in a moment.",
+      signals: {}
+    });
   }
 }
