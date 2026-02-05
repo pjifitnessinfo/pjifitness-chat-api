@@ -3,79 +3,61 @@ export const config = {
 };
 
 /* ======================================
-   SYSTEM PROMPT (NATURAL COACH)
+   SYSTEM PROMPT (HYBRID – NATURAL + SMART)
 ====================================== */
 const SYSTEM_PROMPT = `
 You are PJ Coach — a calm, supportive, practical fitness coach.
 
-STYLE:
+TONE & STYLE:
 - Talk naturally like ChatGPT
-- Be conversational and human
+- Friendly, human, reassuring
 - No rigid formatting
-- No lecturing or shaming
-- Explain clearly if asked
-- Reassure when the user sounds stressed
+- No robotic lists
+- Explain things clearly if asked
+- Coach, don’t lecture
 
-COACHING:
-- Help the user make sense of their day
-- If food is mentioned, reason casually about calories
-- If weight is mentioned, explain trends and water weight
-- Guide what to do next without being strict
+CORE BEHAVIOR (IMPORTANT):
+- If FOOD is mentioned → ALWAYS estimate calories conversationally
+- If portions are unclear → give a reasonable range
+- Do NOT ask for permission to estimate
+- Do NOT avoid numbers when food is mentioned
 
-IMPORTANT:
-- Never say you logged anything
-- Never mention databases, tracking, or spreadsheets
-- Never ask for confirmation to save data
+WEIGHT RULES:
+- Detect body weight ONLY if phrased like:
+  "I weigh", "I weighed in", "today’s weight", "scale said"
+- Ignore food weights (oz, grams, cups)
+- When weight is shared, explain trends and water weight briefly
+
+LOGGING (SILENT):
+- NEVER say “I logged this”
+- NEVER mention tracking, databases, or sheets
+- Signals are internal only
+
+OUTPUT FORMAT (MANDATORY):
+Return ONLY valid JSON:
+
+{
+  "reply": string,
+  "signals": {
+    "meal": {
+      "detected": boolean,
+      "text": string,
+      "estimated_calories": number,
+      "confidence": number
+    },
+    "weight": {
+      "detected": boolean,
+      "value": number,
+      "confidence": number
+    }
+  }
+}
+
+SIGNAL RULES:
+- detected=true ONLY when confidence is high
+- estimated_calories must be a SINGLE number (best estimate)
+- confidence between 0 and 1
 `;
-
-/* ======================================
-   SIMPLE SIGNAL DETECTION (SERVER-SIDE)
-====================================== */
-function detectMeal(text) {
-  const foodWords = /(chicken|beef|rice|pizza|pasta|eggs|shake|protein|salad|burger|fish|taco|bowl|sandwich)/i;
-  if (!foodWords.test(text)) return null;
-
-  // crude calorie heuristic (good enough v1)
-  let calories = 500;
-  if (/pizza/i.test(text)) calories = 600;
-  if (/bowl/i.test(text)) calories = 550;
-  if (/protein|shake/i.test(text)) calories = 300;
-
-  return {
-    detected: true,
-    text,
-    estimated_calories: calories,
-    confidence: 0.8
-  };
-}
-
-function detectWeight(text) {
-  // only detect BODY weight with explicit language
-  const match = text.match(
-    /(i weigh|i weighed|today'?s weight|scale said|weighed in at)\s*(\d+(\.\d+)?)/i
-  );
-  if (!match) return null;
-
-  return {
-    detected: true,
-    value: parseFloat(match[2]),
-    confidence: 0.95
-  };
-}
-
-/* ======================================
-   MOCK DATA HELPERS (REPLACE W/ SHEETS)
-====================================== */
-let DAILY_LOG = {};
-let WEIGHT_LOG = [];
-
-function getToday() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function sum(arr) {
-  return arr.reduce((a, b) => a + b, 0);
-}
 
 /* ======================================
    HANDLER
@@ -87,21 +69,21 @@ export default async function handler(req, res) {
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") {
-    return res.status(405).json({ reply: "Method not allowed." });
+    return res.status(405).json({ reply: "Method not allowed.", signals: {} });
   }
 
   try {
     const { message, history = [] } = req.body;
-    if (!message) {
-      return res.status(400).json({ reply: "No message received." });
+
+    if (!message || typeof message !== "string") {
+      return res.status(400).json({ reply: "No message received.", signals: {} });
     }
 
-    /* ---------------------------
-       1. Call OpenAI (NATURAL)
-    ---------------------------- */
     const messages = [
       { role: "system", content: SYSTEM_PROMPT.trim() },
-      ...history.slice(-10),
+      ...Array.isArray(history)
+        ? history.filter(m => m?.role && m?.content).slice(-12)
+        : [],
       { role: "user", content: message }
     ];
 
@@ -113,71 +95,40 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: "gpt-4.1-mini",
-        temperature: 0.45,
+        temperature: 0.5,
         messages
       })
     });
 
     const data = await openaiRes.json();
-    const reply =
-      data?.choices?.[0]?.message?.content ||
-      "I didn’t catch that — try again.";
+    const content = data?.choices?.[0]?.message?.content;
 
-    /* ---------------------------
-       2. Detect signals (silent)
-    ---------------------------- */
-    const meal = detectMeal(message);
-    const weight = detectWeight(message);
-
-    const today = getToday();
-
-    if (meal?.detected) {
-      DAILY_LOG[today] = DAILY_LOG[today] || [];
-      DAILY_LOG[today].push(meal.estimated_calories);
+    if (!content) {
+      return res.status(200).json({
+        reply: "I didn’t catch that — try again.",
+        signals: {}
+      });
     }
 
-    if (weight?.detected) {
-      WEIGHT_LOG.push({ date: today, value: weight.value });
+    // Enforce JSON output
+    let parsed;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      // Safety fallback — still respond, but no logging
+      return res.status(200).json({
+        reply: content,
+        signals: {}
+      });
     }
 
-    /* ---------------------------
-       3. Compute summaries
-    ---------------------------- */
-    const todayCalories = sum(DAILY_LOG[today] || []);
-
-    const last7Days = Object.keys(DAILY_LOG)
-      .slice(-7)
-      .map(d => sum(DAILY_LOG[d]));
-
-    const weeklyCaloriesAvg =
-      last7Days.length ? Math.round(sum(last7Days) / last7Days.length) : null;
-
-    const last7Weights = WEIGHT_LOG.slice(-7).map(w => w.value);
-    const weeklyWeightAvg =
-      last7Weights.length
-        ? Math.round(
-            (sum(last7Weights) / last7Weights.length) * 10
-          ) / 10
-        : null;
-
-    /* ---------------------------
-       4. Respond
-    ---------------------------- */
     return res.status(200).json({
-      reply,
-      signals: {
-        meal: meal || { detected: false },
-        weight: weight || { detected: false }
-      },
-      summary: {
-        today_calories: todayCalories || null,
-        weekly_calories_avg: weeklyCaloriesAvg,
-        weekly_weight_avg: weeklyWeightAvg
-      }
+      reply: parsed.reply || "Okay.",
+      signals: parsed.signals || {}
     });
 
   } catch (err) {
-    console.error("[coach-simple]", err);
+    console.error("[coach-simple] fatal:", err);
     return res.status(500).json({
       reply: "Something went wrong. Try again in a moment.",
       signals: {}
