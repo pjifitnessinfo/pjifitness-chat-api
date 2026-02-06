@@ -40,7 +40,6 @@ function applyCors(req, res) {
 
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
 
-  // IMPORTANT: echo requested headers for preflight
   const reqHeaders = req.headers["access-control-request-headers"];
   res.setHeader(
     "Access-Control-Allow-Headers",
@@ -79,7 +78,7 @@ export default async function handler(req, res) {
   // 🔑 ALWAYS APPLY CORS FIRST
   applyCors(req, res);
 
-  // 🔑 EXPLICITLY HANDLE PREFLIGHT
+  // 🔑 HANDLE PREFLIGHT
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
@@ -91,12 +90,20 @@ export default async function handler(req, res) {
   try {
     const { type, user_id, data, clientDate } = req.body;
 
+    // =============================
+    // 🔐 IDENTITY GUARD (CRITICAL)
+    // =============================
+    if (!user_id || user_id === "guest") {
+      return res.status(401).json({
+        ok: false,
+        error: "Missing or invalid user_id"
+      });
+    }
+
     if (!type || !TAB_MAP[type]) {
       return res.status(400).json({ ok: false, error: "Invalid type" });
     }
-    if (!user_id) {
-      return res.status(400).json({ ok: false, error: "Missing user_id" });
-    }
+
     if (!data || typeof data !== "object") {
       return res.status(400).json({ ok: false, error: "Missing data object" });
     }
@@ -107,7 +114,7 @@ export default async function handler(req, res) {
     const now = new Date().toISOString();
 
     // =============================
-    // WEIGHT LOG
+    // WEIGHT LOG (overwrite per day)
     // =============================
     if (type === "weight") {
       const weight = Number(data.weight);
@@ -129,14 +136,18 @@ export default async function handler(req, res) {
           spreadsheetId: SHEET_ID,
           range: `${tab}!C${rowNum}:E${rowNum}`,
           valueInputOption: "RAW",
-          requestBody: { values: [[weight, "v3", now]] }
+          requestBody: {
+            values: [[weight, "v4", now]]
+          }
         });
       } else {
         await sheets.spreadsheets.values.append({
           spreadsheetId: SHEET_ID,
           range: `${tab}!A:E`,
           valueInputOption: "RAW",
-          requestBody: { values: [[date, user_id, weight, "v3", now]] }
+          requestBody: {
+            values: [[date, user_id, weight, "v4", now]]
+          }
         });
       }
 
@@ -144,10 +155,11 @@ export default async function handler(req, res) {
     }
 
     // =============================
-    // MEAL LOG
+    // MEAL LOG (append-only)
     // =============================
     if (type === "meal") {
       const { meal_id, meal_text, ai_estimate, ai_swaps } = data;
+
       if (!meal_text) {
         return res.status(400).json({ ok: false, error: "Missing meal_text" });
       }
@@ -173,7 +185,7 @@ export default async function handler(req, res) {
     }
 
     // =============================
-    // SUMMARY
+    // DAILY SUMMARY (overwrite per day)
     // =============================
     if (type === "summary") {
       const {
