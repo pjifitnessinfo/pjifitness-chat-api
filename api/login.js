@@ -8,7 +8,7 @@ export const config = {
 const sheets = google.sheets("v4");
 
 /* =============================
-   CORS (MATCHES save-daily-log)
+   CORS (SHOPIFY-SAFE)
    ============================= */
 function applyCors(req, res) {
   const origin = req.headers.origin || "";
@@ -28,23 +28,33 @@ function applyCors(req, res) {
 
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
 
+  // 🔑 MUST echo requested headers (Shopify sends many)
   const reqHeaders = req.headers["access-control-request-headers"];
   res.setHeader(
     "Access-Control-Allow-Headers",
-    reqHeaders || "Content-Type"
+    reqHeaders || "Content-Type, Authorization"
   );
 
   res.setHeader("Access-Control-Max-Age", "86400");
 }
 
 /* =============================
-   GOOGLE AUTH
+   GOOGLE AUTH (HARDENED)
    ============================= */
 async function getAuthClient() {
+  const creds =
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON ||
+    process.env.GOOGLE_SERVICE_ACCOUNT;
+
+  if (!creds) {
+    throw new Error("Missing Google service account env var");
+  }
+
   const auth = new google.auth.GoogleAuth({
-    credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT),
+    credentials: JSON.parse(creds),
     scopes: ["https://www.googleapis.com/auth/spreadsheets"]
   });
+
   return auth.getClient();
 }
 
@@ -55,7 +65,7 @@ export default async function handler(req, res) {
   // 🔑 APPLY CORS FIRST
   applyCors(req, res);
 
-  // 🔑 HANDLE PREFLIGHT
+  // 🔑 PREFLIGHT MUST EXIT
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
@@ -76,7 +86,7 @@ export default async function handler(req, res) {
     const read = await sheets.spreadsheets.values.get({
       auth: authClient,
       spreadsheetId: process.env.SHEET_ID,
-      range: "users!A2:D"
+      range: "users!A2:D" // skip header row
     });
 
     const rows = read.data.values || [];
@@ -94,7 +104,10 @@ export default async function handler(req, res) {
     return res.json({ user_id: user[0] });
 
   } catch (err) {
-    console.error("[login]", err);
-    return res.status(500).json({ error: "Server error" });
+    console.error("[LOGIN ERROR]", err);
+    return res.status(500).json({
+      error: "Login failed",
+      details: err.message
+    });
   }
 }
