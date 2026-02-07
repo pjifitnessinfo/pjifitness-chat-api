@@ -73,7 +73,10 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { message, history = [] } = req.body;
+    const { user_id, message, history = [] } = req.body;
+    console.log("USER_ID:", user_id);
+
+
 
     if (!message || typeof message !== "string") {
       return res.status(400).json({ reply: "No message received.", signals: {} });
