@@ -76,6 +76,12 @@ export default async function handler(req, res) {
     const { user_id, message, history = [] } = req.body;
     console.log("USER_ID:", user_id);
 
+    if (!user_id) {
+  return res.status(400).json({
+    reply: "Missing user ID.",
+    signals: {}
+  });
+}
 
 
     if (!message || typeof message !== "string") {
