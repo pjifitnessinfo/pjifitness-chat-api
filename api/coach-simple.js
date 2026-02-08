@@ -5,25 +5,17 @@ export const config = {
 import { google } from "googleapis";
 
 /* ======================================
-   CORS SETUP (FIXED)
+   CORS — MUST RUN FIRST
 ====================================== */
-const ALLOWED_ORIGINS = new Set([
-  "https://www.pjifitness.com",
-  "https://pjifitness.com"
-]);
-
-function setCors(req, res) {
-  const origin = req.headers.origin;
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Vary", "Origin");
-  }
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+function applyCors(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Max-Age", "86400");
 }
 
 /* ======================================
-   GOOGLE SHEETS SETUP
+   GOOGLE SHEETS
 ====================================== */
 const auth = new google.auth.JWT(
   process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
@@ -41,82 +33,34 @@ const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SYSTEM_PROMPT = `
 You are PJ Coach — a calm, supportive, practical fitness coach.
 
-TONE & STYLE:
 - Talk naturally like ChatGPT
-- Friendly, human, reassuring
-- No rigid formatting
-- No robotic lists
-- Explain things clearly if asked
-- Coach, don’t lecture
-
-CORE BEHAVIOR (IMPORTANT):
-- If FOOD is mentioned → ALWAYS estimate calories conversationally
-- If portions are unclear → give a reasonable range
-- Do NOT ask for permission to estimate
-- Do NOT avoid numbers when food is mentioned
-
-WEIGHT RULES:
-- Detect body weight ONLY if phrased like:
-  "I weigh", "I weighed in", "today’s weight", "scale said"
-- Ignore food weights (oz, grams, cups)
-- When weight is shared, explain trends and water weight briefly
-
-LOGGING (SILENT):
-- NEVER say “I logged this”
-- NEVER mention tracking, databases, or sheets
-- Signals are internal only
-
-OUTPUT FORMAT (MANDATORY):
-Return ONLY valid JSON:
-{
-  "reply": string,
-  "signals": {
-    "meal": {
-      "detected": boolean,
-      "text": string,
-      "estimated_calories": number,
-      "confidence": number
-    },
-    "weight": {
-      "detected": boolean,
-      "value": number,
-      "confidence": number
-    }
-  }
-}
+- If food is mentioned, estimate calories
+- If weight is shared, explain trends
+- Never mention logging
+- Return ONLY valid JSON
 `;
-
-/* ======================================
-   HELPERS
-====================================== */
-const today = () => new Date().toISOString().slice(0, 10);
-const now = () => new Date().toISOString();
-
-async function appendRow(tab, row) {
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID,
-    range: tab,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: [row] }
-  });
-}
 
 /* ======================================
    HANDLER
 ====================================== */
 export default async function handler(req, res) {
-  setCors(req, res);
+  // ✅ ALWAYS APPLY CORS FIRST
+  applyCors(req, res);
 
+  // ✅ PRE-FLIGHT
   if (req.method === "OPTIONS") {
-    return res.status(204).end();
+    return res.status(200).end();
   }
 
   if (req.method !== "POST") {
-    return res.status(405).json({ reply: "Method not allowed.", signals: {} });
+    return res.status(405).json({
+      reply: "Method not allowed.",
+      signals: {}
+    });
   }
 
   try {
-    const { user_id, message, history = [] } = req.body;
+    const { user_id, message } = req.body || {};
 
     if (!user_id || !message) {
       return res.status(400).json({
@@ -124,14 +68,6 @@ export default async function handler(req, res) {
         signals: {}
       });
     }
-
-    const messages = [
-      { role: "system", content: SYSTEM_PROMPT.trim() },
-      ...(Array.isArray(history)
-        ? history.filter(m => m?.role && m?.content).slice(-12)
-        : []),
-      { role: "user", content: message }
-    ];
 
     const openaiRes = await fetch(
       "https://api.openai.com/v1/chat/completions",
@@ -144,7 +80,10 @@ export default async function handler(req, res) {
         body: JSON.stringify({
           model: "gpt-4.1-mini",
           temperature: 0.5,
-          messages
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: message }
+          ]
         })
       }
     );
@@ -152,71 +91,62 @@ export default async function handler(req, res) {
     const data = await openaiRes.json();
     const content = data?.choices?.[0]?.message?.content;
 
-    if (!content) {
-      return res.status(200).json({
-        reply: "Try again.",
-        signals: {}
-      });
-    }
-
     let parsed;
     try {
       parsed = JSON.parse(content);
     } catch {
       return res.status(200).json({
-        reply: content,
+        reply: content || "Okay.",
         signals: {}
       });
     }
 
-    /* ======================================
-       SILENT LOGGING
-    ====================================== */
     const { meal, weight } = parsed.signals || {};
 
     // MEAL LOG
-    if (meal?.detected && meal.estimated_calories > 0) {
-      await appendRow("MEAL_LOGS", [
-        today(),
-        user_id,
-        meal.text || "",
-        meal.estimated_calories,
-        meal.confidence ?? "",
-        now()
-      ]);
+    if (meal?.detected) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID,
+        range: "MEAL_LOGS",
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+          values: [[
+            new Date().toISOString().slice(0,10),
+            user_id,
+            meal.text || "",
+            meal.estimated_calories || "",
+            new Date().toISOString()
+          ]]
+        }
+      });
     }
 
     // WEIGHT LOG
-    if (weight?.detected && weight.value > 0) {
-      await appendRow("WEIGHT_LOGS", [
-        today(),
-        user_id,
-        weight.value,
-        weight.confidence ?? "",
-        now()
-      ]);
-    }
-
-    // DAILY SUMMARY (lightweight for now)
-    if (meal?.detected || weight?.detected) {
-      await appendRow("DAILY_SUMMARIES", [
-        today(),
-        user_id,
-        weight?.value || "",
-        meal?.estimated_calories || "",
-        now()
-      ]);
+    if (weight?.detected) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID,
+        range: "WEIGHT_LOGS",
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+          values: [[
+            new Date().toISOString().slice(0,10),
+            user_id,
+            weight.value,
+            new Date().toISOString()
+          ]]
+        }
+      });
     }
 
     return res.status(200).json({
-      reply: parsed.reply || "Okay.",
-      signals: parsed.signals || {}
+      reply: parsed.reply,
+      signals: parsed.signals
     });
 
   } catch (err) {
-    console.error("[coach-simple] fatal:", err);
+    console.error("coach-simple error:", err);
     return res.status(500).json({
-      reply: "Something went wrong. Try again.",
+      reply: "Something went wrong.",
       signals: {}
     });
   }
