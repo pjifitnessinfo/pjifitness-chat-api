@@ -15,27 +15,7 @@ function applyCors(res) {
 }
 
 /* ===============================
-   GOOGLE SHEETS CLIENT (SAFE)
-================================ */
-function getSheetsClient() {
-  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON || !process.env.SHEET_ID) {
-    return null;
-  }
-
-  const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
-
-  const auth = new google.auth.JWT(
-    creds.client_email,
-    null,
-    creds.private_key,
-    ["https://www.googleapis.com/auth/spreadsheets"]
-  );
-
-  return google.sheets({ version: "v4", auth });
-}
-
-/* ===============================
-   SYSTEM PROMPT (UNCHANGED)
+   SYSTEM PROMPT (LOCKED)
 ================================ */
 const SYSTEM_PROMPT = `
 You are PJ Coach — a calm, supportive, practical fitness coach.
@@ -70,20 +50,22 @@ Return ONLY valid JSON:
 {
   "reply": string,
   "signals": {
-    "meal": {
-      "detected": boolean,
-      "text": string,
-      "estimated_calories": number,
-      "confidence": number
-    },
-    "weight": {
-      "detected": boolean,
-      "value": number,
-      "confidence": number
-    }
+    "meal": { "detected": boolean, "text": string, "estimated_calories": number, "confidence": number },
+    "weight": { "detected": boolean, "value": number, "confidence": number },
+    "mood": { "detected": boolean, "text": string, "confidence": number }
   }
 }
 `;
+
+/* ===============================
+   HELPERS
+================================ */
+const today = () => new Date().toISOString().slice(0, 10);
+const now = () => new Date().toISOString();
+
+function isMoodMessage(text) {
+  return /i feel|i’m feeling|im feeling|today feels|feeling/i.test(text);
+}
 
 /* ===============================
    HANDLER
@@ -97,36 +79,6 @@ export default async function handler(req, res) {
 
   if (req.method !== "POST") {
     return res.status(405).json({ reply: "Method not allowed.", signals: {} });
-  }
-
-  /* ===============================
-     FORCE SHEET TEST (CONSOLE)
-  ================================ */
-  if (req.body?.__force_sheet_test === true) {
-    try {
-      const sheets = getSheetsClient();
-      if (!sheets) throw new Error("Sheets not configured");
-
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: process.env.SHEET_ID,
-        range: "MEAL_LOGS",
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [[
-            new Date().toISOString().slice(0, 10),
-            "FORCE_TEST",
-            "console test row",
-            999,
-            new Date().toISOString()
-          ]]
-        }
-      });
-
-      return res.status(200).json({ ok: true });
-    } catch (e) {
-      console.error("FORCE TEST FAILED:", e);
-      return res.status(500).json({ ok: false, error: e.message });
-    }
   }
 
   try {
@@ -161,54 +113,114 @@ export default async function handler(req, res) {
     const data = await openaiRes.json();
     const content = data?.choices?.[0]?.message?.content;
 
-    if (!content) {
-      return res.status(200).json({ reply: "Try again.", signals: {} });
-    }
-
     let parsed;
     try {
       parsed = JSON.parse(content);
     } catch {
-      return res.status(200).json({ reply: content, signals: {} });
+      return res.status(200).json({ reply: content || "Okay.", signals: {} });
     }
 
     /* ===============================
        GOOGLE SHEETS (NON-FATAL)
     ================================ */
     try {
-      const sheets = getSheetsClient();
-      if (sheets) {
-        const today = new Date().toISOString().slice(0, 10);
-        const now = new Date().toISOString();
+      const PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY;
+      const EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+      const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 
+      if (PRIVATE_KEY && EMAIL && SHEET_ID) {
+        const auth = new google.auth.JWT(
+          EMAIL,
+          null,
+          PRIVATE_KEY.replace(/\\n/g, "\n"),
+          ["https://www.googleapis.com/auth/spreadsheets"]
+        );
+
+        const sheets = google.sheets({ version: "v4", auth });
+
+        const date = today();
+        const timestamp = now();
+
+        /* ---------- USERS (upsert style) ---------- */
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: SHEET_ID,
+          range: "USERS",
+          valueInputOption: "USER_ENTERED",
+          requestBody: {
+            values: [[user_id, timestamp]]
+          }
+        });
+
+        /* ---------- MEALS ---------- */
         if (parsed?.signals?.meal?.detected) {
           await sheets.spreadsheets.values.append({
-            spreadsheetId: process.env.SHEET_ID,
+            spreadsheetId: SHEET_ID,
             range: "MEAL_LOGS",
             valueInputOption: "USER_ENTERED",
             requestBody: {
               values: [[
-                today,
+                date,
                 user_id,
                 parsed.signals.meal.text || "",
                 parsed.signals.meal.estimated_calories || "",
-                now
+                timestamp
               ]]
             }
           });
         }
 
+        /* ---------- WEIGHT ---------- */
         if (parsed?.signals?.weight?.detected) {
           await sheets.spreadsheets.values.append({
-            spreadsheetId: process.env.SHEET_ID,
+            spreadsheetId: SHEET_ID,
             range: "WEIGHT_LOGS",
             valueInputOption: "USER_ENTERED",
             requestBody: {
               values: [[
-                today,
+                date,
                 user_id,
                 parsed.signals.weight.value,
-                now
+                timestamp
+              ]]
+            }
+          });
+        }
+
+        /* ---------- MOOD ---------- */
+        if (isMoodMessage(message)) {
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: SHEET_ID,
+            range: "MOOD_LOGS",
+            valueInputOption: "USER_ENTERED",
+            requestBody: {
+              values: [[
+                date,
+                user_id,
+                message,
+                timestamp
+              ]]
+            }
+          });
+        }
+
+        /* ---------- DAILY SUMMARY (ONE ROW / DAY) ---------- */
+        if (
+          parsed?.signals?.meal?.detected ||
+          parsed?.signals?.weight?.detected ||
+          isMoodMessage(message)
+        ) {
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: SHEET_ID,
+            range: "DAILY_SUMMARIES",
+            valueInputOption: "USER_ENTERED",
+            requestBody: {
+              values: [[
+                date,
+                user_id,
+                parsed?.signals?.meal?.estimated_calories || "",
+                parsed?.signals?.weight?.value || "",
+                isMoodMessage(message) ? message : "",
+                timestamp
               ]]
             }
           });
@@ -219,8 +231,8 @@ export default async function handler(req, res) {
     }
 
     return res.status(200).json({
-      reply: parsed.reply,
-      signals: parsed.signals
+      reply: parsed.reply || "Okay.",
+      signals: parsed.signals || {}
     });
 
   } catch (err) {
