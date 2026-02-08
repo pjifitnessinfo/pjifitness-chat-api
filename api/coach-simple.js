@@ -5,6 +5,24 @@ export const config = {
 import { google } from "googleapis";
 
 /* ======================================
+   CORS SETUP (FIXED)
+====================================== */
+const ALLOWED_ORIGINS = new Set([
+  "https://www.pjifitness.com",
+  "https://pjifitness.com"
+]);
+
+function setCors(req, res) {
+  const origin = req.headers.origin;
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+}
+
+/* ======================================
    GOOGLE SHEETS SETUP
 ====================================== */
 const auth = new google.auth.JWT(
@@ -87,11 +105,12 @@ async function appendRow(tab, row) {
    HANDLER
 ====================================== */
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  setCors(req, res);
 
-  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+
   if (req.method !== "POST") {
     return res.status(405).json({ reply: "Method not allowed.", signals: {} });
   }
@@ -100,46 +119,59 @@ export default async function handler(req, res) {
     const { user_id, message, history = [] } = req.body;
 
     if (!user_id || !message) {
-      return res.status(400).json({ reply: "Invalid request.", signals: {} });
+      return res.status(400).json({
+        reply: "Invalid request.",
+        signals: {}
+      });
     }
 
     const messages = [
       { role: "system", content: SYSTEM_PROMPT.trim() },
-      ...(Array.isArray(history) ? history.slice(-12) : []),
+      ...(Array.isArray(history)
+        ? history.filter(m => m?.role && m?.content).slice(-12)
+        : []),
       { role: "user", content: message }
     ];
 
-    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "gpt-4.1-mini",
-        temperature: 0.5,
-        messages
-      })
-    });
+    const openaiRes = await fetch(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "gpt-4.1-mini",
+          temperature: 0.5,
+          messages
+        })
+      }
+    );
 
     const data = await openaiRes.json();
     const content = data?.choices?.[0]?.message?.content;
 
     if (!content) {
-      return res.status(200).json({ reply: "Try again.", signals: {} });
+      return res.status(200).json({
+        reply: "Try again.",
+        signals: {}
+      });
     }
 
     let parsed;
     try {
       parsed = JSON.parse(content);
     } catch {
-      return res.status(200).json({ reply: content, signals: {} });
+      return res.status(200).json({
+        reply: content,
+        signals: {}
+      });
     }
 
     /* ======================================
        SILENT LOGGING
     ====================================== */
-
     const { meal, weight } = parsed.signals || {};
 
     // MEAL LOG
@@ -147,10 +179,9 @@ export default async function handler(req, res) {
       await appendRow("MEAL_LOGS", [
         today(),
         user_id,
-        `meal_${Date.now()}`,
-        meal.text,
+        meal.text || "",
         meal.estimated_calories,
-        "",
+        meal.confidence ?? "",
         now()
       ]);
     }
@@ -161,21 +192,19 @@ export default async function handler(req, res) {
         today(),
         user_id,
         weight.value,
-        "v3",
+        weight.confidence ?? "",
         now()
       ]);
     }
 
-    // DAILY SUMMARY (simple pass-through for now)
+    // DAILY SUMMARY (lightweight for now)
     if (meal?.detected || weight?.detected) {
       await appendRow("DAILY_SUMMARIES", [
         today(),
         user_id,
         weight?.value || "",
-        "",
         meal?.estimated_calories || "",
-        "",
-        ""
+        now()
       ]);
     }
 
