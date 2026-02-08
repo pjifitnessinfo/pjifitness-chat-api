@@ -2,8 +2,23 @@ export const config = {
   api: { bodyParser: true }
 };
 
+import { google } from "googleapis";
+
 /* ======================================
-   SYSTEM PROMPT (HYBRID – NATURAL + SMART)
+   GOOGLE SHEETS SETUP
+====================================== */
+const auth = new google.auth.JWT(
+  process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+  null,
+  process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+  ["https://www.googleapis.com/auth/spreadsheets"]
+);
+
+const sheets = google.sheets({ version: "v4", auth });
+const SHEET_ID = process.env.GOOGLE_SHEET_ID;
+
+/* ======================================
+   SYSTEM PROMPT (UNCHANGED)
 ====================================== */
 const SYSTEM_PROMPT = `
 You are PJ Coach — a calm, supportive, practical fitness coach.
@@ -35,7 +50,6 @@ LOGGING (SILENT):
 
 OUTPUT FORMAT (MANDATORY):
 Return ONLY valid JSON:
-
 {
   "reply": string,
   "signals": {
@@ -52,12 +66,22 @@ Return ONLY valid JSON:
     }
   }
 }
-
-SIGNAL RULES:
-- detected=true ONLY when confidence is high
-- estimated_calories must be a SINGLE number (best estimate)
-- confidence between 0 and 1
 `;
+
+/* ======================================
+   HELPERS
+====================================== */
+const today = () => new Date().toISOString().slice(0, 10);
+const now = () => new Date().toISOString();
+
+async function appendRow(tab, row) {
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: tab,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [row] }
+  });
+}
 
 /* ======================================
    HANDLER
@@ -74,25 +98,14 @@ export default async function handler(req, res) {
 
   try {
     const { user_id, message, history = [] } = req.body;
-    console.log("USER_ID:", user_id);
 
-    if (!user_id) {
-  return res.status(400).json({
-    reply: "Missing user ID.",
-    signals: {}
-  });
-}
-
-
-    if (!message || typeof message !== "string") {
-      return res.status(400).json({ reply: "No message received.", signals: {} });
+    if (!user_id || !message) {
+      return res.status(400).json({ reply: "Invalid request.", signals: {} });
     }
 
     const messages = [
       { role: "system", content: SYSTEM_PROMPT.trim() },
-      ...Array.isArray(history)
-        ? history.filter(m => m?.role && m?.content).slice(-12)
-        : [],
+      ...(Array.isArray(history) ? history.slice(-12) : []),
       { role: "user", content: message }
     ];
 
@@ -113,22 +126,57 @@ export default async function handler(req, res) {
     const content = data?.choices?.[0]?.message?.content;
 
     if (!content) {
-      return res.status(200).json({
-        reply: "I didn’t catch that — try again.",
-        signals: {}
-      });
+      return res.status(200).json({ reply: "Try again.", signals: {} });
     }
 
-    // Enforce JSON output
     let parsed;
     try {
       parsed = JSON.parse(content);
     } catch {
-      // Safety fallback — still respond, but no logging
-      return res.status(200).json({
-        reply: content,
-        signals: {}
-      });
+      return res.status(200).json({ reply: content, signals: {} });
+    }
+
+    /* ======================================
+       SILENT LOGGING
+    ====================================== */
+
+    const { meal, weight } = parsed.signals || {};
+
+    // MEAL LOG
+    if (meal?.detected && meal.estimated_calories > 0) {
+      await appendRow("MEAL_LOGS", [
+        today(),
+        user_id,
+        `meal_${Date.now()}`,
+        meal.text,
+        meal.estimated_calories,
+        "",
+        now()
+      ]);
+    }
+
+    // WEIGHT LOG
+    if (weight?.detected && weight.value > 0) {
+      await appendRow("WEIGHT_LOGS", [
+        today(),
+        user_id,
+        weight.value,
+        "v3",
+        now()
+      ]);
+    }
+
+    // DAILY SUMMARY (simple pass-through for now)
+    if (meal?.detected || weight?.detected) {
+      await appendRow("DAILY_SUMMARIES", [
+        today(),
+        user_id,
+        weight?.value || "",
+        "",
+        meal?.estimated_calories || "",
+        "",
+        ""
+      ]);
     }
 
     return res.status(200).json({
@@ -139,7 +187,7 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error("[coach-simple] fatal:", err);
     return res.status(500).json({
-      reply: "Something went wrong. Try again in a moment.",
+      reply: "Something went wrong. Try again.",
       signals: {}
     });
   }
