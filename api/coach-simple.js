@@ -76,6 +76,39 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
+// 🔴 TEMP TEST — REMOVE AFTER
+if (req.body?.__force_sheet_test === true) {
+  try {
+    const auth = new google.auth.JWT(
+      process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      null,
+      process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+      ["https://www.googleapis.com/auth/spreadsheets"]
+    );
+
+    const sheets = google.sheets({ version: "v4", auth });
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: process.env.GOOGLE_SHEET_ID,
+      range: "MEAL_LOGS",
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [[
+          new Date().toISOString().slice(0,10),
+          "FORCE_TEST",
+          "console test row",
+          999,
+          new Date().toISOString()
+        ]]
+      }
+    });
+
+    return res.status(200).json({ ok: true, forced: true });
+  } catch (e) {
+    console.error("FORCE TEST FAILED:", e);
+    return res.status(500).json({ ok: false, error: String(e.message) });
+  }
+}
 
   if (req.method !== "POST") {
     return res.status(405).json({
