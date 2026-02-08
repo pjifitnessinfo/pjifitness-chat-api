@@ -7,7 +7,7 @@ import { google } from "googleapis";
 /* ======================================
    CORS — MUST RUN FIRST
 ====================================== */
-function applyCors(req, res) {
+function applyCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -15,17 +15,27 @@ function applyCors(req, res) {
 }
 
 /* ======================================
-   GOOGLE SHEETS
+   GOOGLE SHEETS (SAFE INIT)
 ====================================== */
-const auth = new google.auth.JWT(
-  process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-  null,
-  process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-  ["https://www.googleapis.com/auth/spreadsheets"]
-);
+let sheets = null;
+let SHEET_ID = process.env.SHEET_ID || process.env.GOOGLE_SHEET_ID;
 
-const sheets = google.sheets({ version: "v4", auth });
-const SHEET_ID = process.env.GOOGLE_SHEET_ID;
+try {
+  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON && SHEET_ID) {
+    const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+
+    const auth = new google.auth.JWT(
+      creds.client_email,
+      null,
+      creds.private_key,
+      ["https://www.googleapis.com/auth/spreadsheets"]
+    );
+
+    sheets = google.sheets({ version: "v4", auth });
+  }
+} catch (err) {
+  console.error("❌ Google Sheets init failed:", err);
+}
 
 /* ======================================
    SYSTEM PROMPT (UNCHANGED)
@@ -44,8 +54,8 @@ You are PJ Coach — a calm, supportive, practical fitness coach.
    HANDLER
 ====================================== */
 export default async function handler(req, res) {
-  // ✅ ALWAYS APPLY CORS FIRST
-  applyCors(req, res);
+  // ✅ CORS ALWAYS FIRST
+  applyCors(res);
 
   // ✅ PRE-FLIGHT
   if (req.method === "OPTIONS") {
@@ -69,6 +79,9 @@ export default async function handler(req, res) {
       });
     }
 
+    /* ============================
+       OPENAI CALL
+    ============================ */
     const openaiRes = await fetch(
       "https://api.openai.com/v1/chat/completions",
       {
@@ -81,7 +94,7 @@ export default async function handler(req, res) {
           model: "gpt-4.1-mini",
           temperature: 0.5,
           messages: [
-            { role: "system", content: SYSTEM_PROMPT },
+            { role: "system", content: SYSTEM_PROMPT.trim() },
             { role: "user", content: message }
           ]
         })
@@ -102,49 +115,59 @@ export default async function handler(req, res) {
     }
 
     const { meal, weight } = parsed.signals || {};
+    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date().toISOString();
 
-    // MEAL LOG
-    if (meal?.detected) {
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: SHEET_ID,
-        range: "MEAL_LOGS",
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [[
-            new Date().toISOString().slice(0,10),
-            user_id,
-            meal.text || "",
-            meal.estimated_calories || "",
-            new Date().toISOString()
-          ]]
-        }
-      });
-    }
+    /* ============================
+       SILENT SHEETS LOGGING
+    ============================ */
+    if (sheets) {
+      // MEAL LOG
+      if (meal?.detected && meal.estimated_calories > 0) {
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: SHEET_ID,
+          range: "MEAL_LOGS",
+          valueInputOption: "USER_ENTERED",
+          requestBody: {
+            values: [[
+              today,
+              user_id,
+              `meal_${Date.now()}`,
+              meal.text || "",
+              meal.estimated_calories,
+              "",
+              now
+            ]]
+          }
+        });
+      }
 
-    // WEIGHT LOG
-    if (weight?.detected) {
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: SHEET_ID,
-        range: "WEIGHT_LOGS",
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [[
-            new Date().toISOString().slice(0,10),
-            user_id,
-            weight.value,
-            new Date().toISOString()
-          ]]
-        }
-      });
+      // WEIGHT LOG
+      if (weight?.detected && weight.value > 0) {
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: SHEET_ID,
+          range: "WEIGHT_LOGS",
+          valueInputOption: "USER_ENTERED",
+          requestBody: {
+            values: [[
+              today,
+              user_id,
+              weight.value,
+              "v3",
+              now
+            ]]
+          }
+        });
+      }
     }
 
     return res.status(200).json({
-      reply: parsed.reply,
-      signals: parsed.signals
+      reply: parsed.reply || "Okay.",
+      signals: parsed.signals || {}
     });
 
   } catch (err) {
-    console.error("coach-simple error:", err);
+    console.error("🔥 coach-simple fatal:", err);
     return res.status(500).json({
       reply: "Something went wrong.",
       signals: {}
