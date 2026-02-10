@@ -123,6 +123,8 @@ export default async function handler(req, res) {
     /* ===============================
        GOOGLE SHEETS (NON-FATAL)
     ================================ */
+    console.log("🔥 ENTERING SHEETS BLOCK", parsed?.signals);
+
     try {
       const PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY;
       const EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
