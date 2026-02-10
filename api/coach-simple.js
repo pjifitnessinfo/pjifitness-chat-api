@@ -63,8 +63,8 @@ Return ONLY valid JSON:
 const today = () => new Date().toISOString().slice(0, 10);
 const now = () => new Date().toISOString();
 
-function isMoodMessage(text) {
-  return /i feel|i’m feeling|im feeling|today feels|feeling/i.test(text);
+function isMoodMessage(text = "") {
+  return /i feel|i’m feeling|im feeling|feeling stressed|feeling tired|feeling good/i.test(text);
 }
 
 /* ===============================
@@ -123,8 +123,6 @@ export default async function handler(req, res) {
     /* ===============================
        GOOGLE SHEETS (NON-FATAL)
     ================================ */
-    console.log("🔥 ENTERING SHEETS BLOCK", parsed?.signals);
-
     try {
       const PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY;
       const EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
@@ -139,14 +137,13 @@ export default async function handler(req, res) {
         );
 
         const sheets = google.sheets({ version: "v4", auth });
-
         const date = today();
         const timestamp = now();
 
-        /* ---------- USERS (upsert style) ---------- */
+        /* ---------- USERS ---------- */
         await sheets.spreadsheets.values.append({
           spreadsheetId: SHEET_ID,
-          range: "USERS",
+          range: "users!A:B",
           valueInputOption: "USER_ENTERED",
           requestBody: {
             values: [[user_id, timestamp]]
@@ -157,7 +154,7 @@ export default async function handler(req, res) {
         if (parsed?.signals?.meal?.detected) {
           await sheets.spreadsheets.values.append({
             spreadsheetId: SHEET_ID,
-            range: "MEAL_LOGS",
+            range: "MEAL_LOGS!A:E",
             valueInputOption: "USER_ENTERED",
             requestBody: {
               values: [[
@@ -175,7 +172,7 @@ export default async function handler(req, res) {
         if (parsed?.signals?.weight?.detected) {
           await sheets.spreadsheets.values.append({
             spreadsheetId: SHEET_ID,
-            range: "WEIGHT_LOGS",
+            range: "WEIGHT_LOGS!A:D",
             valueInputOption: "USER_ENTERED",
             requestBody: {
               values: [[
@@ -188,24 +185,7 @@ export default async function handler(req, res) {
           });
         }
 
-        /* ---------- MOOD ---------- */
-        if (isMoodMessage(message)) {
-          await sheets.spreadsheets.values.append({
-            spreadsheetId: SHEET_ID,
-            range: "MOOD_LOGS",
-            valueInputOption: "USER_ENTERED",
-            requestBody: {
-              values: [[
-                date,
-                user_id,
-                message,
-                timestamp
-              ]]
-            }
-          });
-        }
-
-        /* ---------- DAILY SUMMARY (ONE ROW / DAY) ---------- */
+        /* ---------- DAILY SUMMARY ---------- */
         if (
           parsed?.signals?.meal?.detected ||
           parsed?.signals?.weight?.detected ||
@@ -213,14 +193,15 @@ export default async function handler(req, res) {
         ) {
           await sheets.spreadsheets.values.append({
             spreadsheetId: SHEET_ID,
-            range: "DAILY_SUMMARIES",
+            range: "DAILY_SUMMARIES!A:G",
             valueInputOption: "USER_ENTERED",
             requestBody: {
               values: [[
                 date,
                 user_id,
-                parsed?.signals?.meal?.estimated_calories || "",
                 parsed?.signals?.weight?.value || "",
+                "",
+                parsed?.signals?.meal?.estimated_calories || "",
                 isMoodMessage(message) ? message : "",
                 timestamp
               ]]
