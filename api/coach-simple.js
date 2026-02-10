@@ -5,7 +5,7 @@ export const config = {
 import { google } from "googleapis";
 
 /* ===============================
-   CORS — ABSOLUTE FIRST
+   CORS — MUST RUN FIRST
 ================================ */
 function applyCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
@@ -63,8 +63,8 @@ Return ONLY valid JSON:
 const today = () => new Date().toISOString().slice(0, 10);
 const now = () => new Date().toISOString();
 
-function isMoodMessage(text = "") {
-  return /i feel|i’m feeling|im feeling|feeling stressed|feeling tired|feeling good/i.test(text);
+function isMoodMessage(text) {
+  return /i feel|i’m feeling|im feeling|today feels|feeling/i.test(text);
 }
 
 /* ===============================
@@ -137,55 +137,59 @@ export default async function handler(req, res) {
         );
 
         const sheets = google.sheets({ version: "v4", auth });
+
         const date = today();
         const timestamp = now();
 
         /* ---------- USERS ---------- */
         await sheets.spreadsheets.values.append({
           spreadsheetId: SHEET_ID,
-          range: "users!A:B",
+          range: "users!A:D",
           valueInputOption: "USER_ENTERED",
           requestBody: {
-            values: [[user_id, timestamp]]
+            values: [[user_id, "", "", timestamp]]
           }
         });
 
-        /* ---------- MEALS ---------- */
+        /* ---------- MEAL_LOGS ---------- */
         if (parsed?.signals?.meal?.detected) {
           await sheets.spreadsheets.values.append({
             spreadsheetId: SHEET_ID,
-            range: "MEAL_LOGS!A:E",
+            range: "MEAL_LOGS!A:G",
             valueInputOption: "USER_ENTERED",
             requestBody: {
               values: [[
                 date,
                 user_id,
+                `meal_${Date.now()}`,
                 parsed.signals.meal.text || "",
                 parsed.signals.meal.estimated_calories || "",
+                "",
                 timestamp
               ]]
             }
           });
         }
 
-        /* ---------- WEIGHT ---------- */
+        /* ---------- WEIGHT_LOGS ---------- */
         if (parsed?.signals?.weight?.detected) {
           await sheets.spreadsheets.values.append({
             spreadsheetId: SHEET_ID,
-            range: "WEIGHT_LOGS!A:D",
+            range: "WEIGHT_LOGS!A:E",
             valueInputOption: "USER_ENTERED",
             requestBody: {
               values: [[
                 date,
                 user_id,
                 parsed.signals.weight.value,
+                "v3",
                 timestamp
               ]]
             }
           });
         }
 
-        /* ---------- DAILY SUMMARY ---------- */
+        /* ---------- DAILY_SUMMARIES ---------- */
         if (
           parsed?.signals?.meal?.detected ||
           parsed?.signals?.weight?.detected ||
