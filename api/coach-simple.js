@@ -123,16 +123,28 @@ let sheets_debug = { ran: false };
       return res.status(200).json({ reply: content || "Okay.", signals: {} });
     }
 
-        /* ===============================
+            /* ===============================
        GOOGLE SHEETS (NON-FATAL)
     ================================ */
+    const debug = !!(req.body && req.body.debug);
+    let sheets_debug = { ran: false };
+
     try {
+      sheets_debug.ran = true;
+
       const PRIVATE_KEY_RAW = process.env.GOOGLE_PRIVATE_KEY;
       const EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
       const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 
+      sheets_debug.hasPrivateKey = !!PRIVATE_KEY_RAW;
+      sheets_debug.hasEmail = !!EMAIL;
+      sheets_debug.hasSheetId = !!SHEET_ID;
+
       // 🔍 Prevent silent failure (your old code would just do nothing)
       if (!PRIVATE_KEY_RAW || !EMAIL || !SHEET_ID) {
+        sheets_debug.ok = false;
+        sheets_debug.reason = "missing_env";
+
         console.error("[Sheets] Missing env vars:", {
           hasPrivateKey: !!PRIVATE_KEY_RAW,
           hasEmail: !!EMAIL,
@@ -154,6 +166,27 @@ let sheets_debug = { ran: false };
 
         const date = today();
         const timestamp = now();
+
+        // ✅ If debug=true, write an obvious marker row so you can SEE it
+        if (debug) {
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: SHEET_ID,
+            range: "MEAL_LOGS!A:G",
+            valueInputOption: "USER_ENTERED",
+            requestBody: {
+              values: [[
+                date,
+                user_id,
+                `debug_${Date.now()}`,
+                "DEBUG_WRITE",
+                0,
+                "",
+                timestamp
+              ]]
+            }
+          });
+          sheets_debug.debugRow = "wrote DEBUG_WRITE to MEAL_LOGS";
+        }
 
         /* ---------- USERS ---------- */
         await sheets.spreadsheets.values.append({
@@ -227,9 +260,17 @@ let sheets_debug = { ran: false };
           });
         }
 
+        sheets_debug.ok = true;
         console.log("[Sheets] ✅ Logged OK", { user_id, date });
       }
     } catch (sheetErr) {
+      sheets_debug.ok = false;
+      sheets_debug.reason = "exception";
+      sheets_debug.message = sheetErr?.message;
+      sheets_debug.code = sheetErr?.code;
+      sheets_debug.status = sheetErr?.response?.status;
+      sheets_debug.data = sheetErr?.response?.data;
+
       console.error("[Sheets] ❌ Logging failed:", {
         message: sheetErr?.message,
         code: sheetErr?.code,
@@ -240,7 +281,8 @@ let sheets_debug = { ran: false };
 
     return res.status(200).json({
       reply: parsed.reply || "Okay.",
-      signals: parsed.signals || {}
+      signals: parsed.signals || {},
+      ...(debug ? { sheets_debug } : {})
     });
 
   } catch (err) {
