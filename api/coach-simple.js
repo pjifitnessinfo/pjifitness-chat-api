@@ -275,22 +275,74 @@ export default async function handler(req, res) {
           });
         }
 
-        /* ---------- DAILY_SUMMARIES ---------- */
+                /* ---------- DAILY_SUMMARIES ---------- */
         if (
           parsed?.signals?.meal?.detected ||
           parsed?.signals?.weight?.detected ||
           isMoodMessage(message)
         ) {
+          // Compute 7-day avg weight from WEIGHT_LOGS for this user (non-fatal)
+          let weeklyAvgWeight = "";
+          try {
+            const wRes = await sheets.spreadsheets.values.get({
+              spreadsheetId: SHEET_ID,
+              range: "WEIGHT_LOGS!A:E"
+            });
+
+            const rows = wRes?.data?.values || [];
+            const todayStr = date; // YYYY-MM-DD
+            const cutoff = new Date(todayStr);
+            cutoff.setDate(cutoff.getDate() - 6); // last 7 days incl today
+
+            const vals = [];
+            for (const r of rows) {
+              const rDate = r?.[0];      // A = date
+              const rUser = r?.[1];      // B = user_id
+              const rWeight = r?.[2];    // C = weight
+
+              if (!rDate || !rUser || !rWeight) continue;
+              if (String(rUser) !== String(user_id)) continue;
+
+              const dObj = new Date(rDate);
+              if (isNaN(dObj.getTime())) continue;
+              if (dObj < cutoff) continue;
+
+              const wNum = parseFloat(rWeight);
+              if (!Number.isFinite(wNum)) continue;
+
+              vals.push(wNum);
+            }
+
+            if (vals.length) {
+              weeklyAvgWeight = (vals.reduce((a,b)=>a+b,0) / vals.length).toFixed(1);
+            }
+          } catch (e) {
+            // ignore avg failure
+          }
+
+          // ✅ Map columns A:I
+          // A date
+          // B user_id
+          // C weight (today)
+          // D weekly_avg_weight
+          // E ai_summary
+          // F ai_swaps
+          // G meal_estimated_calories
+          // H mood_text
+          // I timestamp
+
           await sheets.spreadsheets.values.append({
             spreadsheetId: SHEET_ID,
-            range: "DAILY_SUMMARIES!A:G",
+            range: "DAILY_SUMMARIES!A:I",
             valueInputOption: "USER_ENTERED",
             requestBody: {
               values: [[
                 date,
                 user_id,
                 parsed?.signals?.weight?.value || "",
-                "",
+                weeklyAvgWeight,
+                parsed?.reply || "",
+                "", // ai_swaps placeholder
                 parsed?.signals?.meal?.estimated_calories || "",
                 isMoodMessage(message) ? message : "",
                 timestamp
@@ -298,6 +350,7 @@ export default async function handler(req, res) {
             }
           });
         }
+
 
         sheets_debug.ok = true;
         console.log("[Sheets] ✅ Logged OK", { user_id, date });
