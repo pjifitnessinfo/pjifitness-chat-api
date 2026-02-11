@@ -18,18 +18,13 @@ function applyCors(req, res) {
 
   const origin = req.headers.origin;
 
-  // Only allow your site(s)
   if (origin && allowed.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
 
-  // Prevent caching the wrong origin response
   res.setHeader("Vary", "Origin");
-
-  // Methods you support
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
 
-  // Echo requested headers so preflight passes even if browser adds more
   const reqHeaders = req.headers["access-control-request-headers"];
   res.setHeader(
     "Access-Control-Allow-Headers",
@@ -92,7 +87,6 @@ function isMoodMessage(text) {
   return /i feel|i’m feeling|im feeling|today feels|feeling/i.test(text || "");
 }
 
-// tiny helper to keep numbers safe
 function toNum(x) {
   const n = Number(x);
   return Number.isFinite(n) ? n : null;
@@ -102,10 +96,8 @@ function toNum(x) {
    HANDLER
 ================================ */
 export default async function handler(req, res) {
-  // ✅ CORS headers must be set for BOTH OPTIONS + POST
   applyCors(req, res);
 
-  // ✅ Preflight (browser OPTIONS) must return the CORS headers
   if (req.method === "OPTIONS") {
     return res.status(204).end();
   }
@@ -150,7 +142,6 @@ export default async function handler(req, res) {
     try {
       parsed = JSON.parse(content);
     } catch {
-      // If the model ever returns non-JSON, still respond gracefully
       return res.status(200).json({
         reply: content || "Okay.",
         signals: {},
@@ -184,7 +175,6 @@ export default async function handler(req, res) {
 
           const flexTxt = Number.isFinite(flex) ? `±${Math.round(flex)}` : "";
 
-          // One short, non-robotic line
           const totalsLine =
             `\n\nTotals: ${eatenTodayAfter} eaten • ${leftTodayAfter} left today (target ${Math.round(target)}${flexTxt}). ` +
             `Week: ${weekEatenAfter} eaten • ${weekLeftAfter} left.`;
@@ -198,40 +188,71 @@ export default async function handler(req, res) {
 
     /* ===============================
        GOOGLE SHEETS (NON-FATAL) + DEBUG
+       ✅ Supports BOTH env setups:
+       - GOOGLE_SERVICE_ACCOUNT_JSON + SHEET_ID
+       - OR GOOGLE_PRIVATE_KEY + GOOGLE_SERVICE_ACCOUNT_EMAIL + GOOGLE_SHEET_ID
     ================================ */
     let sheets_debug = { ran: false };
 
     try {
       sheets_debug.ran = true;
 
-      const PRIVATE_KEY_RAW = process.env.GOOGLE_PRIVATE_KEY;
-      const EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-      const SHEET_ID = process.env.GOOGLE_SHEET_ID;
+      const SHEET_ID =
+        process.env.GOOGLE_SHEET_ID ||
+        process.env.SHEET_ID ||
+        "";
 
+      // Option A: JSON blob
+      const SA_JSON_RAW = process.env.GOOGLE_SERVICE_ACCOUNT_JSON || "";
+
+      // Option B: separate vars
+      const PRIVATE_KEY_RAW = process.env.GOOGLE_PRIVATE_KEY || "";
+      const EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "";
+
+      sheets_debug.hasSheetId = !!SHEET_ID;
+      sheets_debug.hasServiceJson = !!SA_JSON_RAW;
       sheets_debug.hasPrivateKey = !!PRIVATE_KEY_RAW;
       sheets_debug.hasEmail = !!EMAIL;
-      sheets_debug.hasSheetId = !!SHEET_ID;
 
-      // Prevent silent "skip"
-      if (!PRIVATE_KEY_RAW || !EMAIL || !SHEET_ID) {
+      let clientEmail = "";
+      let privateKey = "";
+
+      if (SA_JSON_RAW) {
+        try {
+          const obj = JSON.parse(SA_JSON_RAW);
+          clientEmail = String(obj.client_email || "");
+          privateKey = String(obj.private_key || "");
+        } catch (e) {
+          sheets_debug.ok = false;
+          sheets_debug.reason = "bad_service_json";
+          throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON");
+        }
+      } else {
+        clientEmail = EMAIL;
+        privateKey = PRIVATE_KEY_RAW;
+      }
+
+      const hasCreds = !!clientEmail && !!privateKey;
+
+      if (!SHEET_ID || !hasCreds) {
         sheets_debug.ok = false;
         sheets_debug.reason = "missing_env";
-
         console.error("[Sheets] Missing env vars:", {
+          hasSheetId: !!SHEET_ID,
+          hasCreds,
+          hasServiceJson: !!SA_JSON_RAW,
           hasPrivateKey: !!PRIVATE_KEY_RAW,
-          hasEmail: !!EMAIL,
-          hasSheetId: !!SHEET_ID
+          hasEmail: !!EMAIL
         });
       } else {
-        const PRIVATE_KEY = PRIVATE_KEY_RAW.replace(/\\n/g, "\n");
+        const PRIVATE_KEY = String(privateKey).replace(/\\n/g, "\n");
 
         const auth = new google.auth.JWT({
-          email: EMAIL,
+          email: clientEmail,
           key: PRIVATE_KEY,
           scopes: ["https://www.googleapis.com/auth/spreadsheets"]
         });
 
-        // Forces auth errors to surface here
         await auth.authorize();
 
         const sheets = google.sheets({ version: "v4", auth });
@@ -239,7 +260,6 @@ export default async function handler(req, res) {
         const date = today();
         const timestamp = now();
 
-        // If debug requested, write a very obvious marker row
         if (debug) {
           await sheets.spreadsheets.values.append({
             spreadsheetId: SHEET_ID,
@@ -312,7 +332,6 @@ export default async function handler(req, res) {
           parsed?.signals?.weight?.detected ||
           isMoodMessage(message)
         ) {
-          // Compute 7-day avg weight from WEIGHT_LOGS for this user (non-fatal)
           let weeklyAvgWeight = "";
           try {
             const wRes = await sheets.spreadsheets.values.get({
@@ -321,15 +340,15 @@ export default async function handler(req, res) {
             });
 
             const rows = wRes?.data?.values || [];
-            const todayStr = date; // YYYY-MM-DD
+            const todayStr = date;
             const cutoff = new Date(todayStr);
-            cutoff.setDate(cutoff.getDate() - 6); // last 7 days incl today
+            cutoff.setDate(cutoff.getDate() - 6);
 
             const vals = [];
             for (const r of rows) {
-              const rDate = r?.[0];      // A = date
-              const rUser = r?.[1];      // B = user_id
-              const rWeight = r?.[2];    // C = weight
+              const rDate = r?.[0];
+              const rUser = r?.[1];
+              const rWeight = r?.[2];
 
               if (!rDate || !rUser || !rWeight) continue;
               if (String(rUser) !== String(user_id)) continue;
@@ -347,20 +366,7 @@ export default async function handler(req, res) {
             if (vals.length) {
               weeklyAvgWeight = (vals.reduce((a,b)=>a+b,0) / vals.length).toFixed(1);
             }
-          } catch (e) {
-            // ignore avg failure
-          }
-
-          // ✅ Map columns A:I
-          // A date
-          // B user_id
-          // C weight (today)
-          // D weekly_avg_weight
-          // E ai_summary
-          // F ai_swaps
-          // G meal_estimated_calories
-          // H mood_text
-          // I timestamp
+          } catch (e) {}
 
           await sheets.spreadsheets.values.append({
             spreadsheetId: SHEET_ID,
