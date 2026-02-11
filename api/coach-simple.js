@@ -154,18 +154,29 @@ export default async function handler(req, res) {
 
     /* ===============================
        GOOGLE SHEETS (NON-FATAL) + DEBUG
+       ✅ FIXED to use your Vercel env vars:
+       - GOOGLE_SERVICE_ACCOUNT_JSON
+       - SHEET_ID
     ================================ */
     let sheets_debug = { ran: false };
 
     try {
       sheets_debug.ran = true;
 
-      const PRIVATE_KEY_RAW = process.env.GOOGLE_PRIVATE_KEY;
-      const EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-      const SHEET_ID = process.env.GOOGLE_SHEET_ID;
+      const CREDS_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+      const SHEET_ID = process.env.SHEET_ID;
 
-      sheets_debug.hasPrivateKey = !!PRIVATE_KEY_RAW;
+      let EMAIL = null;
+      let PRIVATE_KEY_RAW = null;
+
+      if (CREDS_JSON) {
+        const creds = JSON.parse(CREDS_JSON);
+        EMAIL = creds?.client_email || null;
+        PRIVATE_KEY_RAW = creds?.private_key || null;
+      }
+
       sheets_debug.hasEmail = !!EMAIL;
+      sheets_debug.hasPrivateKey = !!PRIVATE_KEY_RAW;
       sheets_debug.hasSheetId = !!SHEET_ID;
 
       // Prevent silent "skip"
@@ -174,12 +185,14 @@ export default async function handler(req, res) {
         sheets_debug.reason = "missing_env";
 
         console.error("[Sheets] Missing env vars:", {
-          hasPrivateKey: !!PRIVATE_KEY_RAW,
+          hasServiceAccountJson: !!CREDS_JSON,
           hasEmail: !!EMAIL,
+          hasPrivateKey: !!PRIVATE_KEY_RAW,
           hasSheetId: !!SHEET_ID
         });
       } else {
-        const PRIVATE_KEY = PRIVATE_KEY_RAW.replace(/\\n/g, "\n");
+        // In case key comes through with escaped newlines
+        const PRIVATE_KEY = String(PRIVATE_KEY_RAW).replace(/\\n/g, "\n");
 
         const auth = new google.auth.JWT({
           email: EMAIL,
