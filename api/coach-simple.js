@@ -92,6 +92,12 @@ function isMoodMessage(text) {
   return /i feel|i’m feeling|im feeling|today feels|feeling/i.test(text || "");
 }
 
+// tiny helper to keep numbers safe
+function toNum(x) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
+}
+
 /* ===============================
    HANDLER
 ================================ */
@@ -109,7 +115,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { user_id, message, history = [], debug = false } = req.body || {};
+    const { user_id, message, history = [], debug = false, context = null } = req.body || {};
 
     if (!user_id || !message) {
       return res.status(400).json({ reply: "Invalid request.", signals: {} });
@@ -153,30 +159,57 @@ export default async function handler(req, res) {
     }
 
     /* ===============================
+       ✅ TOTALS APPEND (NO PROMPT CHANGE)
+       - Only after meal detected
+       - Uses context from frontend
+       - Appends a single line to reply
+    ================================ */
+    try {
+      const mealDetected = !!parsed?.signals?.meal?.detected;
+      if (mealDetected && context && typeof context === "object") {
+        const target = toNum(context.target);
+        const flex = toNum(context.flex ?? 100);
+        const eatenTodayBefore = toNum(context.eaten_today);
+        const weekEatenBefore = toNum(context.week_eaten);
+
+        const mealCals = toNum(parsed?.signals?.meal?.estimated_calories) ?? 0;
+
+        if (Number.isFinite(target) && Number.isFinite(eatenTodayBefore) && Number.isFinite(weekEatenBefore)) {
+          const eatenTodayAfter = Math.max(0, Math.round(eatenTodayBefore + mealCals));
+          const leftTodayAfter = Math.max(0, Math.round(target - eatenTodayAfter));
+
+          const weekTarget = Math.round(target * 7);
+          const weekEatenAfter = Math.max(0, Math.round(weekEatenBefore + mealCals));
+          const weekLeftAfter = Math.max(0, Math.round(weekTarget - weekEatenAfter));
+
+          const flexTxt = Number.isFinite(flex) ? `±${Math.round(flex)}` : "";
+
+          // One short, non-robotic line
+          const totalsLine =
+            `\n\nTotals: ${eatenTodayAfter} eaten • ${leftTodayAfter} left today (target ${Math.round(target)}${flexTxt}). ` +
+            `Week: ${weekEatenAfter} eaten • ${weekLeftAfter} left.`;
+
+          parsed.reply = String(parsed.reply || "Okay.") + totalsLine;
+        }
+      }
+    } catch {
+      // never fail the request if totals logic errors
+    }
+
+    /* ===============================
        GOOGLE SHEETS (NON-FATAL) + DEBUG
-       ✅ FIXED to use your Vercel env vars:
-       - GOOGLE_SERVICE_ACCOUNT_JSON
-       - SHEET_ID
     ================================ */
     let sheets_debug = { ran: false };
 
     try {
       sheets_debug.ran = true;
 
-      const CREDS_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-      const SHEET_ID = process.env.SHEET_ID;
+      const PRIVATE_KEY_RAW = process.env.GOOGLE_PRIVATE_KEY;
+      const EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+      const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 
-      let EMAIL = null;
-      let PRIVATE_KEY_RAW = null;
-
-      if (CREDS_JSON) {
-        const creds = JSON.parse(CREDS_JSON);
-        EMAIL = creds?.client_email || null;
-        PRIVATE_KEY_RAW = creds?.private_key || null;
-      }
-
-      sheets_debug.hasEmail = !!EMAIL;
       sheets_debug.hasPrivateKey = !!PRIVATE_KEY_RAW;
+      sheets_debug.hasEmail = !!EMAIL;
       sheets_debug.hasSheetId = !!SHEET_ID;
 
       // Prevent silent "skip"
@@ -185,14 +218,12 @@ export default async function handler(req, res) {
         sheets_debug.reason = "missing_env";
 
         console.error("[Sheets] Missing env vars:", {
-          hasServiceAccountJson: !!CREDS_JSON,
-          hasEmail: !!EMAIL,
           hasPrivateKey: !!PRIVATE_KEY_RAW,
+          hasEmail: !!EMAIL,
           hasSheetId: !!SHEET_ID
         });
       } else {
-        // In case key comes through with escaped newlines
-        const PRIVATE_KEY = String(PRIVATE_KEY_RAW).replace(/\\n/g, "\n");
+        const PRIVATE_KEY = PRIVATE_KEY_RAW.replace(/\\n/g, "\n");
 
         const auth = new google.auth.JWT({
           email: EMAIL,
@@ -275,79 +306,81 @@ export default async function handler(req, res) {
           });
         }
 
-                /* ---------- DAILY_SUMMARIES ---------- */
-if (
-  parsed?.signals?.meal?.detected ||
-  parsed?.signals?.weight?.detected ||
-  isMoodMessage(message)
-) {
-  // Compute 7-day avg weight from WEIGHT_LOGS for this user (non-fatal)
-  let weeklyAvgWeight = "";
-  try {
-    const wRes = await sheets.spreadsheets.values.get({
-      spreadsheetId: SHEET_ID,
-      range: "WEIGHT_LOGS!A:E"
-    });
+        /* ---------- DAILY_SUMMARIES ---------- */
+        if (
+          parsed?.signals?.meal?.detected ||
+          parsed?.signals?.weight?.detected ||
+          isMoodMessage(message)
+        ) {
+          // Compute 7-day avg weight from WEIGHT_LOGS for this user (non-fatal)
+          let weeklyAvgWeight = "";
+          try {
+            const wRes = await sheets.spreadsheets.values.get({
+              spreadsheetId: SHEET_ID,
+              range: "WEIGHT_LOGS!A:E"
+            });
 
-    const rows = wRes?.data?.values || [];
-    const todayStr = date; // YYYY-MM-DD
-    const cutoff = new Date(todayStr);
-    cutoff.setDate(cutoff.getDate() - 6); // last 7 days incl today
+            const rows = wRes?.data?.values || [];
+            const todayStr = date; // YYYY-MM-DD
+            const cutoff = new Date(todayStr);
+            cutoff.setDate(cutoff.getDate() - 6); // last 7 days incl today
 
-    const vals = [];
-    for (const r of rows) {
-      const rDate = r?.[0];      // A = date
-      const rUser = r?.[1];      // B = user_id
-      const rWeight = r?.[2];    // C = weight
+            const vals = [];
+            for (const r of rows) {
+              const rDate = r?.[0];      // A = date
+              const rUser = r?.[1];      // B = user_id
+              const rWeight = r?.[2];    // C = weight
 
-      if (!rDate || !rUser || !rWeight) continue;
-      if (String(rUser) !== String(user_id)) continue;
+              if (!rDate || !rUser || !rWeight) continue;
+              if (String(rUser) !== String(user_id)) continue;
 
-      const dObj = new Date(rDate);
-      if (isNaN(dObj.getTime())) continue;
-      if (dObj < cutoff) continue;
+              const dObj = new Date(rDate);
+              if (isNaN(dObj.getTime())) continue;
+              if (dObj < cutoff) continue;
 
-      const wNum = parseFloat(rWeight);
-      if (!Number.isFinite(wNum)) continue;
+              const wNum = parseFloat(rWeight);
+              if (!Number.isFinite(wNum)) continue;
 
-      vals.push(wNum);
-    }
+              vals.push(wNum);
+            }
 
-    if (vals.length) {
-      weeklyAvgWeight = (vals.reduce((a,b)=>a+b,0) / vals.length).toFixed(1);
-    }
-  } catch (e) {
-    // ignore avg failure
-  }
+            if (vals.length) {
+              weeklyAvgWeight = (vals.reduce((a,b)=>a+b,0) / vals.length).toFixed(1);
+            }
+          } catch (e) {
+            // ignore avg failure
+          }
 
-  // ✅ Map columns A:G to match your sheet headers:
-  // A date
-  // B user_id
-  // C weight
-  // D weekly_avg
-  // E total_calories
-  // F ai_summary
-  // G coach_flag
+          // ✅ Map columns A:I
+          // A date
+          // B user_id
+          // C weight (today)
+          // D weekly_avg_weight
+          // E ai_summary
+          // F ai_swaps
+          // G meal_estimated_calories
+          // H mood_text
+          // I timestamp
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID,
-    range: "DAILY_SUMMARIES!A:G",
-    valueInputOption: "USER_ENTERED",
-    requestBody: {
-      values: [[
-        date,
-        user_id,
-        parsed?.signals?.weight?.value || "",
-        weeklyAvgWeight,
-        parsed?.signals?.meal?.estimated_calories || "",
-        parsed?.reply || "",
-        `v3|${timestamp}`
-      ]]
-    }
-  });
-}
-
-
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: SHEET_ID,
+            range: "DAILY_SUMMARIES!A:I",
+            valueInputOption: "USER_ENTERED",
+            requestBody: {
+              values: [[
+                date,
+                user_id,
+                parsed?.signals?.weight?.value || "",
+                weeklyAvgWeight,
+                parsed?.reply || "",
+                "", // ai_swaps placeholder
+                parsed?.signals?.meal?.estimated_calories || "",
+                isMoodMessage(message) ? message : "",
+                timestamp
+              ]]
+            }
+          });
+        }
 
         sheets_debug.ok = true;
         console.log("[Sheets] ✅ Logged OK", { user_id, date });
