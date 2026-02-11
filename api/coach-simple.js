@@ -1,3 +1,5 @@
+// api/coach-simple.js
+
 export const config = {
   api: { bodyParser: true }
 };
@@ -6,11 +8,34 @@ import { google } from "googleapis";
 
 /* ===============================
    CORS — MUST RUN FIRST
+   (Fixes Shopify/Vercel preflight issues)
 ================================ */
-function applyCors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "https://www.pjifitness.com");
+function applyCors(req, res) {
+  const allowed = new Set([
+    "https://www.pjifitness.com",
+    "https://pjifitness.com"
+  ]);
+
+  const origin = req.headers.origin;
+
+  // Only allow your site(s)
+  if (origin && allowed.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+
+  // Prevent caching the wrong origin response
+  res.setHeader("Vary", "Origin");
+
+  // Methods you support
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  // Echo requested headers so preflight passes even if browser adds more
+  const reqHeaders = req.headers["access-control-request-headers"];
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    reqHeaders || "Content-Type, Authorization"
+  );
+
   res.setHeader("Access-Control-Max-Age", "86400");
 }
 
@@ -64,17 +89,19 @@ const today = () => new Date().toISOString().slice(0, 10);
 const now = () => new Date().toISOString();
 
 function isMoodMessage(text) {
-  return /i feel|i’m feeling|im feeling|today feels|feeling/i.test(text);
+  return /i feel|i’m feeling|im feeling|today feels|feeling/i.test(text || "");
 }
 
 /* ===============================
    HANDLER
 ================================ */
 export default async function handler(req, res) {
-  applyCors(res);
+  // ✅ CORS headers must be set for BOTH OPTIONS + POST
+  applyCors(req, res);
 
+  // ✅ Preflight (browser OPTIONS) must return the CORS headers
   if (req.method === "OPTIONS") {
-    return res.status(200).end();
+    return res.status(204).end();
   }
 
   if (req.method !== "POST") {
@@ -82,17 +109,14 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { user_id, message, history = [] } = req.body || {};
-    const debug = !!(req.body && req.body.debug);
-let sheets_debug = { ran: false };
-
+    const { user_id, message, history = [], debug = false } = req.body || {};
 
     if (!user_id || !message) {
       return res.status(400).json({ reply: "Invalid request.", signals: {} });
     }
 
     /* ===============================
-       OPENAI CALL (UNCHANGED)
+       OPENAI CALL
     ================================ */
     const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -120,13 +144,17 @@ let sheets_debug = { ran: false };
     try {
       parsed = JSON.parse(content);
     } catch {
-      return res.status(200).json({ reply: content || "Okay.", signals: {} });
+      // If the model ever returns non-JSON, still respond gracefully
+      return res.status(200).json({
+        reply: content || "Okay.",
+        signals: {},
+        ...(debug ? { sheets_debug: { ran: false, ok: false, reason: "model_returned_non_json" } } : {})
+      });
     }
 
-            /* ===============================
-       GOOGLE SHEETS (NON-FATAL)
+    /* ===============================
+       GOOGLE SHEETS (NON-FATAL) + DEBUG
     ================================ */
-    const debug = !!(req.body && req.body.debug);
     let sheets_debug = { ran: false };
 
     try {
@@ -140,7 +168,7 @@ let sheets_debug = { ran: false };
       sheets_debug.hasEmail = !!EMAIL;
       sheets_debug.hasSheetId = !!SHEET_ID;
 
-      // 🔍 Prevent silent failure (your old code would just do nothing)
+      // Prevent silent "skip"
       if (!PRIVATE_KEY_RAW || !EMAIL || !SHEET_ID) {
         sheets_debug.ok = false;
         sheets_debug.reason = "missing_env";
@@ -159,7 +187,7 @@ let sheets_debug = { ran: false };
           scopes: ["https://www.googleapis.com/auth/spreadsheets"]
         });
 
-        // ✅ Forces auth errors to show up clearly
+        // Forces auth errors to surface here
         await auth.authorize();
 
         const sheets = google.sheets({ version: "v4", auth });
@@ -167,7 +195,7 @@ let sheets_debug = { ran: false };
         const date = today();
         const timestamp = now();
 
-        // ✅ If debug=true, write an obvious marker row so you can SEE it
+        // If debug requested, write a very obvious marker row
         if (debug) {
           await sheets.spreadsheets.values.append({
             spreadsheetId: SHEET_ID,
@@ -193,9 +221,7 @@ let sheets_debug = { ran: false };
           spreadsheetId: SHEET_ID,
           range: "users!A:D",
           valueInputOption: "USER_ENTERED",
-          requestBody: {
-            values: [[user_id, "", "", timestamp]]
-          }
+          requestBody: { values: [[user_id, "", "", timestamp]] }
         });
 
         /* ---------- MEAL_LOGS ---------- */
