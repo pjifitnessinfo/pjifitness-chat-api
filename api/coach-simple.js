@@ -83,6 +83,9 @@ export default async function handler(req, res) {
 
   try {
     const { user_id, message, history = [] } = req.body || {};
+    const debug = !!(req.body && req.body.debug);
+let sheets_debug = { ran: false };
+
 
     if (!user_id || !message) {
       return res.status(400).json({ reply: "Invalid request.", signals: {} });
