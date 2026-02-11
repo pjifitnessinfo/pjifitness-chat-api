@@ -120,21 +120,32 @@ export default async function handler(req, res) {
       return res.status(200).json({ reply: content || "Okay.", signals: {} });
     }
 
-    /* ===============================
+        /* ===============================
        GOOGLE SHEETS (NON-FATAL)
     ================================ */
     try {
-      const PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY;
+      const PRIVATE_KEY_RAW = process.env.GOOGLE_PRIVATE_KEY;
       const EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
       const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 
-      if (PRIVATE_KEY && EMAIL && SHEET_ID) {
-        const auth = new google.auth.JWT(
-          EMAIL,
-          null,
-          PRIVATE_KEY.replace(/\\n/g, "\n"),
-          ["https://www.googleapis.com/auth/spreadsheets"]
-        );
+      // 🔍 Prevent silent failure (your old code would just do nothing)
+      if (!PRIVATE_KEY_RAW || !EMAIL || !SHEET_ID) {
+        console.error("[Sheets] Missing env vars:", {
+          hasPrivateKey: !!PRIVATE_KEY_RAW,
+          hasEmail: !!EMAIL,
+          hasSheetId: !!SHEET_ID
+        });
+      } else {
+        const PRIVATE_KEY = PRIVATE_KEY_RAW.replace(/\\n/g, "\n");
+
+        const auth = new google.auth.JWT({
+          email: EMAIL,
+          key: PRIVATE_KEY,
+          scopes: ["https://www.googleapis.com/auth/spreadsheets"]
+        });
+
+        // ✅ Forces auth errors to show up clearly
+        await auth.authorize();
 
         const sheets = google.sheets({ version: "v4", auth });
 
@@ -212,9 +223,16 @@ export default async function handler(req, res) {
             }
           });
         }
+
+        console.log("[Sheets] ✅ Logged OK", { user_id, date });
       }
     } catch (sheetErr) {
-      console.error("Sheets logging failed (non-fatal):", sheetErr);
+      console.error("[Sheets] ❌ Logging failed:", {
+        message: sheetErr?.message,
+        code: sheetErr?.code,
+        status: sheetErr?.response?.status,
+        data: sheetErr?.response?.data
+      });
     }
 
     return res.status(200).json({
