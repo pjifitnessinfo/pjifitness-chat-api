@@ -92,6 +92,43 @@ function toNum(x) {
   return Number.isFinite(n) ? n : null;
 }
 
+/* ✅ delta formatting (left vs over) */
+function fmtDelta(n) {
+  const v = Math.round(Number(n) || 0);
+  if (v > 0) return `${v} left`;
+  if (v < 0) return `${Math.abs(v)} over`;
+  return `0 left`;
+}
+
+/* ✅ lightweight context facts (NO change to locked SYSTEM_PROMPT) */
+function buildContextFacts(context) {
+  if (!context || typeof context !== "object") return "";
+
+  const target = toNum(context.target);
+  const flex = toNum(context.flex ?? 100);
+  const eatenToday = toNum(context.eaten_today);
+  const weekEaten = toNum(context.week_eaten);
+
+  if (!Number.isFinite(target) || !Number.isFinite(eatenToday) || !Number.isFinite(weekEaten)) return "";
+
+  const weekTarget = target * 7;
+  const leftToday = target - eatenToday;
+  const leftWeek = weekTarget - weekEaten;
+
+  const flexTxt = Number.isFinite(flex) ? `±${Math.round(flex)}` : "";
+
+  return (
+    `USER TOTALS (facts): ` +
+    `daily_target=${Math.round(target)}${flexTxt}, ` +
+    `eaten_today=${Math.round(eatenToday)}, ` +
+    `delta_today=${fmtDelta(leftToday)}, ` +
+    `week_target=${Math.round(weekTarget)}, ` +
+    `week_eaten=${Math.round(weekEaten)}, ` +
+    `delta_week=${fmtDelta(leftWeek)}. ` +
+    `Use these facts if user asks what they have left or if they are over.`
+  );
+}
+
 /* ===============================
    HANDLER
 ================================ */
@@ -115,7 +152,10 @@ export default async function handler(req, res) {
 
     /* ===============================
        OPENAI CALL
+       ✅ inject context facts as an extra system message (without editing locked prompt)
     ================================ */
+    const ctxFacts = buildContextFacts(context);
+
     const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -127,6 +167,7 @@ export default async function handler(req, res) {
         temperature: 0.5,
         messages: [
           { role: "system", content: SYSTEM_PROMPT.trim() },
+          ...(ctxFacts ? [{ role: "system", content: ctxFacts }] : []),
           ...Array.isArray(history)
             ? history.filter(m => m?.role && m?.content).slice(-12)
             : [],
@@ -154,6 +195,7 @@ export default async function handler(req, res) {
        - Only after meal detected
        - Uses context from frontend
        - Appends a single line to reply
+       ✅ FIX: shows "over" when exceeded (no clamping to 0)
     ================================ */
     try {
       const mealDetected = !!parsed?.signals?.meal?.detected;
@@ -167,17 +209,17 @@ export default async function handler(req, res) {
 
         if (Number.isFinite(target) && Number.isFinite(eatenTodayBefore) && Number.isFinite(weekEatenBefore)) {
           const eatenTodayAfter = Math.max(0, Math.round(eatenTodayBefore + mealCals));
-          const leftTodayAfter = Math.max(0, Math.round(target - eatenTodayAfter));
+          const leftTodayAfter = Math.round(target - eatenTodayAfter);
 
           const weekTarget = Math.round(target * 7);
           const weekEatenAfter = Math.max(0, Math.round(weekEatenBefore + mealCals));
-          const weekLeftAfter = Math.max(0, Math.round(weekTarget - weekEatenAfter));
+          const weekLeftAfter = Math.round(weekTarget - weekEatenAfter);
 
           const flexTxt = Number.isFinite(flex) ? `±${Math.round(flex)}` : "";
 
           const totalsLine =
-            `\n\nTotals: ${eatenTodayAfter} eaten • ${leftTodayAfter} left today (target ${Math.round(target)}${flexTxt}). ` +
-            `Week: ${weekEatenAfter} eaten • ${weekLeftAfter} left.`;
+            `\n\nTotals: ${eatenTodayAfter} eaten • ${fmtDelta(leftTodayAfter)} today (target ${Math.round(target)}${flexTxt}). ` +
+            `Week: ${weekEatenAfter} eaten • ${fmtDelta(weekLeftAfter)}.`;
 
           parsed.reply = String(parsed.reply || "Okay.") + totalsLine;
         }
