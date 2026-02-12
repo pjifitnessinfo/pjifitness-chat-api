@@ -1,7 +1,10 @@
 // api/coach-simple.js
 
 export const config = {
-  api: { bodyParser: true }
+  api: {
+    // ✅ Allow large payloads if you later send base64 photos through this endpoint
+    bodyParser: { sizeLimit: "15mb" }
+  }
 };
 
 import { google } from "googleapis";
