@@ -132,6 +132,25 @@ function buildContextFacts(context) {
   );
 }
 
+/* ✅ NEW: normalize calories to a usable number (fixes header not updating) */
+function normalizeCalories(val) {
+  // already a number
+  if (Number.isFinite(Number(val))) return Math.round(Number(val));
+
+  // strings like "500-700", "500 to 700", "~600", "about 650"
+  if (typeof val === "string") {
+    const nums = val.match(/(\d+(\.\d+)?)/g)?.map(Number).filter(Number.isFinite) || [];
+    if (!nums.length) return null;
+    if (nums.length >= 2) {
+      const avg = (nums[0] + nums[1]) / 2;
+      return Math.round(avg);
+    }
+    return Math.round(nums[0]);
+  }
+
+  return null;
+}
+
 /* ===============================
    HANDLER
 ================================ */
@@ -194,26 +213,23 @@ export default async function handler(req, res) {
     }
 
     /* ===============================
-       ✅ MINIMAL FIX (header reliability):
-       If estimated_calories exists, force meal.detected=true
-       (No prompt change; just normalizing signals)
+       ✅ NEW: NORMALIZE SIGNAL NUMBERS
+       - Fixes header not updating when model returns "500-700" as a string
+       - Keeps Sheets + totals math consistent
     ================================ */
     try {
-      if (!parsed || typeof parsed !== "object") parsed = {};
-      if (!parsed.signals || typeof parsed.signals !== "object") parsed.signals = {};
-
-      const est = toNum(parsed?.signals?.meal?.estimated_calories);
-      if (Number.isFinite(est) && est > 0) {
-        if (!parsed.signals.meal || typeof parsed.signals.meal !== "object") {
-          parsed.signals.meal = { detected: true, text: "", estimated_calories: est, confidence: 0.6 };
-        } else {
-          parsed.signals.meal.detected = true;
-          if (!Number.isFinite(Number(parsed.signals.meal.confidence))) parsed.signals.meal.confidence = 0.6;
-          if (typeof parsed.signals.meal.text !== "string") parsed.signals.meal.text = String(parsed.signals.meal.text || "");
+      if (parsed?.signals?.meal?.detected) {
+        const fixed = normalizeCalories(parsed?.signals?.meal?.estimated_calories);
+        if (Number.isFinite(fixed)) {
+          parsed.signals.meal.estimated_calories = fixed;
         }
       }
+      if (parsed?.signals?.weight?.detected) {
+        const w = toNum(parsed?.signals?.weight?.value);
+        if (Number.isFinite(w)) parsed.signals.weight.value = w;
+      }
     } catch {
-      // never fail request due to normalization
+      // never fail if normalization errors
     }
 
     /* ===============================
