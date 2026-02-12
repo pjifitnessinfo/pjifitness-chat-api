@@ -194,6 +194,29 @@ export default async function handler(req, res) {
     }
 
     /* ===============================
+       ✅ MINIMAL FIX (header reliability):
+       If estimated_calories exists, force meal.detected=true
+       (No prompt change; just normalizing signals)
+    ================================ */
+    try {
+      if (!parsed || typeof parsed !== "object") parsed = {};
+      if (!parsed.signals || typeof parsed.signals !== "object") parsed.signals = {};
+
+      const est = toNum(parsed?.signals?.meal?.estimated_calories);
+      if (Number.isFinite(est) && est > 0) {
+        if (!parsed.signals.meal || typeof parsed.signals.meal !== "object") {
+          parsed.signals.meal = { detected: true, text: "", estimated_calories: est, confidence: 0.6 };
+        } else {
+          parsed.signals.meal.detected = true;
+          if (!Number.isFinite(Number(parsed.signals.meal.confidence))) parsed.signals.meal.confidence = 0.6;
+          if (typeof parsed.signals.meal.text !== "string") parsed.signals.meal.text = String(parsed.signals.meal.text || "");
+        }
+      }
+    } catch {
+      // never fail request due to normalization
+    }
+
+    /* ===============================
        ✅ TOTALS APPEND (NO PROMPT CHANGE)
        - Only after meal detected
        - Uses context from frontend
