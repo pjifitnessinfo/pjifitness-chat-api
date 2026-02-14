@@ -161,7 +161,9 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { user_id, message, history = [], debug = false, context = null } = req.body || {};
+    const { user_id, message, history = [], debug = false, context = null, first_name = "", email = "" } = req.body || {};
+const FIRST_NAME = String(first_name || "").trim();
+const EMAIL      = String(email || "").trim();
 
     if (!user_id || !message) {
       return res.status(400).json({ reply: "Invalid request.", signals: {} });
