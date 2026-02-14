@@ -343,8 +343,9 @@ try {
     const timestamp = now();
 
     // ✅ identity from request (safe even if blank)
-    const FIRST_NAME = String(first_name || "").trim();
-    const USER_EMAIL = String(email || "").trim();
+    // IMPORTANT: do NOT redeclare FIRST_NAME / EMAIL (already declared above)
+    const SHEET_FIRST_NAME = FIRST_NAME; // from req.body destructure section
+    const SHEET_EMAIL = EMAIL;           // from req.body destructure section
 
     // DEBUG row (now includes name/email columns)
     if (debug) {
@@ -359,9 +360,9 @@ try {
             `debug_${Date.now()}`,
             "DEBUG_WRITE",
             0,
-            FIRST_NAME,
+            SHEET_FIRST_NAME,
             timestamp,
-            USER_EMAIL
+            SHEET_EMAIL
           ]]
         }
       });
@@ -373,7 +374,7 @@ try {
       spreadsheetId: SHEET_ID,
       range: "users!A:D",
       valueInputOption: "USER_ENTERED",
-      requestBody: { values: [[user_id, FIRST_NAME, USER_EMAIL, timestamp]] }
+      requestBody: { values: [[user_id, SHEET_FIRST_NAME, SHEET_EMAIL, timestamp]] }
     });
 
     // MEAL_LOGS: date | user_id | entry_id | meal_text | calories | first_name | timestamp | email
@@ -389,9 +390,9 @@ try {
             `meal_${Date.now()}`,
             parsed.signals.meal.text || "",
             parsed.signals.meal.estimated_calories || "",
-            FIRST_NAME,
+            SHEET_FIRST_NAME,
             timestamp,
-            USER_EMAIL
+            SHEET_EMAIL
           ]]
         }
       });
@@ -410,8 +411,8 @@ try {
             parsed.signals.weight.value,
             "v3",
             timestamp,
-            FIRST_NAME,
-            USER_EMAIL
+            SHEET_FIRST_NAME,
+            SHEET_EMAIL
           ]]
         }
       });
@@ -459,17 +460,7 @@ try {
         }
       } catch {}
 
-      // ✅ DAILY_SUMMARIES:
-      // A date
-      // B user_id
-      // C weight
-      // D weekly_avg
-      // E ai_summary (reply)
-      // F first_name
-      // G meal_calories
-      // H mood_text
-      // I timestamp
-      // J email
+      // DAILY_SUMMARIES A:J
       await sheets.spreadsheets.values.append({
         spreadsheetId: SHEET_ID,
         range: "DAILY_SUMMARIES!A:J",
@@ -481,11 +472,11 @@ try {
             parsed?.signals?.weight?.value || "",
             weeklyAvgWeight,
             parsed?.reply || "",
-            FIRST_NAME,
+            SHEET_FIRST_NAME,
             parsed?.signals?.meal?.estimated_calories || "",
             isMoodMessage(message) ? message : "",
             timestamp,
-            USER_EMAIL
+            SHEET_EMAIL
           ]]
         }
       });
