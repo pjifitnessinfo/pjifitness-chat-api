@@ -275,214 +275,238 @@ const EMAIL      = String(email || "").trim();
     } catch {}
 
     /* ===============================
-       GOOGLE SHEETS (NON-FATAL) + DEBUG
-       (unchanged)
-    =============================== */
-    let sheets_debug = { ran: false };
+   GOOGLE SHEETS (NON-FATAL) + DEBUG
+=============================== */
+let sheets_debug = { ran: false };
 
-    try {
-      sheets_debug.ran = true;
+try {
+  sheets_debug.ran = true;
 
-      const SHEET_ID =
-        process.env.GOOGLE_SHEET_ID ||
-        process.env.SHEET_ID ||
-        "";
+  const SHEET_ID =
+    process.env.GOOGLE_SHEET_ID ||
+    process.env.SHEET_ID ||
+    "";
 
-      const SA_JSON_RAW =
-  process.env.GOOGLE_SERVICE_ACCOUNT_JSON ||
-  process.env.GOOGLE_SERVICE_ACCOUNT ||
-  process.env.GCP_SERVICE_ACCOUNT_JSON ||
-  "";
+  const SA_JSON_RAW =
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON ||
+    process.env.GOOGLE_SERVICE_ACCOUNT ||
+    process.env.GCP_SERVICE_ACCOUNT_JSON ||
+    "";
 
-const PRIVATE_KEY_RAW =
-  process.env.GOOGLE_PRIVATE_KEY ||
-  process.env.GCP_PRIVATE_KEY ||
-  "";
+  const PRIVATE_KEY_RAW =
+    process.env.GOOGLE_PRIVATE_KEY ||
+    process.env.GCP_PRIVATE_KEY ||
+    "";
 
-const EMAIL =
-  process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL ||
-  process.env.GOOGLE_CLIENT_EMAIL ||   // ✅ this is the common one that’s missing in your code
-  process.env.GCP_CLIENT_EMAIL ||
-  "";
+  const EMAIL_ENV =
+    process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL ||
+    process.env.GOOGLE_CLIENT_EMAIL ||
+    process.env.GCP_CLIENT_EMAIL ||
+    "";
 
-      sheets_debug.hasSheetId = !!SHEET_ID;
-      sheets_debug.hasServiceJson = !!SA_JSON_RAW;
-      sheets_debug.hasPrivateKey = !!PRIVATE_KEY_RAW;
-      sheets_debug.hasEmail = !!EMAIL;
+  sheets_debug.hasSheetId = !!SHEET_ID;
+  sheets_debug.hasServiceJson = !!SA_JSON_RAW;
+  sheets_debug.hasPrivateKey = !!PRIVATE_KEY_RAW;
+  sheets_debug.hasEmail = !!EMAIL_ENV;
 
-      let clientEmail = "";
-      let privateKey = "";
+  let clientEmail = "";
+  let privateKey = "";
 
-      if (SA_JSON_RAW) {
-        const obj = JSON.parse(SA_JSON_RAW);
-        clientEmail = String(obj.client_email || "");
-        privateKey = String(obj.private_key || "");
-      } else {
-        clientEmail = EMAIL;
-        privateKey = PRIVATE_KEY_RAW;
-      }
+  if (SA_JSON_RAW) {
+    const obj = JSON.parse(SA_JSON_RAW);
+    clientEmail = String(obj.client_email || "");
+    privateKey = String(obj.private_key || "");
+  } else {
+    clientEmail = EMAIL_ENV;
+    privateKey = PRIVATE_KEY_RAW;
+  }
 
-      const hasCreds = !!clientEmail && !!privateKey;
+  const hasCreds = !!clientEmail && !!privateKey;
 
-      if (!SHEET_ID || !hasCreds) {
-        sheets_debug.ok = false;
-        sheets_debug.reason = "missing_env";
-      } else {
-        const PRIVATE_KEY = String(privateKey).replace(/\\n/g, "\n");
+  if (!SHEET_ID || !hasCreds) {
+    sheets_debug.ok = false;
+    sheets_debug.reason = "missing_env";
+  } else {
+    const PRIVATE_KEY = String(privateKey).replace(/\\n/g, "\n");
 
-        const auth = new google.auth.JWT({
-          email: clientEmail,
-          key: PRIVATE_KEY,
-          scopes: ["https://www.googleapis.com/auth/spreadsheets"]
-        });
+    const auth = new google.auth.JWT({
+      email: clientEmail,
+      key: PRIVATE_KEY,
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"]
+    });
 
-        await auth.authorize();
+    await auth.authorize();
 
-        const sheets = google.sheets({ version: "v4", auth });
+    const sheets = google.sheets({ version: "v4", auth });
 
-        const date = today();
-        const timestamp = now();
+    const date = today();
+    const timestamp = now();
 
-        if (debug) {
-          await sheets.spreadsheets.values.append({
-            spreadsheetId: SHEET_ID,
-            range: "MEAL_LOGS!A:G",
-            valueInputOption: "USER_ENTERED",
-            requestBody: {
-              values: [[
-                date,
-                user_id,
-                `debug_${Date.now()}`,
-                "DEBUG_WRITE",
-                0,
-                "",
-                timestamp
-              ]]
-            }
-          });
-          sheets_debug.debugRow = "wrote DEBUG_WRITE to MEAL_LOGS";
+    // ✅ identity from request (safe even if blank)
+    const FIRST_NAME = String(first_name || "").trim();
+    const USER_EMAIL = String(email || "").trim();
+
+    // DEBUG row (now includes name/email columns)
+    if (debug) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID,
+        range: "MEAL_LOGS!A:H",
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+          values: [[
+            date,
+            user_id,
+            `debug_${Date.now()}`,
+            "DEBUG_WRITE",
+            0,
+            FIRST_NAME,
+            timestamp,
+            USER_EMAIL
+          ]]
         }
-
-        await sheets.spreadsheets.values.append({
-          spreadsheetId: SHEET_ID,
-          range: "users!A:D",
-          valueInputOption: "USER_ENTERED",
-          requestBody: { values: [[user_id, "", "", timestamp]] }
-        });
-
-        if (parsed?.signals?.meal?.detected) {
-          await sheets.spreadsheets.values.append({
-            spreadsheetId: SHEET_ID,
-            range: "MEAL_LOGS!A:G",
-            valueInputOption: "USER_ENTERED",
-            requestBody: {
-              values: [[
-                date,
-                user_id,
-                `meal_${Date.now()}`,
-                parsed.signals.meal.text || "",
-                parsed.signals.meal.estimated_calories || "",
-                "",
-                timestamp
-              ]]
-            }
-          });
-        }
-
-        if (parsed?.signals?.weight?.detected) {
-          await sheets.spreadsheets.values.append({
-            spreadsheetId: SHEET_ID,
-            range: "WEIGHT_LOGS!A:E",
-            valueInputOption: "USER_ENTERED",
-            requestBody: {
-              values: [[
-                date,
-                user_id,
-                parsed.signals.weight.value,
-                "v3",
-                timestamp
-              ]]
-            }
-          });
-        }
-
-        if (
-          parsed?.signals?.meal?.detected ||
-          parsed?.signals?.weight?.detected ||
-          isMoodMessage(message)
-        ) {
-          let weeklyAvgWeight = "";
-          try {
-            const wRes = await sheets.spreadsheets.values.get({
-              spreadsheetId: SHEET_ID,
-              range: "WEIGHT_LOGS!A:E"
-            });
-
-            const rows = wRes?.data?.values || [];
-            const todayStr = date;
-            const cutoff = new Date(todayStr);
-            cutoff.setDate(cutoff.getDate() - 6);
-
-            const vals = [];
-            for (const r of rows) {
-              const rDate = r?.[0];
-              const rUser = r?.[1];
-              const rWeight = r?.[2];
-
-              if (!rDate || !rUser || !rWeight) continue;
-              if (String(rUser) !== String(user_id)) continue;
-
-              const dObj = new Date(rDate);
-              if (isNaN(dObj.getTime())) continue;
-              if (dObj < cutoff) continue;
-
-              const wNum = parseFloat(rWeight);
-              if (!Number.isFinite(wNum)) continue;
-
-              vals.push(wNum);
-            }
-
-            if (vals.length) {
-              weeklyAvgWeight = (vals.reduce((a,b)=>a+b,0) / vals.length).toFixed(1);
-            }
-          } catch {}
-
-          await sheets.spreadsheets.values.append({
-            spreadsheetId: SHEET_ID,
-            range: "DAILY_SUMMARIES!A:I",
-            valueInputOption: "USER_ENTERED",
-            requestBody: {
-              values: [[
-                date,
-                user_id,
-                parsed?.signals?.weight?.value || "",
-                weeklyAvgWeight,
-                parsed?.reply || "",
-                "",
-                parsed?.signals?.meal?.estimated_calories || "",
-                isMoodMessage(message) ? message : "",
-                timestamp
-              ]]
-            }
-          });
-        }
-
-        sheets_debug.ok = true;
-      }
-    } catch (sheetErr) {
-      sheets_debug.ok = false;
-      sheets_debug.reason = "exception";
-      sheets_debug.message = sheetErr?.message;
-      sheets_debug.code = sheetErr?.code;
-      sheets_debug.status = sheetErr?.response?.status;
-      sheets_debug.data = sheetErr?.response?.data;
+      });
+      sheets_debug.debugRow = "wrote DEBUG_WRITE to MEAL_LOGS";
     }
 
-    return res.status(200).json({
-      reply: parsed.reply || "Okay.",
-      signals: parsed.signals || {},
-      ...(debug ? { sheets_debug } : {})
+    // users tab: user_id | first_name | email | timestamp
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: "users!A:D",
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [[user_id, FIRST_NAME, USER_EMAIL, timestamp]] }
     });
+
+    // MEAL_LOGS: date | user_id | entry_id | meal_text | calories | first_name | timestamp | email
+    if (parsed?.signals?.meal?.detected) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID,
+        range: "MEAL_LOGS!A:H",
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+          values: [[
+            date,
+            user_id,
+            `meal_${Date.now()}`,
+            parsed.signals.meal.text || "",
+            parsed.signals.meal.estimated_calories || "",
+            FIRST_NAME,
+            timestamp,
+            USER_EMAIL
+          ]]
+        }
+      });
+    }
+
+    // WEIGHT_LOGS: date | user_id | weight | source | timestamp | first_name | email
+    if (parsed?.signals?.weight?.detected) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID,
+        range: "WEIGHT_LOGS!A:G",
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+          values: [[
+            date,
+            user_id,
+            parsed.signals.weight.value,
+            "v3",
+            timestamp,
+            FIRST_NAME,
+            USER_EMAIL
+          ]]
+        }
+      });
+    }
+
+    // DAILY_SUMMARIES writes when meal/weight/mood relevant
+    if (
+      parsed?.signals?.meal?.detected ||
+      parsed?.signals?.weight?.detected ||
+      isMoodMessage(message)
+    ) {
+      let weeklyAvgWeight = "";
+      try {
+        const wRes = await sheets.spreadsheets.values.get({
+          spreadsheetId: SHEET_ID,
+          range: "WEIGHT_LOGS!A:G"
+        });
+
+        const rows = wRes?.data?.values || [];
+        const todayStr = date;
+        const cutoff = new Date(todayStr);
+        cutoff.setDate(cutoff.getDate() - 6);
+
+        const vals = [];
+        for (const r of rows) {
+          const rDate = r?.[0];
+          const rUser = r?.[1];
+          const rWeight = r?.[2];
+
+          if (!rDate || !rUser || !rWeight) continue;
+          if (String(rUser) !== String(user_id)) continue;
+
+          const dObj = new Date(rDate);
+          if (isNaN(dObj.getTime())) continue;
+          if (dObj < cutoff) continue;
+
+          const wNum = parseFloat(rWeight);
+          if (!Number.isFinite(wNum)) continue;
+
+          vals.push(wNum);
+        }
+
+        if (vals.length) {
+          weeklyAvgWeight = (vals.reduce((a,b)=>a+b,0) / vals.length).toFixed(1);
+        }
+      } catch {}
+
+      // ✅ DAILY_SUMMARIES:
+      // A date
+      // B user_id
+      // C weight
+      // D weekly_avg
+      // E ai_summary (reply)
+      // F first_name    (was blank before)
+      // G meal_calories
+      // H mood_text
+      // I timestamp
+      // J email         (new)
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID,
+        range: "DAILY_SUMMARIES!A:J",
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+          values: [[
+            date,
+            user_id,
+            parsed?.signals?.weight?.value || "",
+            weeklyAvgWeight,
+            parsed?.reply || "",
+            FIRST_NAME,
+            parsed?.signals?.meal?.estimated_calories || "",
+            isMoodMessage(message) ? message : "",
+            timestamp,
+            USER_EMAIL
+          ]]
+        }
+      });
+    }
+
+    sheets_debug.ok = true;
+  }
+} catch (sheetErr) {
+  sheets_debug.ok = false;
+  sheets_debug.reason = "exception";
+  sheets_debug.message = sheetErr?.message;
+  sheets_debug.code = sheetErr?.code;
+  sheets_debug.status = sheetErr?.response?.status;
+  sheets_debug.data = sheetErr?.response?.data;
+}
+
+return res.status(200).json({
+  reply: parsed.reply || "Okay.",
+  signals: parsed.signals || {},
+  ...(debug ? { sheets_debug } : {})
+});
 
   } catch (err) {
     return res.status(500).json({
