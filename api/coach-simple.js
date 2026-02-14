@@ -465,11 +465,11 @@ try {
       // C weight
       // D weekly_avg
       // E ai_summary (reply)
-      // F first_name    (was blank before)
+      // F first_name
       // G meal_calories
       // H mood_text
       // I timestamp
-      // J email         (new)
+      // J email
       await sheets.spreadsheets.values.append({
         spreadsheetId: SHEET_ID,
         range: "DAILY_SUMMARIES!A:J",
@@ -508,10 +508,10 @@ return res.status(200).json({
   ...(debug ? { sheets_debug } : {})
 });
 
-  } catch (err) {
-    return res.status(500).json({
-      reply: "Something went wrong.",
-      signals: {}
-    });
-  }
+} catch (err) {
+  return res.status(500).json({
+    reply: "Something went wrong.",
+    signals: {}
+  });
+}
 }
