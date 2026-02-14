@@ -286,9 +286,22 @@ export default async function handler(req, res) {
         process.env.SHEET_ID ||
         "";
 
-      const SA_JSON_RAW = process.env.GOOGLE_SERVICE_ACCOUNT_JSON || "";
-      const PRIVATE_KEY_RAW = process.env.GOOGLE_PRIVATE_KEY || "";
-      const EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "";
+      const SA_JSON_RAW =
+  process.env.GOOGLE_SERVICE_ACCOUNT_JSON ||
+  process.env.GOOGLE_SERVICE_ACCOUNT ||
+  process.env.GCP_SERVICE_ACCOUNT_JSON ||
+  "";
+
+const PRIVATE_KEY_RAW =
+  process.env.GOOGLE_PRIVATE_KEY ||
+  process.env.GCP_PRIVATE_KEY ||
+  "";
+
+const EMAIL =
+  process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL ||
+  process.env.GOOGLE_CLIENT_EMAIL ||   // ✅ this is the common one that’s missing in your code
+  process.env.GCP_CLIENT_EMAIL ||
+  "";
 
       sheets_debug.hasSheetId = !!SHEET_ID;
       sheets_debug.hasServiceJson = !!SA_JSON_RAW;
