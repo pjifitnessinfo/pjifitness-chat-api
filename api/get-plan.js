@@ -16,8 +16,9 @@ function setCors(req, res) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
   }
-  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Max-Age", "86400");
 }
 
 async function shopifyGraphQL(query, variables = {}) {
@@ -45,30 +46,48 @@ function safeJsonParse(x) {
   try { return JSON.parse(String(x)); } catch { return null; }
 }
 
+// ✅ NEW: robust customerId parser (accepts numeric OR gid, rejects "null"/"undefined")
+function toCustomerGid(input) {
+  if (input == null) return null;
+  const s = String(input).trim();
+
+  if (!s || s === "null" || s === "undefined") return null;
+
+  // If already a Shopify GID, accept it
+  if (s.startsWith("gid://shopify/Customer/")) return s;
+
+  // Otherwise extract digits and build gid
+  const numeric = s.replace(/[^0-9]/g, "");
+  if (!numeric) return null;
+  return `gid://shopify/Customer/${numeric}`;
+}
+
 export default async function handler(req, res) {
   setCors(req, res);
 
   if (req.method === "OPTIONS") return res.status(204).end();
   res.setHeader("Content-Type", "application/json; charset=utf-8");
 
-  if (req.method !== "POST") {
-    return res.status(405).json({ ok: false, error: "method_not_allowed" });
-  }
-
   if (!SHOPIFY_STORE_DOMAIN || !SHOPIFY_ADMIN_API_ACCESS_TOKEN) {
     return res.status(500).json({ ok: false, error: "missing_env", message: "Missing Shopify env vars" });
   }
 
-  let body = null;
-  try {
-    body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
-  } catch {
-    return res.status(400).json({ ok: false, error: "bad_json", message: "Invalid JSON body" });
-  }
+  // ✅ Allow GET as well (so method mismatch can’t break you)
+  let customerGid = null;
 
-  const customerId = String(body.customerId || "").trim();
-  const numeric = customerId.replace(/[^0-9]/g, "");
-  const customerGid = numeric ? `gid://shopify/Customer/${numeric}` : null;
+  if (req.method === "GET") {
+    customerGid = toCustomerGid(req.query?.customerId);
+  } else if (req.method === "POST") {
+    let body = null;
+    try {
+      body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
+    } catch {
+      return res.status(400).json({ ok: false, error: "bad_json", message: "Invalid JSON body" });
+    }
+    customerGid = toCustomerGid(body.customerId);
+  } else {
+    return res.status(405).json({ ok: false, error: "method_not_allowed" });
+  }
 
   if (!customerGid) {
     return res.status(400).json({ ok: false, error: "missing_customerId", message: "Missing customerId" });
