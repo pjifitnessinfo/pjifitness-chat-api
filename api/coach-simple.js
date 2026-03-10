@@ -238,12 +238,12 @@ const EMAIL      = String(email || "").trim();
       }
 
       const fixedCals = normalizeCalories(parsed.signals.meal.estimated_calories);
-      if (Number.isFinite(fixedCals) && fixedCals > 0) {
-        parsed.signals.meal.estimated_calories = fixedCals;
+if (Number.isFinite(fixedCals) && fixedCals > 0) {
+  parsed.signals.meal.estimated_calories = fixedCals;
+}
 
-        // ✅ KEY FIX: even if model forgot detected=true, treat it as a meal if calories exist
-        parsed.signals.meal.detected = true;
-      }
+// keep detected as a real boolean, but do NOT force true just because calories exist
+parsed.signals.meal.detected = !!parsed.signals.meal.detected;
 
       if (parsed?.signals?.weight?.detected) {
         const w = toNum(parsed?.signals?.weight?.value);
