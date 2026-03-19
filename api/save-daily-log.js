@@ -137,7 +137,9 @@ export default async function handler(req, res) {
       });
 
       const rows = read.data.values || [];
-      const idx = rows.findIndex(r => r[0] === date && r[1] === String(user_id));
+      const idx = rows.findIndex(
+        r => r[0] === date && r[1] === String(user_id)
+      );
 
       if (idx >= 0) {
         const rowNum = idx + 2;
@@ -198,7 +200,7 @@ export default async function handler(req, res) {
     // =============================
     if (type === "summary") {
       const {
-        // old/simple summary fields
+        // base summary fields
         weight,
         weekly_avg,
         total_calories,
@@ -215,13 +217,23 @@ export default async function handler(req, res) {
         coaching_opportunities,
         user_questions,
         coach_notes,
-        status
+        status,
+
+        // onboarding/profile fields
+        sex,
+        age,
+        height_in,
+        start_weight,
+        goal_weight,
+        activity_level,
+        phone,
+        text_opt_in
       } = data;
 
       const coachTab = TAB_MAP.coach_review;
 
       // =============================
-      // DAILY_SUMMARIES (keep your existing simpler tab)
+      // DAILY_SUMMARIES (keep simple)
       // A date
       // B user_id
       // C weight
@@ -236,7 +248,9 @@ export default async function handler(req, res) {
       });
 
       const rows = read.data.values || [];
-      const idx = rows.findIndex(r => r[0] === date && r[1] === String(user_id));
+      const idx = rows.findIndex(
+        r => r[0] === date && r[1] === String(user_id)
+      );
 
       const row = [
         date,
@@ -283,14 +297,24 @@ export default async function handler(req, res) {
       // N  coach_notes
       // O  status
       // P  timestamp
+      // Q  sex
+      // R  age
+      // S  height_in
+      // T  start_weight
+      // U  goal_weight
+      // V  activity_level
+      // W  phone
+      // X  text_opt_in
       // =============================
       const coachRead = await sheets.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
-        range: `${coachTab}!A2:P`
+        range: `${coachTab}!A2:X`
       });
 
       const coachRows = coachRead.data.values || [];
-      const coachIdx = coachRows.findIndex(r => r[0] === date && r[1] === String(user_id));
+      const coachIdx = coachRows.findIndex(
+        r => r[0] === date && r[1] === String(user_id)
+      );
 
       const coachRow = [
         date,                                              // A
@@ -308,21 +332,29 @@ export default async function handler(req, res) {
         cleanCell(user_questions),                         // M
         cleanCell(coach_notes),                            // N
         cleanCell(status),                                 // O
-        now                                                // P
+        now,                                               // P
+        cleanCell(sex),                                    // Q
+        cleanNumberOrBlank(age),                           // R
+        cleanNumberOrBlank(height_in),                     // S
+        cleanNumberOrBlank(start_weight),                  // T
+        cleanNumberOrBlank(goal_weight),                   // U
+        cleanCell(activity_level),                         // V
+        cleanCell(phone),                                  // W
+        cleanCell(text_opt_in)                             // X
       ];
 
       if (coachIdx >= 0) {
         const coachRowNum = coachIdx + 2;
         await sheets.spreadsheets.values.update({
           spreadsheetId: SHEET_ID,
-          range: `${coachTab}!A${coachRowNum}:P${coachRowNum}`,
+          range: `${coachTab}!A${coachRowNum}:X${coachRowNum}`,
           valueInputOption: "RAW",
           requestBody: { values: [coachRow] }
         });
       } else {
         await sheets.spreadsheets.values.append({
           spreadsheetId: SHEET_ID,
-          range: `${coachTab}!A:P`,
+          range: `${coachTab}!A:X`,
           valueInputOption: "RAW",
           requestBody: { values: [coachRow] }
         });
