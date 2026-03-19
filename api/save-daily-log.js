@@ -16,7 +16,8 @@ const SERVICE_ACCOUNT = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
 const TAB_MAP = {
   weight: "WEIGHT_LOGS",
   meal: "MEAL_LOGS",
-  summary: "DAILY_SUMMARIES"
+  summary: "DAILY_SUMMARIES",
+  coach_review: "COACH_DAILY_REVIEW"
 };
 
 // =============================
@@ -196,6 +197,8 @@ export default async function handler(req, res) {
         coach_flag
       } = data;
 
+      const coachTab = TAB_MAP.coach_review;
+
       const read = await sheets.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
         range: `${tab}!A2:G`
@@ -228,6 +231,45 @@ export default async function handler(req, res) {
           range: `${tab}!A:G`,
           valueInputOption: "RAW",
           requestBody: { values: [row] }
+        });
+      }
+
+      // =============================
+      // COACH DAILY REVIEW (overwrite per day)
+      // =============================
+      const coachRead = await sheets.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID,
+        range: `${coachTab}!A2:H`
+      });
+
+      const coachRows = coachRead.data.values || [];
+      const coachIdx = coachRows.findIndex(r => r[0] === date && r[1] === user_id);
+
+      const coachRow = [
+        date,
+        user_id,
+        weight ?? "",
+        weekly_avg ?? "",
+        total_calories ?? "",
+        ai_summary ?? "",
+        coach_flag ?? "",
+        now
+      ];
+
+      if (coachIdx >= 0) {
+        const coachRowNum = coachIdx + 2;
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: SHEET_ID,
+          range: `${coachTab}!A${coachRowNum}:H${coachRowNum}`,
+          valueInputOption: "RAW",
+          requestBody: { values: [coachRow] }
+        });
+      } else {
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: SHEET_ID,
+          range: `${coachTab}!A:H`,
+          valueInputOption: "RAW",
+          requestBody: { values: [coachRow] }
         });
       }
 
