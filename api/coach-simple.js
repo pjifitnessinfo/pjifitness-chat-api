@@ -494,7 +494,7 @@ export default async function handler(req, res) {
             `\n\nTotals: ${eatenTodayAfter} eaten • ${fmtDelta(leftTodayAfter)} today (target ${Math.round(target)}${flexTxt}). ` +
             `Week: ${weekEatenAfter} eaten • ${fmtDelta(weekLeftAfter)}.`;
 
-          parsed.reply = String(parsed.reply || "Okay.") + totalsLine;
+          // parsed.reply = String(parsed.reply || "Okay.") + totalsLine;
         }
       }
     } catch {}
