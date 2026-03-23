@@ -131,6 +131,9 @@ Total so far
 
 Do not force totals if they are not relevant.
 
+- Prefer specific coaching over generic motivational language
+- When possible, tie the coaching note directly to the user's calories, protein, or flexibility left for the day
+
 ==============================
 REMAINING FORMAT
 ==============================
