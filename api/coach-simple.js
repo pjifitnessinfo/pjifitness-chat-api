@@ -464,24 +464,49 @@ function buildContextFacts(context) {
   const eatenToday = toNum(context.eaten_today);
   const weekEaten = toNum(context.week_eaten);
 
-  if (!Number.isFinite(target) || !Number.isFinite(eatenToday) || !Number.isFinite(weekEaten)) return "";
+  const todayWeight = toNum(context.today_weight);
+  const yesterdayWeight = toNum(context.yesterday_weight);
+  const weightChange = toNum(context.weight_change);
+  const avg7 = toNum(context.weight_avg7);
+  const recentLow = toNum(context.weight_recent_low);
+  const recentHigh = toNum(context.weight_recent_high);
+  const trendLabel = String(context.weight_trend_label || "").trim();
 
-  const weekTarget = target * 7;
-  const leftToday = target - eatenToday;
-  const leftWeek = weekTarget - weekEaten;
+  let parts = [];
 
-  const flexTxt = Number.isFinite(flex) ? `±${Math.round(flex)}` : "";
+  if (Number.isFinite(target) && Number.isFinite(eatenToday) && Number.isFinite(weekEaten)) {
+    const weekTarget = target * 7;
+    const leftToday = target - eatenToday;
+    const leftWeek = weekTarget - weekEaten;
+    const flexTxt = Number.isFinite(flex) ? `±${Math.round(flex)}` : "";
 
-  return (
-    `USER TOTALS (facts): ` +
-    `daily_target=${Math.round(target)}${flexTxt}, ` +
-    `eaten_today=${Math.round(eatenToday)}, ` +
-    `delta_today=${fmtDelta(leftToday)}, ` +
-    `week_target=${Math.round(weekTarget)}, ` +
-    `week_eaten=${Math.round(weekEaten)}, ` +
-    `delta_week=${fmtDelta(leftWeek)}. ` +
-    `Use these facts if user asks what they have left or if they are over.`
-  );
+    parts.push(
+      `USER TOTALS (facts): ` +
+      `daily_target=${Math.round(target)}${flexTxt}, ` +
+      `eaten_today=${Math.round(eatenToday)}, ` +
+      `delta_today=${fmtDelta(leftToday)}, ` +
+      `week_target=${Math.round(weekTarget)}, ` +
+      `week_eaten=${Math.round(weekEaten)}, ` +
+      `delta_week=${fmtDelta(leftWeek)}. ` +
+      `Use these facts if user asks what they have left or if they are over.`
+    );
+  }
+
+  if (Number.isFinite(todayWeight)) {
+    parts.push(
+      `WEIGHT TREND (facts): ` +
+      `today_weight=${todayWeight}, ` +
+      `yesterday_weight=${Number.isFinite(yesterdayWeight) ? yesterdayWeight : "unknown"}, ` +
+      `change_vs_yesterday=${Number.isFinite(weightChange) ? weightChange : "unknown"}, ` +
+      `avg7=${Number.isFinite(avg7) ? avg7 : "unknown"}, ` +
+      `recent_low=${Number.isFinite(recentLow) ? recentLow : "unknown"}, ` +
+      `recent_high=${Number.isFinite(recentHigh) ? recentHigh : "unknown"}, ` +
+      `trend_label=${trendLabel || "unknown"}. ` +
+      `Use these facts when the user logs a weight or talks about the scale. Interpret the phase, not just the number.`
+    );
+  }
+
+  return parts.join(" ");
 }
 
 /* ✅ normalize calories into a real integer */
