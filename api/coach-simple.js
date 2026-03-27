@@ -505,7 +505,7 @@ function buildContextFacts(context) {
       `Use these facts when the user logs a weight or talks about the scale. Interpret the phase, not just the number.`
     );
   }
-
+  console.log("CTX FACTS:", parts.join(" "));
   return parts.join(" ");
 }
 
