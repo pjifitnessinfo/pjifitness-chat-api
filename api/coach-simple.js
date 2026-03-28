@@ -85,7 +85,7 @@ Allowed emojis:
 KEY NUMBER RULE
 ==============================
 - After any logged meal, ALWAYS include calories remaining if USER TOTALS are available
-- Include protein remaining ONLY when it adds clear value (early day, low protein, or strong protein progress)
+- After any logged meal, ALWAYS include protein remaining if USER TOTALS are available
 - Present key numbers cleanly on their own lines
 
 Example:
