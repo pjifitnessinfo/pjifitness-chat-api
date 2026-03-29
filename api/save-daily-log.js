@@ -72,6 +72,15 @@ function cleanNumberOrBlank(value) {
   return Number.isFinite(n) ? n : "";
 }
 
+function firstNonEmpty(...values) {
+  for (const v of values) {
+    if (v === null || v === undefined) continue;
+    const s = String(v).trim();
+    if (s !== "") return s;
+  }
+  return "";
+}
+
 async function getSheets() {
   const auth = new google.auth.JWT(
     SERVICE_ACCOUNT.client_email,
@@ -206,12 +215,14 @@ export default async function handler(req, res) {
         total_calories,
         ai_summary,
         coach_flag,
+        last_meal_text,
 
         // coach review fields
         name,
         calorie_target,
         protein_target,
         protein_logged,
+        protein_total,
         meals_summary,
         flags,
         coaching_opportunities,
@@ -227,10 +238,54 @@ export default async function handler(req, res) {
         goal_weight,
         activity_level,
         phone,
-        text_opt_in
+        text_opt_in,
+
+        // safe fallbacks if frontend uses different names
+        phone_number,
+        phoneNumber,
+        mobile,
+        text_ok,
+        wants_text
       } = data;
 
       const coachTab = TAB_MAP.coach_review;
+
+      const resolvedPhone = firstNonEmpty(
+        phone,
+        phone_number,
+        phoneNumber,
+        mobile
+      );
+
+      const resolvedTextOptIn = firstNonEmpty(
+        text_opt_in,
+        text_ok,
+        wants_text
+      );
+
+      const resolvedProteinLogged =
+        cleanNumberOrBlank(protein_logged) !== ""
+          ? cleanNumberOrBlank(protein_logged)
+          : cleanNumberOrBlank(protein_total);
+
+      const resolvedCoachingOpportunities = firstNonEmpty(
+        coaching_opportunities,
+        coach_flag,
+        flags,
+        "None"
+      );
+
+      const resolvedUserQuestions = firstNonEmpty(
+        user_questions,
+        last_meal_text,
+        ""
+      );
+
+      const resolvedCoachNotes = firstNonEmpty(
+        coach_notes,
+        ai_summary,
+        ""
+      );
 
       // =============================
       // DAILY_SUMMARIES (keep simple)
@@ -304,11 +359,12 @@ export default async function handler(req, res) {
       // U  goal_weight
       // V  activity_level
       // W  phone
-      // X  text_opt_in
+      // X  text_ok
+      // Y  ai_summary
       // =============================
       const coachRead = await sheets.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
-        range: `${coachTab}!A2:X`
+        range: `${coachTab}!A2:Y`
       });
 
       const coachRows = coachRead.data.values || [];
@@ -317,44 +373,45 @@ export default async function handler(req, res) {
       );
 
       const coachRow = [
-        date,                                              // A
-        String(user_id),                                   // B
-        cleanCell(name),                                   // C
-        cleanNumberOrBlank(calorie_target),                // D
-        cleanNumberOrBlank(protein_target),                // E
-        cleanNumberOrBlank(total_calories),                // F
-        cleanNumberOrBlank(protein_logged),                // G
-        cleanNumberOrBlank(weight),                        // H
-        cleanNumberOrBlank(weekly_avg),                    // I
-        cleanCell(meals_summary || ai_summary),            // J
-        cleanCell(flags || coach_flag),                    // K
-        cleanCell(coaching_opportunities),                 // L
-        cleanCell(user_questions),                         // M
-        cleanCell(coach_notes),                            // N
-        cleanCell(status),                                 // O
-        now,                                               // P
-        cleanCell(sex),                                    // Q
-        cleanNumberOrBlank(age),                           // R
-        cleanNumberOrBlank(height_in),                     // S
-        cleanNumberOrBlank(start_weight),                  // T
-        cleanNumberOrBlank(goal_weight),                   // U
-        cleanCell(activity_level),                         // V
-        cleanCell(phone),                                  // W
-        cleanCell(text_opt_in)                             // X
+        date,                               // A
+        String(user_id),                    // B
+        cleanCell(name),                    // C
+        cleanNumberOrBlank(calorie_target), // D
+        cleanNumberOrBlank(protein_target), // E
+        cleanNumberOrBlank(total_calories), // F
+        resolvedProteinLogged,              // G
+        cleanNumberOrBlank(weight),         // H
+        cleanNumberOrBlank(weekly_avg),     // I
+        cleanCell(meals_summary),           // J
+        cleanCell(flags || coach_flag),     // K
+        cleanCell(resolvedCoachingOpportunities), // L
+        cleanCell(resolvedUserQuestions),   // M
+        cleanCell(resolvedCoachNotes),      // N
+        cleanCell(status),                  // O
+        now,                                // P
+        cleanCell(sex),                     // Q
+        cleanNumberOrBlank(age),            // R
+        cleanNumberOrBlank(height_in),      // S
+        cleanNumberOrBlank(start_weight),   // T
+        cleanNumberOrBlank(goal_weight),    // U
+        cleanCell(activity_level),          // V
+        cleanCell(resolvedPhone),           // W
+        cleanCell(resolvedTextOptIn),       // X
+        cleanCell(ai_summary)               // Y
       ];
 
       if (coachIdx >= 0) {
         const coachRowNum = coachIdx + 2;
         await sheets.spreadsheets.values.update({
           spreadsheetId: SHEET_ID,
-          range: `${coachTab}!A${coachRowNum}:X${coachRowNum}`,
+          range: `${coachTab}!A${coachRowNum}:Y${coachRowNum}`,
           valueInputOption: "RAW",
           requestBody: { values: [coachRow] }
         });
       } else {
         await sheets.spreadsheets.values.append({
           spreadsheetId: SHEET_ID,
-          range: `${coachTab}!A:X`,
+          range: `${coachTab}!A:Y`,
           valueInputOption: "RAW",
           requestBody: { values: [coachRow] }
         });
