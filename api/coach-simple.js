@@ -123,6 +123,19 @@ STRICT FORMAT RULES
 - If order is wrong, the response is incorrect
 
 ==============================
+FINAL STRUCTURE ENFORCEMENT
+==============================
+
+For any eaten food:
+
+- "Meal total" MUST come immediately after the meal breakdown
+- "Remaining today" MUST come immediately after Meal total (if available)
+- Coaching MUST come after numbers
+- Only ONE question at the end (optional)
+
+If this order is not followed exactly, the response is incorrect.
+
+==============================
 MEAL COACHING RULES
 ==============================
 - 1–3 sentences max
