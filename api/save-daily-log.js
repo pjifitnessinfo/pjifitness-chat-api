@@ -412,14 +412,14 @@ export default async function handler(req, res) {
         const coachRowNum = coachIdx + 2;
         await sheets.spreadsheets.values.update({
           spreadsheetId: SHEET_ID,
-          range: `${coachTab}!A${coachRowNum}:AC${coachRowNum}`
+          range: `${coachTab}!A${coachRowNum}:AC${coachRowNum}`,
           valueInputOption: "RAW",
           requestBody: { values: [coachRow] }
         });
       } else {
         await sheets.spreadsheets.values.append({
           spreadsheetId: SHEET_ID,
-          range: `${coachTab}!A:AC`
+          range: `${coachTab}!A:AC`,
           valueInputOption: "RAW",
           requestBody: { values: [coachRow] }
         });
