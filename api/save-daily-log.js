@@ -369,7 +369,7 @@ export default async function handler(req, res) {
       // =============================
       const coachRead = await sheets.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
-        range: `${coachTab}!A2:Y`
+        range: `${coachTab}!A2:AC`
       });
 
       const coachRows = coachRead.data.values || [];
