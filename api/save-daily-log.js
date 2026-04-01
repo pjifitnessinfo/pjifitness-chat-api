@@ -209,7 +209,6 @@ export default async function handler(req, res) {
     // =============================
     if (type === "summary") {
       const {
-              const {
         // base summary fields
         weight,
         weekly_avg,
