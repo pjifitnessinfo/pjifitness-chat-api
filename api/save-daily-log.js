@@ -403,6 +403,10 @@ export default async function handler(req, res) {
         cleanCell(resolvedPhone),           // W
         cleanCell(resolvedTextOptIn),       // X
         cleanCell(ai_summary)               // Y
+        cleanCell(history_experience),
+        cleanCell(history_state),
+        cleanCell(history_patterns),
+        cleanCell(history_notes)
       ];
 
       if (coachIdx >= 0) {
