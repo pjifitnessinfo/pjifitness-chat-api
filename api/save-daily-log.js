@@ -420,7 +420,7 @@ export default async function handler(req, res) {
       } else {
         await sheets.spreadsheets.values.append({
           spreadsheetId: SHEET_ID,
-          range: `${coachTab}!A:Y`,
+          range: `${coachTab}!A:AC`
           valueInputOption: "RAW",
           requestBody: { values: [coachRow] }
         });
