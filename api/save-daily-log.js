@@ -413,7 +413,7 @@ export default async function handler(req, res) {
         const coachRowNum = coachIdx + 2;
         await sheets.spreadsheets.values.update({
           spreadsheetId: SHEET_ID,
-          range: `${coachTab}!A${coachRowNum}:Y${coachRowNum}`,
+          range: `${coachTab}!A${coachRowNum}:AC${coachRowNum}`
           valueInputOption: "RAW",
           requestBody: { values: [coachRow] }
         });
