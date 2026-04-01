@@ -401,7 +401,7 @@ export default async function handler(req, res) {
         cleanCell(activity_level),          // V
         cleanCell(resolvedPhone),           // W
         cleanCell(resolvedTextOptIn),       // X
-        cleanCell(ai_summary)               // Y
+        cleanCell(ai_summary),              // Y
         cleanCell(history_experience),
         cleanCell(history_state),
         cleanCell(history_patterns),
