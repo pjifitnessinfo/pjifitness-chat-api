@@ -209,6 +209,7 @@ export default async function handler(req, res) {
     // =============================
     if (type === "summary") {
       const {
+              const {
         // base summary fields
         weight,
         weekly_avg,
@@ -239,6 +240,10 @@ export default async function handler(req, res) {
         activity_level,
         phone,
         text_opt_in,
+        history_experience,
+        history_state,
+        history_patterns,
+        history_notes,
 
         // safe fallbacks if frontend uses different names
         phone_number,
