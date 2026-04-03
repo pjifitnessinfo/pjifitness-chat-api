@@ -46,17 +46,13 @@ function safeJsonParse(x) {
   try { return JSON.parse(String(x)); } catch { return null; }
 }
 
-// ✅ NEW: robust customerId parser (accepts numeric OR gid, rejects "null"/"undefined")
 function toCustomerGid(input) {
   if (input == null) return null;
   const s = String(input).trim();
 
   if (!s || s === "null" || s === "undefined") return null;
-
-  // If already a Shopify GID, accept it
   if (s.startsWith("gid://shopify/Customer/")) return s;
 
-  // Otherwise extract digits and build gid
   const numeric = s.replace(/[^0-9]/g, "");
   if (!numeric) return null;
   return `gid://shopify/Customer/${numeric}`;
@@ -72,7 +68,6 @@ export default async function handler(req, res) {
     return res.status(500).json({ ok: false, error: "missing_env", message: "Missing Shopify env vars" });
   }
 
-  // ✅ Allow GET as well (so method mismatch can’t break you)
   let customerGid = null;
 
   if (req.method === "GET") {
@@ -99,7 +94,8 @@ export default async function handler(req, res) {
         customer(id: $id) {
           id
           coach_plan: metafield(namespace: "custom", key: "coach_plan") { value }
-          plan_json:  metafield(namespace: "custom", key: "plan_json")  { value }
+          plan_json: metafield(namespace: "custom", key: "plan_json") { value }
+          chat_transcript: metafield(namespace: "custom", key: "chat_transcript") { value }
           onboarding_complete: metafield(namespace: "custom", key: "onboarding_complete") { value }
           post_plan_stage: metafield(namespace: "custom", key: "post_plan_stage") { value }
         }
@@ -110,7 +106,8 @@ export default async function handler(req, res) {
     const c = data?.customer;
 
     const coach_plan = safeJsonParse(c?.coach_plan?.value) || null;
-    const plan_json  = safeJsonParse(c?.plan_json?.value) || null;
+    const plan_json = safeJsonParse(c?.plan_json?.value) || null;
+    const chat_transcript = safeJsonParse(c?.chat_transcript?.value) || [];
 
     const onboarding_complete =
       String(c?.onboarding_complete?.value || "").toLowerCase() === "true";
@@ -124,6 +121,7 @@ export default async function handler(req, res) {
       post_plan_stage,
       coach_plan,
       plan_json,
+      chat_transcript: Array.isArray(chat_transcript) ? chat_transcript : [],
     });
   } catch (e) {
     return res.status(500).json({
