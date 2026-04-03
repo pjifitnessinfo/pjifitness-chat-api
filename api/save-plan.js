@@ -76,6 +76,114 @@ export default async function handler(req, res) {
 
   const coach_plan = safeObj(body.coach_plan) || safeObj(body.plan_json) || {};
   const plan_json  = safeObj(body.plan_json)  || safeObj(body.coach_plan) || {};
+  const chat_transcript = Array.isArray(body.chat_transcript)
+    ? body.chat_transcript
+    : Array.isArray(body.transcript)
+      ? body.transcript
+      : null;
+
+  try {
+    const mutation = `
+      mutation SetPlan($mf: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $mf) {
+          metafields { id namespace key value }
+          userErrors { field message }
+        }
+      }
+    `;
+
+    const metafields = [];
+
+    // only save plan metafields if plan payload was actually sent
+    if (body.coach_plan || body.plan_json) {
+      metafields.push(
+        {
+          ownerId: customerGid,
+          namespace: "custom",
+          key: "coach_plan",
+          type: "json",
+          value: JSON.stringify(coach_plan || {}),
+        },
+        {
+          ownerId: customerGid,
+          namespace: "custom",
+          key: "plan_json",
+          type: "json",
+          value: JSON.stringify(plan_json || {}),
+        },
+        {
+          ownerId: customerGid,
+          namespace: "custom",
+          key: "onboarding_complete",
+          type: "single_line_text_field",
+          value: "true",
+        },
+        {
+          ownerId: customerGid,
+          namespace: "custom",
+          key: "post_plan_stage",
+          type: "single_line_text_field",
+          value: "done",
+        }
+      );
+    }
+
+    // save chat backup if sent
+    if (chat_transcript) {
+      metafields.push({
+        ownerId: customerGid,
+        namespace: "custom",
+        key: "chat_transcript",
+        type: "json",
+        value: JSON.stringify(chat_transcript),
+      });
+    }
+
+    if (!metafields.length) {
+      return res.status(400).json({
+        ok: false,
+        error: "nothing_to_save",
+        message: "No valid plan or chat payload provided"
+      });
+    }
+
+    const data = await shopifyGraphQL(mutation, { mf: metafields });
+
+    const errs = data?.metafieldsSet?.userErrors || [];
+    if (errs.length) {
+      return res.status(400).json({ ok: false, error: "shopify_user_errors", userErrors: errs });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      customerGid,
+      onboarding_complete: true,
+      post_plan_stage: "done",
+      saved_chat: !!chat_transcript,
+      saved_plan: !!(body.coach_plan || body.plan_json),
+    });
+  } catch (e) {
+    return res.status(500).json({
+      ok: false,
+      error: "save_plan_failed",
+      message: String(e?.message || e),
+    });
+  }
+}    body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
+  } catch {
+    return res.status(400).json({ ok: false, error: "bad_json", message: "Invalid JSON body" });
+  }
+
+  const customerId = String(body.customerId || "").trim();
+  const numeric = customerId.replace(/[^0-9]/g, "");
+  const customerGid = numeric ? `gid://shopify/Customer/${numeric}` : null;
+
+  if (!customerGid) {
+    return res.status(400).json({ ok: false, error: "missing_customerId", message: "Missing customerId" });
+  }
+
+  const coach_plan = safeObj(body.coach_plan) || safeObj(body.plan_json) || {};
+  const plan_json  = safeObj(body.plan_json)  || safeObj(body.coach_plan) || {};
 
   try {
     // ✅ FIX: no unused $id variable
