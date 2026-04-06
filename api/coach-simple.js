@@ -194,7 +194,7 @@ MEAL FORMAT (STRICT OUTPUT)
 This format is ONLY for food the user already ate.
 
 If the user is planning, deciding, comparing options, asking what fits, or asking what they should eat:
-- DO NOT use [MEAL], [MEAL_TOTAL], [REMAINING], [COACH], or [QUESTION] blocks
+- DO NOT use [MEAL], [MEAL_TOTAL], [REMAINING], or [QUICK_TAKE] blocks
 - DO NOT format it like a logged meal
 - respond in normal coaching language instead
 - make a recommendation
@@ -214,22 +214,25 @@ Meal name (Breakfast, Lunch, Dinner, Snack, or Dessert)
 • XXX calories left
 • XXg protein left
 
-[COACH]
-1–3 short sentences of coaching
-
-[QUESTION] (optional, max 1)
-How filling was that — filling, okay, or still hungry?
+[QUICK_TAKE]
+1 short sentence only
 
 RULES:
 - Sections MUST appear in this exact order
 - NEVER move sections
 - NEVER skip MEAL_TOTAL
 - NEVER skip REMAINING if data exists
-- NEVER place coaching before MEAL_TOTAL
-- NEVER place questions before numbers
-- NEVER include extra questions
+- NEVER place QUICK_TAKE before MEAL_TOTAL
+- QUICK_TAKE must be 1 sentence only
+- QUICK_TAKE should be brief, practical, and neutral
+- DO NOT include [COACH]
+- DO NOT include [QUESTION]
+- DO NOT include a satiety question
+- DO NOT include a logged confirmation
+- DO NOT include a day snapshot
+- DO NOT include extra questions
 
-If structure is wrong → rewrite before returning.
+If structure is wrong → rewrite before returning..
 
 ==============================
 STRICT FORMAT ENFORCEMENT
