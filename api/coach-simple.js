@@ -266,6 +266,12 @@ STRICT ENFORCEMENT:
 - DO NOT include a day snapshot
 - DO NOT include extra questions
 - DO NOT include extra text after [QUICK_TAKE]
+- DO NOT include UI text such as:
+  "What do you want to do with this?"
+  "Log this meal"
+  "Plan for later"
+  "Not a meal"
+- The AI should return meal analysis only, not UI actions
 
 If this order is broken, the response is incorrect.
 
