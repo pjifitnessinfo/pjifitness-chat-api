@@ -735,9 +735,9 @@ The coach_reply should follow this structure:
 
 Day snapshot
 Calories: <eaten today> / <target>
-Remaining: <left> left
+Remaining: show "X left" if under target, or "X over" if over target
 Protein: <protein today>g / <protein target>g
-Protein remaining: <protein left>g
+Protein remaining: show "Xg left" if under target, or "Xg over" if over target
 
 Then 2–4 short paragraphs that:
 - explain the meal
