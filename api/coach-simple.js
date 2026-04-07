@@ -674,8 +674,6 @@ COACH_REPLY FORMAT
 ==============================
 The coach_reply should follow this structure:
 
-Logged: <label> — <meal calories> calories • <meal protein>g protein
-
 Day snapshot
 Calories: <eaten today> / <target>
 Remaining: <left> left
@@ -695,6 +693,7 @@ Do NOT include a [MEAL] block.
 Do NOT include a [MEAL_TOTAL] block.
 Do NOT include a [REMAINING] block.
 Do NOT include [COACH] or [QUESTION] labels.
+Do NOT repeat the logged line if the UI already shows it.
 `;
 /* ===============================
    HELPERS
