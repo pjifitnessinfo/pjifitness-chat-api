@@ -870,17 +870,54 @@ export default async function handler(req, res) {
 
   try {
     const {
-      user_id,
-      message,
-      history = [],
-      debug = false,
-      context = null,
-      first_name = "",
-      email = ""
-    } = req.body || {};
+  user_id,
+  message,
+  history = [],
+  debug = false,
+  context = null,
+  first_name = "",
+  email = "",
+  mode = "",
+  post_log = null
+} = req.body || {};
 
     const FIRST_NAME = String(first_name || "").trim();
     const EMAIL = String(email || "").trim();
+
+        if (mode === "post_log_coaching") {
+      const payload = post_log && typeof post_log === "object" ? post_log : {};
+
+      const mealLabel = String(payload.meal_label || "Meal").trim() || "Meal";
+      const mealText = String(payload.meal_text || "").trim();
+      const mealCalories = Math.round(Number(payload.meal_calories) || 0);
+      const mealProtein = Math.round(Number(payload.meal_protein) || 0);
+
+      const caloriesToday = Math.round(Number(payload.calories_today) || 0);
+      const calorieTarget = Math.round(Number(payload.calorie_target) || 0);
+      const caloriesLeft = Math.round(Number(payload.calories_left) || 0);
+
+      const proteinToday = Math.round(Number(payload.protein_today) || 0);
+      const proteinTarget = Math.round(Number(payload.protein_target) || 0);
+      const proteinLeft = Math.round(Number(payload.protein_left) || 0);
+
+      const coaching = await getPostLogCoaching({
+        mealLabel,
+        mealText,
+        mealCalories,
+        mealProtein,
+        caloriesToday,
+        calorieTarget,
+        caloriesLeft,
+        proteinToday,
+        proteinTarget,
+        proteinLeft
+      });
+
+      return res.status(200).json({
+        coach_reply: coaching.coach_reply || "",
+        question_type: coaching.question_type || "none"
+      });
+    }
 
     if (!user_id || !message) {
       return res.status(400).json({
