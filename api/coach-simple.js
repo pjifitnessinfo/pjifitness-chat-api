@@ -786,7 +786,70 @@ function normalizeCalories(val) {
 
   return null;
 }
+/* ===============================
+   POST-LOG COACHING HELPER
+================================ */
+async function getPostLogCoaching({
+  mealLabel = "Meal",
+  mealText = "",
+  mealCalories = 0,
+  mealProtein = 0,
+  caloriesToday = 0,
+  calorieTarget = 0,
+  caloriesLeft = 0,
+  proteinToday = 0,
+  proteinTarget = 0,
+  proteinLeft = 0
+} = {}) {
+  const userMessage = `
+POST_LOG_COACHING_REQUEST
 
+meal_label: ${mealLabel}
+meal_text: ${mealText}
+meal_calories: ${Math.round(Number(mealCalories) || 0)}
+meal_protein: ${Math.round(Number(mealProtein) || 0)}
+
+calories_today: ${Math.round(Number(caloriesToday) || 0)}
+calorie_target: ${Math.round(Number(calorieTarget) || 0)}
+calories_left: ${Math.round(Number(caloriesLeft) || 0)}
+
+protein_today: ${Math.round(Number(proteinToday) || 0)}
+protein_target: ${Math.round(Number(proteinTarget) || 0)}
+protein_left: ${Math.round(Number(proteinLeft) || 0)}
+`.trim();
+
+  const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: "gpt-4.1-mini",
+      temperature: 0.5,
+      messages: [
+        { role: "system", content: POST_LOG_COACHING_PROMPT.trim() },
+        { role: "user", content: userMessage }
+      ]
+    })
+  });
+
+  const data = await openaiRes.json();
+  const content = data?.choices?.[0]?.message?.content || "";
+
+  try {
+    const parsed = JSON.parse(content);
+    return {
+      coach_reply: String(parsed?.coach_reply || "").trim(),
+      question_type: String(parsed?.question_type || "none").trim() || "none"
+    };
+  } catch {
+    return {
+      coach_reply: "",
+      question_type: "none"
+    };
+  }
+}
 /* ===============================
    HANDLER
 ================================ */
