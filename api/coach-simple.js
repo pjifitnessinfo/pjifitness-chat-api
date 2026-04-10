@@ -203,7 +203,7 @@ MEAL FORMAT (STRICT OUTPUT)
 This format is ONLY for food the user already ate.
 
 If the user is planning, deciding, comparing options, asking what fits, or asking what they should eat:
-- DO NOT use [MEAL], [MEAL_TOTAL], [REMAINING], or [QUICK_TAKE] blocks
+- DO NOT use [MEAL], [MEAL_TOTAL], or [QUICK_TAKE] blocks
 - DO NOT format it like a logged meal
 - respond in normal coaching language instead
 - make a recommendation
@@ -219,10 +219,6 @@ Meal name (Breakfast, Lunch, Dinner, Snack, or Dessert)
 [MEAL_TOTAL]
 • XXX calories, XXg protein
 
-[REMAINING]
-• XXX calories left
-• XXg protein left
-
 [QUICK_TAKE]
 1 short sentence only
 
@@ -230,10 +226,10 @@ RULES:
 - Sections MUST appear in this exact order
 - NEVER move sections
 - NEVER skip MEAL_TOTAL
-- NEVER skip REMAINING if data exists
 - NEVER place QUICK_TAKE before MEAL_TOTAL
 - QUICK_TAKE must be 1 sentence only
 - QUICK_TAKE should be brief, practical, and neutral
+- Do NOT include [REMAINING] in the initial pending meal reply
 - DO NOT include [COACH]
 - DO NOT include [QUESTION]
 - DO NOT include a satiety question
@@ -244,22 +240,8 @@ RULES:
 
 NUMBER FORMATTING:
 - Protein values in visible meal replies must always be rounded to whole grams
-- Do NOT use decimals for protein in [MEAL], [MEAL_TOTAL], or [REMAINING]
+- Do NOT use decimals for protein in [MEAL], [MEAL_TOTAL], or [QUICK_TAKE]
 - Calories should always be shown as whole numbers
-
-REMAINING CALCULATION RULE:
-For any eaten food in the initial pending meal reply, [REMAINING] must reflect the user's day totals AFTER including the current meal you just analyzed.
-
-Do NOT repeat the previous meal's remaining values.
-Do NOT show stale remaining numbers from earlier in the day.
-Subtract the current meal from the user's current daily targets before writing [REMAINING].
-
-Example:
-If the user had 1790 calories left before this meal, and the current meal is 545 calories, [REMAINING] should show 1245 calories left.
-If the user had 117g protein left before this meal, and the current meal is 38g protein, [REMAINING] should show 79g protein left.
-
-[REMAINING] must always reflect:
-daily target minus total food eaten so far including this current meal.
 
 If structure is wrong → rewrite before returning.
 ==============================
