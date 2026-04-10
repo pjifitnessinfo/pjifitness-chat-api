@@ -584,12 +584,11 @@ You MUST follow this exact structure with NO deviation:
 
 1. [MEAL]
 2. [MEAL_TOTAL]
-3. [REMAINING] (if available)
-4. [QUICK_TAKE]
+3. [QUICK_TAKE]
 
 STRICT ENFORCEMENT:
 - If [MEAL_TOTAL] is not immediately after [MEAL] → response is WRONG
-- If [REMAINING] is missing when available → response is WRONG
+- Do NOT include [REMAINING] in the initial pending meal reply
 - If anything appears after [QUICK_TAKE] → response is WRONG
 - DO NOT include [COACH]
 - DO NOT include [QUESTION]
