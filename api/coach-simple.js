@@ -242,8 +242,12 @@ RULES:
 - DO NOT include extra questions
 - DO NOT include extra text after [QUICK_TAKE]
 
-If structure is wrong → rewrite before returning.
+NUMBER FORMATTING:
+- Protein values in visible meal replies must always be rounded to whole grams
+- Do NOT use decimals for protein in [MEAL], [MEAL_TOTAL], or [REMAINING]
+- Calories should always be shown as whole numbers
 
+If structure is wrong → rewrite before returning.
 ==============================
 STRICT FORMAT ENFORCEMENT
 ==============================
