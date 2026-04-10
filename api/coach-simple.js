@@ -452,6 +452,14 @@ RULES:
 - Make it feel like a meal the user could actually save and repeat
 - Do NOT log the swap
 - Do NOT repeat the same full recipe every time unless the user asks
+- The swap must match the type of meal (snack stays snack, meal stays meal)
+- Liquid snacks (shakes, bars) should swap to common high-volume snack options like:
+  yogurt bowls, protein pudding, protein oats, protein pancakes, cottage cheese bowls, fruit + protein
+- Do NOT turn a snack into a full plated meal with unrelated foods
+- Keep the swap realistic and something the user would actually choose in that moment
+- Prioritize familiar, repeatable foods over creative or unusual combinations
+- Maintain or increase protein compared to the original meal when possible
+- Keep calories roughly similar unless intentionally improving calorie density
 
 ==============================
 SMART SWAP MEMORY RULE
