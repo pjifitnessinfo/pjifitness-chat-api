@@ -455,7 +455,7 @@ Build a real, repeatable meal.
 
 Format it like this:
 
-Better version (same calories, more filling):
+Better version (<same or lower calories>, more filling):
 
 • ingredient — calories, protein
 • ingredient — calories, protein
