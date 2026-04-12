@@ -251,13 +251,12 @@ For eaten food in the initial pending meal reply, the only allowed sections are:
 
 1. [MEAL]
 2. [MEAL_TOTAL]
-3. [REMAINING] (if available)
-4. [QUICK_TAKE]
+3. [QUICK_TAKE]
 
 STRICT ENFORCEMENT:
 - [MEAL_TOTAL] MUST come immediately after [MEAL]
-- [REMAINING] MUST come immediately after [MEAL_TOTAL] when available
-- [QUICK_TAKE] MUST come after the numbers
+- [QUICK_TAKE] MUST come immediately after [MEAL_TOTAL]
+- Do NOT include [REMAINING] in the initial pending meal reply
 - DO NOT include [COACH]
 - DO NOT include [QUESTION]
 - DO NOT include a satiety question
