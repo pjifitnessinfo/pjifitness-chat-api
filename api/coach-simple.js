@@ -401,8 +401,13 @@ Instead, respond with coaching only and provide:
 5. A short explanation of why the swap is more filling
 
 Recipe rules:
-- keep the calories roughly similar to the original meal
-- prefer equal or higher protein when reasonable
+- keep calories roughly similar OR lower than the original meal
+- maintain or increase protein when possible
+
+Labeling rule (CRITICAL):
+- If calories are within ±50 → use "same calories"
+- If calories are clearly lower → use "lower calories"
+- NEVER label it "same calories" if it is meaningfully lower
 - prioritize food volume, fiber, and solid foods
 - keep ingredients practical and simple
 - use normal foods the user could actually make
