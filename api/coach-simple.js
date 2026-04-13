@@ -395,7 +395,7 @@ Do NOT assume they ate the swap.
 Instead, respond with coaching only and provide:
 
 1. A short line explaining why the original meal may not have been filling
-2. One higher-volume swap recipe for about the same calories
+2. One higher-volume swap recipe for similar or lower calories
 3. Ingredients in grams and/or oz
 4. Estimated calories and protein
 5. A short explanation of why the swap is more filling
