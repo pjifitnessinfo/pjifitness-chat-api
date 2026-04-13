@@ -702,7 +702,7 @@ This should be the most educational part of the app.
 ==============================
 WHAT TO EXPLAIN
 ==============================
-You MUST do these things:
+Usually do 2 of these things, not all of them:
 
 1. Explain what kind of meal this was
 - Was it high protein?
