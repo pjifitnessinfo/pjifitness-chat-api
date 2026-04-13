@@ -765,8 +765,20 @@ Better version (same calories, more filling):
 • 100g Greek yogurt — 60 calories, 10g protein
 • 100g berries — 50 calories, fiber and volume
 
+OR (if meaningfully lower in calories):
+
+Better version (lower calories, more filling):
+• 3 egg whites — 50 calories, 11g protein
+• 100g Greek yogurt — 60 calories, 10g protein
+• 100g berries — 50 calories, fiber and volume
+
 Why this is better:
 It adds more solid food volume and fiber, which helps you stay full longer for about the same calories.
+
+Labeling rule:
+- If calories are within ±50 → use "same calories"
+- If clearly lower → use "lower calories"
+- Never label it "same calories" if it is meaningfully lower
 
 You MAY ask:
 "If that did not feel very filling, want a more filling version for about the same calories?"
