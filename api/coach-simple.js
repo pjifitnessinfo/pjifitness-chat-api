@@ -499,7 +499,8 @@ RULES:
 - Keep the swap realistic and something the user would actually choose in that moment
 - Prioritize familiar, repeatable foods over creative or unusual combinations
 - Maintain or increase protein compared to the original meal when possible
-- Keep calories roughly similar unless intentionally improving calorie density
+- Keep calories roughly similar or lower when improving calorie density
+- If the swap is meaningfully lower in calories, label it as "lower calories"
 
 ==============================
 SMART SWAP MEMORY RULE
