@@ -457,6 +457,19 @@ Priority order for swaps:
 4. similar or lower calories
 5. equal or higher protein when possible
 
+For common foods like pizza, burgers, tacos, pasta, sandwiches, bagels, and desserts:
+
+- The better version should still clearly look and feel like the original food
+- Prefer lighter builds of the same meal over replacing it with a completely different meal
+- The user should recognize it as the same food, just improved
+
+Examples:
+- pizza → thin crust, lavash pizza, English muffin pizza, lighter homemade pizza
+- burger → lean burger, burger bowl, lighter bun + higher protein build
+- tacos → taco-style plate, lower-cal tortilla tacos, higher-protein taco build
+
+Avoid turning the meal into a generic protein + vegetable plate unless the user explicitly asks for a different type of meal.
+
 ------------------------------
 SMART SWAP UPGRADE (RECIPE-STYLE)
 ------------------------------
