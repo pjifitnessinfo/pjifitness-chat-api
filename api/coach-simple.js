@@ -503,6 +503,9 @@ The label must match the actual calories:
 
 RULES:
 - Keep the same food type or craving whenever possible
+- For common foods like pizza, burgers, tacos, pasta, sandwiches, bagels, and desserts, the improved version should still clearly look and feel like the original food
+- Prefer lighter builds of the same meal over replacing it with a completely different meal
+- The user should recognize it as the same food, just improved
 - Use realistic portions in grams, oz, or simple servings
 - Keep it concise
 - Prefer:
