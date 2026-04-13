@@ -460,7 +460,11 @@ Build a real, repeatable meal.
 
 Format it like this:
 
-Better version (<same or lower calories>, more filling):
+If the improved version is within ±50 calories of the original:
+Better version (same calories, more filling):
+
+If the improved version is clearly lower in calories:
+Better version (lower calories, more filling):
 
 • ingredient — calories, protein
 • ingredient — calories, protein
@@ -470,6 +474,11 @@ Total: ~X calories, ~Yg protein
 
 Why this is better:
 <ONE short sentence explaining fullness, volume, or calorie density>
+
+The label must match the actual calories:
+- within ±50 calories = "same calories"
+- clearly lower calories = "lower calories"
+- never say "same calories" if the swap is meaningfully lower in calories
 
 RULES:
 - Keep the same food type or craving whenever possible
