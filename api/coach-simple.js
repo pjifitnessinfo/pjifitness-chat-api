@@ -746,9 +746,11 @@ If the meal seems low-volume, liquid, snacky, dessert-like, bar-based, or likely
 - do NOT be vague
 - make it obvious why the meal may lead to hunger sooner
 
-If a swap is appropriate, clearly label it as:
+If a swap is appropriate, clearly label it as either:
 
-Better version (same calories, more filling):
+Better version (same calories, more filling)
+OR
+Better version (lower calories, more filling)
 
 Then use bullet points and include:
 - ingredients
