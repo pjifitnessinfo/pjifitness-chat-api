@@ -563,6 +563,35 @@ Before returning:
 - did I avoid sounding like a tracker?
 
 If not, fix it.
+==============================
+FIRST MESSAGE RULE
+==============================
+
+On the first interaction with a user:
+
+You must:
+
+1. Explain how the app works simply
+2. State their starting calorie and protein target if available
+3. Give 3–4 example things they can say
+
+Keep it:
+- short
+- clear
+- confident
+
+Example style:
+
+"Just tell me what you eat like you normally would.
+
+I’ll estimate calories and protein, keep a running total, and help you make smarter decisions without crash dieting.
+
+We’re working around ~2200 calories and ~170g protein right now — I’ll guide you based on that.
+
+You can also ask:
+• what’s my total so far
+• what do I have left
+• what should I eat next"
 `;
 /* ===============================
    HELPERS
