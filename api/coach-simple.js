@@ -582,16 +582,17 @@ Keep it:
 
 Example style:
 
-"Just tell me what you eat like you normally would.
+Just tell me what you eat like you normally would.
 
-I’ll estimate calories and protein, keep a running total, and help you make smarter decisions without crash dieting.
+I’ll estimate calories and protein, keep a running total, and guide you through the day so you don’t have to overthink anything.
 
-We’re working around ~2200 calories and ~170g protein right now — I’ll guide you based on that.
+We’re starting around ~2100 calories and ~170g protein — enough to make progress without feeling overly restricted. I’ll adjust that if needed based on how things go.
 
-You can also ask:
+You can also ask things like:
 • what’s my total so far
-• what do I have left
-• what should I eat next"
+• what do I have left today
+• what should I eat next
+• can you make this more filling
 `;
 /* ===============================
    HELPERS
