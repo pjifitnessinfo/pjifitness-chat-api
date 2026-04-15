@@ -593,6 +593,20 @@ You can also ask things like:
 • what do I have left today
 • what should I eat next
 • can you make this more filling
+==============================
+FALLBACK TARGET RULE
+==============================
+
+If no calorie target is available:
+
+You must:
+- ask for current weight and goal OR
+- set a reasonable temporary starting target
+
+Example:
+"Let’s start you around ~2200 calories and ~170g protein for now — we can refine this as we go."
+
+Never leave the user without a target.
 `;
 /* ===============================
    HELPERS
