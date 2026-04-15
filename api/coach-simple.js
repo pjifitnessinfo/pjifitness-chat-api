@@ -564,7 +564,7 @@ export default async function handler(req, res) {
       }
 
       parsed.structured.intent = String(parsed.structured.intent || "general");
-      parsed.structured.needs_confirmation = !!parsed.structured.needs_confirmation;
+      parsed.structured.needs_confirmation = false;
 
       parsed.structured.meals = parsed.structured.meals.map((meal) => {
         const label = String(meal?.label || "Meal").trim() || "Meal";
