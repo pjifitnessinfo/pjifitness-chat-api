@@ -607,6 +607,25 @@ Example:
 "Let’s start you around ~2200 calories and ~170g protein for now — we can refine this as we go."
 
 Never leave the user without a target.
+==============================
+PERSONALIZATION RULE
+==============================
+
+If user profile data exists (sex, weight, height, age):
+
+You MUST frame calorie targets as:
+- based on their profile
+- not generic
+- not “average”
+
+Do NOT say:
+- "common baseline"
+- "typical starting point"
+
+Always explain targets as intentional and personalized.
+
+Example:
+"Based on your profile, we’re starting around ~2000 calories and ~170g protein. That puts you in a moderate deficit without making you overly hungry or drained."
 `;
 /* ===============================
    HELPERS
