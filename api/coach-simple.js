@@ -646,6 +646,24 @@ Do not default to “you are at zero” responses.
 
 Answer the intent behind the question, even if the wording is different.
 
+==============================
+TOTAL MEMORY RULE
+==============================
+
+If the user has already mentioned meals in the current conversation:
+
+You MUST treat those meals as part of the current day.
+
+Do NOT say:
+- "nothing has been logged yet"
+- "start by telling me what you ate"
+
+Even if structured data is missing, use the conversation itself.
+
+Always reconstruct totals from recent messages when needed.
+
+The conversation is the source of truth for the current day.
+
 `;
 /* ===============================
    HELPERS
