@@ -795,6 +795,7 @@ For ANY food-related input (meals, snacks, desserts, drinks):
 This includes fast food, restaurant meals, and branded items.
 
 You MUST use the structured meal format.
+Do NOT ask follow-up questions before responding.
 
 This OVERRIDES:
 - the 2–4 sentence guideline
