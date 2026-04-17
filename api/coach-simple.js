@@ -944,6 +944,28 @@ Build a new version of the same type of meal that is:
 - higher protein when possible
 
 ==============================
+STRICT REPLACEMENT ENFORCEMENT
+==============================
+
+The swap must be a TRUE replacement.
+
+If the original item appears again in the swap, the answer is incorrect.
+
+Do NOT include:
+- the same product
+- the same packaged item
+- the same exact food
+
+The swap must be a NEW version of the same type of meal.
+
+Examples:
+- protein bar → yogurt bowl or protein snack plate
+- pizza → lower-calorie pizza version
+- dessert → lower-calorie dessert version
+
+If the swap still includes the original item, it is invalid.
+
+==============================
 SMART SWAP CALORIE RULE
 ==============================
 
