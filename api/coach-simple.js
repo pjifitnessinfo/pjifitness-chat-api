@@ -931,6 +931,33 @@ Rules:
 - aim for higher protein and/or more food volume
 
 ==============================
+SMART SWAP REPLACEMENT RULE
+==============================
+
+A SMART_SWAP must REPLACE the original meal, not add to it.
+
+Do NOT include the original item again in the swap.
+
+Build a new version of the same type of meal that is:
+- more filling
+- similar or lower calories
+- higher protein when possible
+
+==============================
+SMART SWAP CALORIE RULE
+==============================
+
+The swap must NOT significantly increase calories.
+
+Guidelines:
+- within ±50 calories = ideal
+- slightly lower calories = preferred
+- do NOT increase calories by more than 50 unless explicitly justified
+
+The goal is:
+same or lower calories, more filling
+
+==============================
 SMART SWAP OUTPUT RULE
 ==============================
 
