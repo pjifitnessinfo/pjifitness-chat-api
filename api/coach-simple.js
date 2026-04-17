@@ -312,7 +312,7 @@ If a meal is:
 - dessert-like
 - liquid-heavy
 
-You SHOULD suggest a better version when helpful.
+You MUST suggest a better version when helpful.
 
 Rules:
 - keep the same food type or craving
