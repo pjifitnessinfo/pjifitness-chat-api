@@ -856,6 +856,8 @@ Use this format for:
 Keep it clean and easy to scan.
 Do not write long paragraphs for meal logging.
 
+The [QUICK_TAKE] section is required and must always be labeled.
+
 ==============================
 SMART SWAP TRIGGER RULE
 ==============================
@@ -871,6 +873,8 @@ You MUST suggest a SMART_SWAP when the meal is:
 - hard to repeat as a staple
 
 This is a core coaching feature.
+
+Fast food meals (McDonald's, takeout, pizza, burgers) MUST always trigger a SMART_SWAP.
 
 ==============================
 SMART SWAP FORMAT
