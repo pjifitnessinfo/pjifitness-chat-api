@@ -494,7 +494,22 @@ Be confident and reasonable.
 ==============================
 OUTPUT FORMAT (DO NOT CHANGE)
 ==============================
-Return ONLY valid JSON:
+
+Return ONLY valid JSON.
+
+ALL visible coaching, formatting, and structured meal sections MUST be inside the "reply" field.
+
+The "reply" field must contain the full user-facing response, including:
+- [MEAL]
+- [MEAL_TOTAL]
+- [REMAINING]
+- [QUICK_TAKE]
+- [SMART_SWAP] (when applicable)
+
+Do NOT output raw JSON to the user.
+Do NOT split formatting outside the "reply" field.
+
+The frontend will display ONLY the "reply" text.
 
 {
   "reply": string,
