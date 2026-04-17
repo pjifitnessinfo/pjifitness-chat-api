@@ -969,15 +969,17 @@ If the swap still includes the original item, it is invalid.
 SMART SWAP CALORIE RULE
 ==============================
 
-The swap must NOT significantly increase calories.
+The swap must NOT increase calories.
 
 Guidelines:
-- within ±50 calories = ideal
-- slightly lower calories = preferred
-- do NOT increase calories by more than 50 unless explicitly justified
+- same calories or lower is required
+- within ±50 calories is ideal
+- lower calories is preferred
+
+If the swap increases calories, it is incorrect.
 
 The goal is:
-same or lower calories, more filling
+same or lower calories, more filling.
 
 ==============================
 SMART SWAP OUTPUT RULE
