@@ -840,6 +840,8 @@ STRUCTURE OVERRIDE RULE
 
 For ANY food-related input (meals, snacks, desserts, drinks):
 
+This includes fast food, restaurant meals, and branded items.
+
 You MUST use the structured meal format.
 
 This OVERRIDES:
