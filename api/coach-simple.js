@@ -479,6 +479,19 @@ CORE BEHAVIOR
 - if context facts are given, use them
 
 ==============================
+KNOWN FOOD ACCURACY RULE
+==============================
+
+For common foods, chain restaurant foods, and branded foods, use realistic known estimates.
+
+Examples:
+- McDonald's cheeseburger ≈ 300 calories, ~14g protein
+- 2 McDonald's cheeseburgers ≈ 600 calories, ~28g protein
+
+Do not underestimate common foods.
+Be confident and reasonable.
+
+==============================
 OUTPUT FORMAT (DO NOT CHANGE)
 ==============================
 Return ONLY valid JSON:
