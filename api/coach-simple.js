@@ -1070,6 +1070,17 @@ function buildContextFacts(context) {
   const eatenToday = toNum(context.eaten_today);
   const weekEaten = toNum(context.week_eaten);
 
+  const proteinTarget = toNum(
+    context.protein_target ??
+    context.proteinTarget
+  );
+  const proteinEatenToday = toNum(
+    context.protein_eaten_today ??
+    context.protein_today ??
+    context.protein_eaten ??
+    context.proteinLogged
+  );
+
   const todayWeight = toNum(context.today_weight);
   const yesterdayWeight = toNum(context.yesterday_weight);
   const weightChange = toNum(context.weight_change);
@@ -1080,21 +1091,39 @@ function buildContextFacts(context) {
 
   let parts = [];
 
-  if (Number.isFinite(target) && Number.isFinite(eatenToday) && Number.isFinite(weekEaten)) {
-    const weekTarget = target * 7;
-    const leftToday = target - eatenToday;
-    const leftWeek = weekTarget - weekEaten;
+  if (Number.isFinite(target) && Number.isFinite(eatenToday)) {
+    const leftToday = Math.round(target - eatenToday);
     const flexTxt = Number.isFinite(flex) ? `±${Math.round(flex)}` : "";
 
-    parts.push(
+    let calorieLine =
       `USER TOTALS (facts): ` +
       `daily_target=${Math.round(target)}${flexTxt}, ` +
       `eaten_today=${Math.round(eatenToday)}, ` +
-      `delta_today=${fmtDelta(leftToday)}, ` +
-      `week_target=${Math.round(weekTarget)}, ` +
-      `week_eaten=${Math.round(weekEaten)}, ` +
-      `delta_week=${fmtDelta(leftWeek)}. ` +
-      `Use these facts if user asks what they have left or if they are over.`
+      `delta_today=${fmtDelta(leftToday)}`;
+
+    if (Number.isFinite(weekEaten)) {
+      const weekTarget = Math.round(target * 7);
+      const weekLeft = Math.round(weekTarget - weekEaten);
+      calorieLine +=
+        `, week_target=${weekTarget}, ` +
+        `week_eaten=${Math.round(weekEaten)}, ` +
+        `delta_week=${fmtDelta(weekLeft)}`;
+    }
+
+    calorieLine += `. Use these facts if user asks what they have left or if they are over.`;
+
+    parts.push(calorieLine);
+  }
+
+  if (Number.isFinite(proteinTarget) && Number.isFinite(proteinEatenToday)) {
+    const proteinDelta = Math.round(proteinTarget - proteinEatenToday);
+
+    parts.push(
+      `PROTEIN TOTALS (facts): ` +
+      `protein_target=${Math.round(proteinTarget)}, ` +
+      `protein_eaten_today=${Math.round(proteinEatenToday)}, ` +
+      `protein_delta_today=${fmtDelta(proteinDelta)}. ` +
+      `Use these facts for protein remaining or protein over.`
     );
   }
 
@@ -1111,6 +1140,7 @@ function buildContextFacts(context) {
       `Use these facts when the user logs a weight or talks about the scale. Interpret the phase, not just the number.`
     );
   }
+
   console.log("CTX FACTS:", parts.join(" "));
   return parts.join(" ");
 }
