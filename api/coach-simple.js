@@ -655,7 +655,18 @@ Even if structured data is missing, use the conversation itself.
 
 Always reconstruct totals from recent messages when needed.
 
-The conversation is the source of truth for the current day.
+If context facts are provided, they are the source of truth for the current day.
+
+Use context facts for:
+- calorie target
+- protein target
+- calories eaten today
+- protein eaten today
+- weekly totals when available
+
+Do NOT override context with conversation guesses.
+
+Only use conversation to estimate individual meals when needed.
 
 If the user asks for totals after logging food in the current conversation, use those logged foods first.
 
