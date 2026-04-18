@@ -879,6 +879,12 @@ Do not write long paragraphs for meal logging.
 
 The [QUICK_TAKE] section is required and must always be labeled.
 
+[REMAINING] must always use exactly:
+• XXX calories left
+• XXg protein left
+
+Do NOT summarize remaining calories and protein in sentence form.
+
 ==============================
 SMART SWAP TRIGGER RULE
 ==============================
@@ -995,6 +1001,11 @@ For these foods, a [SMART_SWAP] should almost always be included:
 - calorie-dense meals that are unlikely to be filling
 
 The swap must be specific, practical, and use real ingredients with calories and protein.
+
+A SMART_SWAP should improve fullness without meaningfully reducing protein.
+
+If the swap lowers protein substantially, it is usually not a good swap.
+Prefer swaps that keep protein similar or increase it when possible.
 
 ==============================
 SHORT FORMATTING RULE
