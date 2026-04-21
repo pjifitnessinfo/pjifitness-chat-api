@@ -1443,6 +1443,18 @@ classify it as:
   - fits, but calorie-dense and easy to overeat = higher-calorie, lower-volume meals like pizza, fries, wings, burgers
   - good candidate for a smarter version = obvious upgrade exists with meaningful savings
 
+  - If the meal is a strong repeat meal, do NOT frame it as the cause of the day going over.
+- If the user is already over for the day but the current meal is efficient, explain that this meal is still a good choice and that the overage likely came from earlier meals.
+- For strong repeat meals, reinforce:
+  - this meal is worth keeping
+  - this meal is not the problem
+  - the next step is to keep the rest of the day simple and calm, not to overcorrect
+
+  - If the current meal is efficient but the day total is over, say that clearly:
+  - "This is still a strong meal choice."
+  - "The issue is not this meal — it is the earlier calorie intake."
+  - "Keep this in rotation."
+
 ==============================
 STYLE
 ==============================
