@@ -1260,10 +1260,22 @@ Your reply should include:
 - one clear instruction for next meal
 
 3. OPTIONAL SMART SWAP (HIGH VALUE)
-Only include if meal is:
-- calorie-dense
-- low volume
-- easily improvable
+
+Only include a SMART SWAP if:
+
+- the meal is clearly calorie-dense for its size
+- OR low protein and low volume
+- OR an obvious meaningful calorie saving exists (100+ calories)
+
+Do NOT include a swap if:
+
+- calories are already efficient
+- protein is solid
+- the meal already uses lower-calorie substitutions (low-cal bread, lean meats, sugar-free condiments)
+- the structure is already good and repeatable
+- savings would be minimal or zero
+
+If the meal is already strong, reinforce it instead of changing it.
 
 ==============================
 SMART SWAP FORMAT (CRITICAL)
