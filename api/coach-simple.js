@@ -1324,9 +1324,16 @@ Examples:
 Only include a SMART SWAP if:
 - the meal is clearly calorie-dense for its size
 - OR low protein and low volume
-- OR a meaningful calorie saving exists
+- OR a meaningful calorie saving exists (usually 100+ calories)
 
-Do NOT include a SMART SWAP for strong repeat meals.
+Do NOT include a SMART SWAP if:
+- the meal is already a strong repeat meal
+- the meal is already calorie-efficient
+- the swap would save less than about 100 calories
+- the swap would increase calories
+- the swap mainly changes small details without meaningfully improving the meal
+
+If savings are small or zero, skip the SMART SWAP.
 
 ==============================
 SMART SWAP FORMAT (CRITICAL)
@@ -1420,6 +1427,21 @@ classify it as:
 - For strong repeat meals:
   - do NOT suggest a SMART SWAP
   - reinforce that it is worth keeping in rotation
+
+  - A packaged protein bar or shake should usually be classified as:
+  "This is a good base but needs more volume."
+  unless it is clearly very calorie-dense for the protein.
+
+- A meal that is already calorie-efficient, high protein, and built with smart substitutions should usually be classified as:
+  "This is a strong repeat meal."
+
+- Do NOT classify efficient, controlled meals as "calorie-dense and easy to overeat" unless that is clearly true.
+
+- The classification must match the actual meal quality:
+  - strong repeat meal = efficient, repeatable, solid structure
+  - good base but needs more volume = decent start, but may not hold well
+  - fits, but calorie-dense and easy to overeat = higher-calorie, lower-volume meals like pizza, fries, wings, burgers
+  - good candidate for a smarter version = obvious upgrade exists with meaningful savings
 
 ==============================
 STYLE
