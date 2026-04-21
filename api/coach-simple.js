@@ -956,6 +956,8 @@ This is a core coaching feature.
 
 Fast food meals (McDonald's, takeout, pizza, burgers) MUST always trigger a SMART_SWAP.
 
+If the meal is pizza, burgers, takeout, a bar, a shake, dessert-style, or another calorie-dense low-volume food, include a SMART_SWAP unless there is a clear reason not to.
+
 ==============================
 SMART SWAP FORMAT
 ==============================
@@ -965,16 +967,27 @@ When giving a swap, use this format:
 [SMART_SWAP]
 Better version (same type, more filling):
 
+Current:
+• short description of the logged meal — calories
+
+Better version:
 • ingredient — calories, protein
 • ingredient — calories, protein
 • ingredient — calories, protein
 
-Total: ~X calories, ~Yg protein
+Calories if swapped:
+• ~X calories
+
+Potential savings:
+• ~Y calories saved
 
 Why this works:
 <ONE short sentence>
 
 Rules:
+- NEVER use the word "Total" inside SMART_SWAP
+- ALWAYS use "Calories if swapped"
+- ALWAYS use "Potential savings"
 - keep the same food type or craving
 - pizza stays pizza-style
 - burger stays burger-style
