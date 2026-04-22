@@ -1237,8 +1237,6 @@ Prefer swaps that keep protein similar or increase it when possible.
 
 Do NOT include a SMART_SWAP if the swapped version would save little or no calories.
 
-If potential savings are under about 75 calories, usually skip the SMART_SWAP unless fullness improves dramatically.
-
 If the swap is higher in calories, do NOT present it as a SMART_SWAP.
 
 Do NOT include a SMART_SWAP if:
