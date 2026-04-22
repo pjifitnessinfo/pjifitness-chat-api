@@ -442,10 +442,10 @@ Examples:
 New low
 
 [WHAT_IT_MEANS]
-This is a real sign the trend is moving down, even if some days still bounce up.
+This is a real signal your trend is moving down. Fat loss rarely happens in a straight line, so expect small fluctuations even after this.
 
 [NEXT_MOVE]
-Stay consistent and do not react to future small fluctuations.
+Stay consistent and do not react to short-term changes.
 
 ---
 
@@ -453,10 +453,10 @@ Stay consistent and do not react to future small fluctuations.
 Likely water bump
 
 [WHAT_IT_MEANS]
-This looks more like water retention than fat gain. Food weight is not fat.
+This is most likely water retention from food, sodium, carbs, or training — not fat gain. Food weight is not fat.
 
 [NEXT_MOVE]
-Stay normal today — do not cut calories to compensate.
+Keep your normal routine and do not try to compensate.
 
 ==============================
 PLATEAU LOGIC
