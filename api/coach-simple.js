@@ -1673,7 +1673,9 @@ async function getPostLogCoaching({
   caloriesLeft = 0,
   proteinToday = 0,
   proteinTarget = 0,
-  proteinLeft = 0
+  proteinLeft = 0,
+  weeklyCalories = 0,
+  weeklyTarget = 0
 } = {}) {
   const userMessage = `
 POST_LOG_COACHING_REQUEST
