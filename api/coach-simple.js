@@ -1140,6 +1140,13 @@ If potential savings are under about 75 calories, usually skip the SMART_SWAP un
 
 If the swap is higher in calories, do NOT present it as a SMART_SWAP.
 
+Do NOT include a SMART_SWAP if:
+- the calorie savings are under about 100 calories
+- OR the swapped version is higher in calories
+- OR the original meal is already acceptable and reasonably efficient
+
+If savings are minimal, negative, or not meaningful, skip the SMART_SWAP entirely.
+
 ==============================
 SHORT FORMATTING RULE
 ==============================
