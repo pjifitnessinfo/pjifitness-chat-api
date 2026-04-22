@@ -1543,6 +1543,17 @@ classify it as:
   - reduce panic
   - guide calm consistency
 
+  - If the current meal is a strong repeat meal, do NOT frame it as the cause of the day going over.
+- If the day is over but the current meal is efficient, clearly say:
+  - "This meal is not the problem."
+  - "This is still a strong meal choice."
+  - "The overage likely came from earlier intake."
+- For strong repeat meals, do NOT tell the user to make this type of meal lighter.
+- For strong repeat meals, reinforce:
+  - keep this in rotation
+  - do not overcorrect
+  - stay calm and consistent
+
 ==============================
 STYLE
 ==============================
