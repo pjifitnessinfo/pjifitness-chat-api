@@ -1410,6 +1410,10 @@ Interpret the situation:
 - reassure them
 - explain that one higher day does not stop fat loss
 - emphasize weekly consistency
+- do NOT suggest correction
+- do NOT tell them to eat lighter
+- do NOT tell them to balance it out
+- keep the tone calm and reassuring
 
 2. If the user is over today AND trending over for the week:
 - suggest a small adjustment
