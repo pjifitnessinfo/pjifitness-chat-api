@@ -1602,7 +1602,7 @@ classify it as:
   - do NOT suggest a SMART SWAP
   - reinforce that it is worth keeping in rotation
 
-  - A packaged protein bar or shake should usually be classified as:
+- A packaged protein bar or shake should usually be classified as:
   "This is a good base but needs more volume."
   unless it is clearly very calorie-dense for the protein.
 
