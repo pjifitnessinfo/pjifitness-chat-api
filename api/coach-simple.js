@@ -523,6 +523,17 @@ Examples:
 Keep this short and visible.
 Do not hide it only in coaching text.
 
+If the user gives an exact weight or measured portion, do NOT label it as estimate.
+
+Examples of exact inputs:
+- 500g potatoes
+- 150g rice
+- 4 oz chicken
+- 2 tbsp peanut butter
+
+Only use "(estimate)" when the amount is unclear, vague, or not given.
+Only use "(estimate — weigh in grams)" when the food was not weighed and would be much more accurate in grams.
+
 ==============================
 OUTPUT FORMAT (DO NOT CHANGE)
 ==============================
