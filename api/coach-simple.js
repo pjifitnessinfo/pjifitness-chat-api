@@ -534,6 +534,24 @@ Examples of exact inputs:
 Only use "(estimate)" when the amount is unclear, vague, or not given.
 Only use "(estimate — weigh in grams)" when the food was not weighed and would be much more accurate in grams.
 
+Do NOT label packaged or clearly labeled foods as estimate when the serving is obvious from the product itself.
+
+Examples:
+- protein bar
+- single-serve yogurt cup
+- labeled frozen meal
+- bottled drink
+
+If the product is packaged and the serving is clear, treat the label as the main source of truth.
+
+If the user gives a specific measured portion, do NOT label it as estimate.
+
+Examples:
+- 500g potatoes
+- 150g rice
+- 4 oz chicken
+- 2 tbsp peanut butter
+
 ==============================
 OUTPUT FORMAT (DO NOT CHANGE)
 ==============================
