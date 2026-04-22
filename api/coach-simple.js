@@ -1783,17 +1783,19 @@ export default async function handler(req, res) {
       const weeklyTarget = Math.round(Number(payload.weekly_target) || 0);
 
       const coaching = await getPostLogCoaching({
-        mealLabel,
-        mealText,
-        mealCalories,
-        mealProtein,
-        caloriesToday,
-        calorieTarget,
-        caloriesLeft,
-        proteinToday,
-        proteinTarget,
-        proteinLeft
-      });
+  mealLabel,
+  mealText,
+  mealCalories,
+  mealProtein,
+  caloriesToday,
+  calorieTarget,
+  caloriesLeft,
+  proteinToday,
+  proteinTarget,
+  proteinLeft,
+  weeklyCalories,
+  weeklyTarget
+});
 
       return res.status(200).json({
         coach_reply: coaching.coach_reply || "",
