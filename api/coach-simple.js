@@ -1779,6 +1779,9 @@ export default async function handler(req, res) {
       const proteinTarget = Math.round(Number(payload.protein_target) || 0);
       const proteinLeft = Math.round(Number(payload.protein_left) || 0);
 
+      const weeklyCalories = Math.round(Number(payload.weekly_calories) || 0);
+      const weeklyTarget = Math.round(Number(payload.weekly_target) || 0);
+
       const coaching = await getPostLogCoaching({
         mealLabel,
         mealText,
