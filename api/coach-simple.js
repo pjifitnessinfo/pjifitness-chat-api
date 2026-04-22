@@ -1692,6 +1692,9 @@ calories_left: ${Math.round(Number(caloriesLeft) || 0)}
 protein_today: ${Math.round(Number(proteinToday) || 0)}
 protein_target: ${Math.round(Number(proteinTarget) || 0)}
 protein_left: ${Math.round(Number(proteinLeft) || 0)}
+
+weekly_calories: ${Math.round(Number(weeklyCalories) || 0)}
+weekly_target: ${Math.round(Number(weeklyTarget) || 0)}
 `.trim();
 
   const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
