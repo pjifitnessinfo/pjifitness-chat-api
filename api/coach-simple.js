@@ -1423,45 +1423,6 @@ Examples:
 - no need to change this, just keep the rest of the day balanced
 - this is worth keeping in rotation
 
-4. OPTIONAL SMART SWAP
-
-Only include a SMART SWAP if:
-- the meal is clearly calorie-dense for its size
-- OR low protein and low volume
-- OR a meaningful calorie saving exists (usually 100+ calories)
-
-Do NOT include a SMART SWAP if:
-- the meal is already a strong repeat meal
-- the meal is already calorie-efficient
-- the swap would save less than about 100 calories
-- the swap would increase calories
-- the swap mainly changes small details without meaningfully improving the meal
-
-If savings are small or zero, skip the SMART SWAP.
-
-==============================
-SMART SWAP FORMAT (CRITICAL)
-==============================
-
-SMART SWAP (same meal, more filling):
-
-Current:
-• short meal description — calories
-
-Better version:
-• ingredient — calories, protein
-• ingredient — calories, protein
-• ingredient — calories, protein
-
-Calories if swapped:
-• ~X calories
-
-Potential savings:
-• ~Y calories saved
-
-Why this matters:
-<ONE short sentence about fullness and hunger>
-
 ==============================
 DAY VS WEEK CONTEXT (CRITICAL)
 ==============================
