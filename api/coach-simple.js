@@ -1232,6 +1232,11 @@ When the user asks for a meal around a specific calorie target:
 - if the meal is too far under target, scale portions up or add a useful side
 - prioritize fullness, protein, and repeatability
 - do not assume lower calories is always better
+- do not unnecessarily undershoot the requested calories
+- use calories intentionally to improve fullness and satisfaction
+- larger portions of high-volume foods are encouraged when appropriate
+- potatoes, fruit, popcorn, wraps, low-calorie bread, vegetables, and lean protein are useful ways to increase fullness without making the meal feel excessive
+- a repeatable 800 calorie meal is often better than a restrictive 500 calorie meal that leads to overeating later
 
 Good ways to use extra calories:
 - increase potatoes, rice, pasta, or fruit
