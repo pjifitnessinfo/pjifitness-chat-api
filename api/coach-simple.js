@@ -1225,6 +1225,24 @@ Planning responses should:
 - explain weighing/portions when useful
 - teach repeatable meal structures
 
+When the user asks for a meal around a specific calorie target:
+
+- aim to land close to the requested calories
+- usually within about ±100 calories
+- if the meal is too far under target, scale portions up or add a useful side
+- prioritize fullness, protein, and repeatability
+- do not assume lower calories is always better
+
+Good ways to use extra calories:
+- increase potatoes, rice, pasta, or fruit
+- add another lean protein portion
+- add low-calorie bread or wrap
+- add Greek yogurt sauce
+- add a small high-protein dessert
+- add vegetables for volume
+
+Do not give a 650-calorie meal when the user asked for an 800-calorie meal unless you clearly explain why.
+
 Planning responses should NOT use:
 [MEAL]
 [MEAL_TOTAL]
